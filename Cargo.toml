@@ -1,0 +1,51 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/isct-core",
+    "crates/isct-io",
+    "crates/isct-dock",
+    "crates/isct-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "Apache-2.0"
+repository = "https://github.com/ishida/isct-dock"
+
+[workspace.dependencies]
+# 内部クレート
+isct-core = { path = "crates/isct-core" }
+isct-io = { path = "crates/isct-io" }
+isct-dock = { path = "crates/isct-dock" }
+
+# 外部クレート（暫定。各クレートの Cargo.toml で必要なものだけ有効化する）
+nalgebra = "0.33"
+thiserror = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+rand = "0.8"
+rand_chacha = "0.3"
+log = "0.4"
+env_logger = "0.11"
+
+# 最適化フェーズ（M4 以降）で有効化予定
+# rayon = "1"
+# core_affinity = "0.8"
+# memmap2 = "0.9"
+# wide = "0.7"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

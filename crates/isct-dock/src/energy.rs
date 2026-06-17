@@ -1,0 +1,73 @@
+//! ドッキングのエネルギー評価（M2）。
+//!
+//! 分子間（受容体–リガンド）エネルギーを Vina 互換スコアで計算する。受容体は探索ボックス
+//! ＋カットオフ余白の範囲に枝刈りして直接原子間計算のコストを抑える（grid 化は M4）。
+//! 探索を確実にボックス内へ閉じ込めるため、ボックス外に出たリガンド原子に罰則を課す
+//! （Vina のグリッド外ペナルティ相当）。分子内エネルギーは多 torsion 対応時に追加予定。
+
+use isct_core::geometry::Vec3;
+use isct_core::scoring::{intermolecular_terms, ScoredAtom, CUTOFF};
+
+/// ボックス外ペナルティ係数（kcal/mol/Å²。はみ出しの二乗に比例）。
+const BOX_PENALTY: f64 = 2.0;
+
+/// 枝刈り済み受容体に対しリガンドポーズを採点するスコアラ。
+#[derive(Debug, Clone)]
+pub struct Scorer {
+    receptor: Vec<ScoredAtom>,
+    center: Vec3,
+    half: Vec3,
+}
+
+impl Scorer {
+    /// 探索ボックス（中心・サイズ）＋カットオフ余白に入る受容体原子だけを保持する。
+    pub fn new(receptor_full: &[ScoredAtom], center: Vec3, size: Vec3) -> Self {
+        let half = size * 0.5;
+        let margin = Vec3::new(half.x + CUTOFF, half.y + CUTOFF, half.z + CUTOFF);
+        let receptor = receptor_full
+            .iter()
+            .filter(|a| {
+                (a.pos.x - center.x).abs() <= margin.x
+                    && (a.pos.y - center.y).abs() <= margin.y
+                    && (a.pos.z - center.z).abs() <= margin.z
+            })
+            .copied()
+            .collect();
+        Scorer {
+            receptor,
+            center,
+            half,
+        }
+    }
+
+    /// 枝刈り後の受容体原子数。
+    pub fn receptor_atoms(&self) -> usize {
+        self.receptor.len()
+    }
+
+    /// リガンドポーズの分子間エネルギー（kcal/mol。ペナルティを含まない素の値）。
+    pub fn intermolecular(&self, ligand: &[ScoredAtom]) -> f64 {
+        intermolecular_terms(ligand, &self.receptor).weighted_sum()
+    }
+
+    /// ボックス外はみ出しの罰則（全リガンド原子の各軸はみ出し²の和×係数）。
+    pub fn box_penalty(&self, ligand: &[ScoredAtom]) -> f64 {
+        let mut pen = 0.0;
+        for a in ligand {
+            let over = |p: f64, c: f64, h: f64| -> f64 {
+                let d = (p - c).abs() - h;
+                if d > 0.0 { d } else { 0.0 }
+            };
+            let ox = over(a.pos.x, self.center.x, self.half.x);
+            let oy = over(a.pos.y, self.center.y, self.half.y);
+            let oz = over(a.pos.z, self.center.z, self.half.z);
+            pen += ox * ox + oy * oy + oz * oz;
+        }
+        BOX_PENALTY * pen
+    }
+
+    /// 探索用の目的関数値 = 分子間エネルギー + ボックス外ペナルティ。
+    pub fn score(&self, ligand: &[ScoredAtom]) -> f64 {
+        self.intermolecular(ligand) + self.box_penalty(ligand)
+    }
+}

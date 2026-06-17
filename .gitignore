@@ -1,0 +1,19 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+.DS_Store
+
+# 検証データ・生成物（bench スクリプトで再生成可能。入力・データは追跡しない）
+/bench/out/
+/bench/data/
+
+# 作業メモ・移行ドキュメント・評価ログ（追跡しない）
+/FINDING.md
+/PORTING.md
+/docs/
+
+# Python キャッシュ
+__pycache__/
+*.pyc
+# macOS メタデータ（移行残渣）
+._*
