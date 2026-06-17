@@ -13,8 +13,9 @@ use isct_core::geometry::{self, Vec3};
 use isct_core::scoring::{self, intermolecular_terms};
 use isct_dock::energy::Scorer;
 use isct_dock::ligand::LigandModel;
+use isct_dock::screen::{ranking_tsv, screen, ScreenParams};
 use isct_dock::search::{dock, SearchParams};
-use isct_io::{config, pdbqt};
+use isct_io::{config, library, pdbqt};
 
 #[derive(Parser)]
 #[command(name = "isct-dock", version, about = "ISCT-Dock screening engine")]
@@ -48,15 +49,18 @@ enum Command {
         #[arg(long)]
         local_only: bool,
     },
-    /// クラスタライブラリをスクリーニングする（M3〜）。
+    /// クラスタライブラリをスクリーニングする（M3）。
     Screen {
         /// 受容体 PDBQT。
         receptor: PathBuf,
-        /// クラスタライブラリ（カスタムバイナリ）。
+        /// クラスタライブラリのマニフェスト（TOML）。
         library: PathBuf,
-        /// TOML 設定。
+        /// TOML 設定（探索ボックス・シード・棄却閾値等）。
         #[arg(short, long)]
         config: PathBuf,
+        /// 出力ランキング TSV（既定: <library と同じディレクトリ>/ranking.tsv）。
+        #[arg(short, long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -72,8 +76,73 @@ fn main() -> Result<()> {
             out,
             local_only,
         } => cmd_dock(&receptor, &ligand, &config, out.as_deref(), local_only),
-        Command::Screen { .. } => anyhow::bail!("screen: not yet implemented (M3)"),
+        Command::Screen {
+            receptor,
+            library,
+            config,
+            out,
+        } => cmd_screen(&receptor, &library, &config, out.as_deref()),
     }
+}
+
+/// クラスタライブラリをスクリーニングする（M3）。
+fn cmd_screen(
+    receptor: &PathBuf,
+    library_path: &PathBuf,
+    config_path: &PathBuf,
+    out: Option<&std::path::Path>,
+) -> Result<()> {
+    let rec = pdbqt::parse_file(receptor)
+        .with_context(|| format!("failed to parse receptor: {}", receptor.display()))?;
+    let lib = library::load(library_path)
+        .with_context(|| format!("failed to load library: {}", library_path.display()))?;
+    let cfg = config::load(config_path)
+        .with_context(|| format!("failed to load config: {}", config_path.display()))?;
+
+    let center = Vec3::new(cfg.r#box.center[0], cfg.r#box.center[1], cfg.r#box.center[2]);
+    let size = Vec3::new(cfg.r#box.size[0], cfg.r#box.size[1], cfg.r#box.size[2]);
+    let rec_scored = rec.scored_atoms();
+
+    let params = ScreenParams {
+        center,
+        size,
+        search: SearchParams {
+            center,
+            size,
+            seed: cfg.run.seed,
+            n_runs: cfg.run.n_runs,
+            n_steps: cfg.run.n_steps,
+            ..SearchParams::default()
+        },
+        prune_threshold: cfg.screen.prune_threshold,
+        local_iters: cfg.screen.local_iters,
+    };
+
+    eprintln!(
+        "screen: receptor(scored)={} atoms, clusters={}, children={}, seed={}, runs={}, steps={}, prune>{}",
+        rec_scored.len(),
+        lib.clusters.len(),
+        lib.n_children(),
+        params.search.seed,
+        params.search.n_runs,
+        params.search.n_steps,
+        params.prune_threshold,
+    );
+
+    let report = screen(&rec_scored, &lib, &params);
+
+    let out_path = out.map(PathBuf::from).unwrap_or_else(|| {
+        library_path.with_file_name("ranking.tsv")
+    });
+    std::fs::write(&out_path, ranking_tsv(&report))?;
+
+    println!("# isct-dock screen (ISCT-Dock Phase 1-3, M3)");
+    println!("clusters total       : {}", report.n_clusters());
+    println!("clusters pruned       : {}", report.n_pruned_clusters());
+    println!("children skipped(prune): {}", report.n_skipped_children());
+    println!("molecules scored      : {}", report.entries.len());
+    println!("ranking TSV           : {}", out_path.display());
+    Ok(())
 }
 
 /// 単一リガンドをボックスへドッキングする（M2）。

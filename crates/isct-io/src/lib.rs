@@ -18,4 +18,6 @@ pub enum IoError {
     Core(#[from] isct_core::CoreError),
     #[error("config parse error: {0}")]
     Config(#[from] toml::de::Error),
+    #[error("library error: {0}")]
+    Library(String),
 }

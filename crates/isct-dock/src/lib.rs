@@ -6,8 +6,9 @@
 pub mod energy;
 pub mod ligand;
 pub mod optimizer;
-pub mod search;
 pub mod phases;
+pub mod screen;
+pub mod search;
 
 /// クレート共通のエラー型。
 #[derive(Debug, thiserror::Error)]

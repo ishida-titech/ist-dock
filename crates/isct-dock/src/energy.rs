@@ -45,6 +45,11 @@ impl Scorer {
         self.receptor.len()
     }
 
+    /// 枝刈り後の受容体原子（Phase 3 の Δエネルギー評価で使う）。
+    pub fn receptor(&self) -> &[ScoredAtom] {
+        &self.receptor
+    }
+
     /// リガンドポーズの分子間エネルギー（kcal/mol。ペナルティを含まない素の値）。
     pub fn intermolecular(&self, ligand: &[ScoredAtom]) -> f64 {
         intermolecular_terms(ligand, &self.receptor).weighted_sum()

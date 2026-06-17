@@ -4,6 +4,7 @@
 //! 依存しない計算カーネルを提供する。M4 以降の SIMD/grid 最適化もこのクレートに入る。
 
 pub mod atom_types;
+pub mod delta_energy;
 pub mod geometry;
 pub mod scoring;
 

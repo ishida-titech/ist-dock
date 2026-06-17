@@ -198,6 +198,34 @@ impl LigandModel {
         self.ref_coords.len()
     }
 
+    /// 全原子の参照座標（入力ポーズ）。Phase 2 で子コアの参照 world 座標を取るのに使う。
+    pub fn ref_coords(&self) -> &[Vec3] {
+        &self.ref_coords
+    }
+
+    /// 剛体変換のピボット（root 重心）。Phase 2 で剛体配置を Conformation に変換するのに使う。
+    pub fn root_pivot(&self) -> Vec3 {
+        self.root_pivot
+    }
+
+    /// スコア対象重原子それぞれの全原子インデックス（コア/R 基マスク構築用）。
+    pub fn scored_all_indices(&self) -> Vec<usize> {
+        self.scored.iter().map(|&(i, _)| i).collect()
+    }
+
+    /// R 基 torsion のインデックス（0-based, torsion k ↔ フラグメント k+1）。
+    /// 「回しても **コア原子を 1 つも動かさない**」torsion のみ＝部分木にコアを含まないもの。
+    /// これにより、コアが root でなくても（Meeko の root 選択に依存せず）コアを固定したまま
+    /// R 基だけを最適化できる。`core_atoms` は全原子インデックス集合。
+    pub fn rgroup_torsions(&self, core_atoms: &HashSet<usize>) -> Vec<usize> {
+        (0..self.n_torsions)
+            .filter(|&k| {
+                let f = k + 1; // torsion k は非 root フラグメント k+1 に対応
+                !self.subtree[f].iter().any(|i| core_atoms.contains(i))
+            })
+            .collect()
+    }
+
     /// 与えられた conformation の全原子 world 座標を再構成する。
     pub fn world_coords(&self, conf: &Conformation) -> Vec<Vec3> {
         let mut pos = self.ref_coords.clone();

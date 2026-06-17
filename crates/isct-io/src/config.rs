@@ -29,6 +29,37 @@ pub struct RunConfig {
     pub r#box: BoxConfig,
     #[serde(default)]
     pub run: RunOpts,
+    /// スクリーニング（M3 `screen`）用パラメータ。
+    #[serde(default)]
+    pub screen: ScreenOpts,
+}
+
+/// `screen` 用パラメータ（既定値あり）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScreenOpts {
+    /// 一括棄却の閾値: seed のドッキング目的関数値が これを上回るクラスタは子を全スキップ。
+    #[serde(default = "default_prune_threshold")]
+    pub prune_threshold: f64,
+    /// 子分子の R 基 torsion 局所最適化の最大反復。
+    #[serde(default = "default_child_local_iters")]
+    pub local_iters: usize,
+}
+
+impl Default for ScreenOpts {
+    fn default() -> Self {
+        ScreenOpts {
+            prune_threshold: default_prune_threshold(),
+            local_iters: default_child_local_iters(),
+        }
+    }
+}
+
+fn default_prune_threshold() -> f64 {
+    // 好ましい結合が無い（目的関数が非負）クラスタを棄却。標的に応じ調整可。
+    0.0
+}
+fn default_child_local_iters() -> usize {
+    120
 }
 
 #[derive(Debug, Clone, Deserialize)]
