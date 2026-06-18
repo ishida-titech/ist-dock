@@ -14,7 +14,7 @@ use isct_core::scoring::{self, intermolecular_terms};
 use isct_dock::energy::Scorer;
 use isct_dock::ligand::LigandModel;
 use isct_dock::screen::{ranking_tsv, screen, ScreenParams};
-use isct_dock::search::{dock, SearchParams};
+use isct_dock::search::{auto_n_steps, dock, SearchParams};
 use isct_io::{config, library, pdbqt};
 
 #[derive(Parser)]
@@ -189,13 +189,20 @@ fn cmd_dock(
         ..SearchParams::default()
     };
 
+    let eff_steps = if params.n_steps == 0 {
+        auto_n_steps(lig.n_scored())
+    } else {
+        params.n_steps
+    };
     eprintln!(
-        "docking: receptor(pruned)={} atoms, ligand={} heavy atoms, torsions={}, runs={}, steps={}",
+        "docking: receptor(pruned)={} atoms, ligand={} heavy atoms, torsions={}, runs={}, steps={} ({}), scoring={:?}",
         scorer.receptor_atoms(),
         lig.n_scored(),
         lig.n_torsions(),
         params.n_runs,
-        params.n_steps
+        eff_steps,
+        if params.n_steps == 0 { "auto" } else { "fixed" },
+        cfg.run.scoring,
     );
 
     let result = if local_only {

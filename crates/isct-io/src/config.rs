@@ -116,7 +116,8 @@ fn default_n_runs() -> usize {
     60
 }
 fn default_n_steps() -> usize {
-    60
+    // 0 = 可動原子数から自動スケール（Vina 流。search::auto_n_steps）。
+    0
 }
 
 /// TOML ファイルを読み込む。

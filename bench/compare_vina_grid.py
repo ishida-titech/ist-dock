@@ -26,7 +26,7 @@ BIN = ROOT / "target" / "release" / "isct-dock"
 CASES = ["3ptb", "1stp", "1iep"]
 PATTERNS = [(8, 8), (8, 20), (20, 8), (20, 20)]
 SEED = 42
-N_STEPS = 60
+N_STEPS = 0  # 0 = auto（可動原子数から DOF スケール）
 
 
 def box(case_dir: Path):

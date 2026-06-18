@@ -38,7 +38,7 @@ impl Default for SearchParams {
             size: Vec3::new(20.0, 20.0, 20.0),
             seed: 42,
             n_runs: 60,
-            n_steps: 60,
+            n_steps: 0, // 0 = 可動原子数から自動スケール（auto_n_steps）
             local_iters: 120,
             temperature: 1.0,
             uniform_start: false,
@@ -50,6 +50,12 @@ impl Default for SearchParams {
 pub struct DockResult {
     pub conf: Conformation,
     pub energy: f64,
+}
+
+/// per-run の MC ステップ数を可動原子数から自動算出する（Vina 流: 探索難度 ∝ 原子数）。
+/// `SearchParams.n_steps == 0` のとき使う。3ptb(9 原子)≈63, 1stp(16)≈112, 1iep(37)≈259。
+pub fn auto_n_steps(n_movable_atoms: usize) -> usize {
+    (7 * n_movable_atoms).max(60)
 }
 
 /// リガンドを受容体ボックスへドッキングし、最良ポーズを返す（全 torsion 自由）。
@@ -71,6 +77,13 @@ pub fn dock_constrained(
     // rayon で並列化しても結果が決定的になる。
     let mut seed_rng = ChaCha8Rng::seed_from_u64(params.seed);
     let run_seeds: Vec<u64> = (0..params.n_runs).map(|_| seed_rng.next_u64()).collect();
+
+    // per-run ステップ数: n_steps==0 なら可動原子数から自動スケール（Vina 流）。
+    let n_steps = if params.n_steps == 0 {
+        auto_n_steps(lig.n_scored())
+    } else {
+        params.n_steps
+    };
 
     // 最適化する全 DOF（剛体6 ＋ R 基 torsion）。コアを動かす torsion は除外される。
     let free_dofs = rigid_and_torsions(free_torsions);
@@ -98,7 +111,10 @@ pub fn dock_constrained(
         .map(|(idx, &seed)| {
             (
                 idx,
-                single_run(lig, scorer, params, free_torsions, &free_dofs, &value, &value_grad, seed),
+                single_run(
+                    lig, scorer, params, n_steps, free_torsions, &free_dofs, &value, &value_grad,
+                    seed,
+                ),
             )
         })
         .reduce_with(|a, b| {
@@ -118,6 +134,7 @@ fn single_run<V, VG>(
     lig: &LigandModel,
     scorer: &Scorer,
     params: &SearchParams,
+    n_steps: usize,
     free_torsions: &[usize],
     free_dofs: &[usize],
     value: &V,
@@ -146,7 +163,7 @@ where
     };
 
     // 反復局所探索（ILS）: 毎ステップ 1 自由度だけ変異 → 局所最適化 → Metropolis 受理。
-    for _ in 0..params.n_steps {
+    for _ in 0..n_steps {
         let mut trial = cur.conf.clone();
         mutate(&mut trial, &mut rng, free_torsions);
         let res = minimize_free(trial, value, value_grad, params.local_iters, free_dofs);
