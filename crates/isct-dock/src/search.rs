@@ -5,8 +5,9 @@
 //! 固定シードで完全に決定論的。
 
 use isct_core::geometry::Vec3;
-use rand::{Rng, SeedableRng};
+use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use rayon::prelude::*;
 
 use crate::energy::Scorer;
 use crate::ligand::{Conformation, LigandModel};
@@ -63,37 +64,74 @@ pub fn dock_constrained(
     params: &SearchParams,
     free_torsions: &[usize],
 ) -> DockResult {
-    let mut rng = ChaCha8Rng::seed_from_u64(params.seed);
+    // 各 run の seed を親 rng から順に生成する（実行順非依存・再現可能）。これにより run を
+    // rayon で並列化しても結果が決定的になる。
+    let mut seed_rng = ChaCha8Rng::seed_from_u64(params.seed);
+    let run_seeds: Vec<u64> = (0..params.n_runs).map(|_| seed_rng.next_u64()).collect();
+
     // 目的関数 = 分子間エネルギー + ボックス外ペナルティ + 分子内エネルギー。
+    // lig/scorer は &（Sync）なのでスレッド間で共有できる。
     let objective = |c: &Conformation| {
         let atoms = lig.scored_atoms(c);
         scorer.score(&atoms) + lig.intramolecular(&atoms)
     };
 
-    let mut best: Option<DockResult> = None;
+    // 独立 run を並列実行し、(run_index, best) を決定的に reduce（min エネルギー、タイは index 昇順）。
+    run_seeds
+        .par_iter()
+        .enumerate()
+        .map(|(idx, &seed)| (idx, single_run(lig, scorer, params, free_torsions, &objective, seed)))
+        .reduce_with(|a, b| {
+            if a.1.energy < b.1.energy || (a.1.energy == b.1.energy && a.0 <= b.0) {
+                a
+            } else {
+                b
+            }
+        })
+        .map(|(_, res)| res)
+        .expect("at least one run")
+}
 
-    for _ in 0..params.n_runs {
-        // 接触する初期配置から開始（浮遊・激突を避ける）。固定 torsion は 0 に保つ。
-        let start = contact_start(lig, scorer, &mut rng, params.center, params.size, free_torsions);
-        let mut cur = minimize_dofs(start, &objective, params.local_iters, free_torsions);
-        consider(&mut best, &cur.conf, cur.energy);
+/// 1 つの独立 run（接触開始 → ILS）を実行し、その run の最良ポーズを返す。
+fn single_run<F>(
+    lig: &LigandModel,
+    scorer: &Scorer,
+    params: &SearchParams,
+    free_torsions: &[usize],
+    objective: &F,
+    seed: u64,
+) -> DockResult
+where
+    F: Fn(&Conformation) -> f64 + Sync,
+{
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    // 接触する初期配置から開始（浮遊・激突を避ける）。固定 torsion は 0 に保つ。
+    let start = contact_start(lig, scorer, &mut rng, params.center, params.size, free_torsions);
+    let mut cur = minimize_dofs(start, objective, params.local_iters, free_torsions);
+    let mut best = DockResult {
+        conf: cur.conf.clone(),
+        energy: cur.energy,
+    };
 
-        // 反復局所探索（ILS）: 毎ステップ 1 自由度だけ変異 → 局所最適化 → Metropolis 受理。
-        for _ in 0..params.n_steps {
-            let mut trial = cur.conf.clone();
-            mutate(&mut trial, &mut rng, free_torsions);
-            let res = minimize_dofs(trial, &objective, params.local_iters, free_torsions);
+    // 反復局所探索（ILS）: 毎ステップ 1 自由度だけ変異 → 局所最適化 → Metropolis 受理。
+    for _ in 0..params.n_steps {
+        let mut trial = cur.conf.clone();
+        mutate(&mut trial, &mut rng, free_torsions);
+        let res = minimize_dofs(trial, objective, params.local_iters, free_torsions);
 
-            let accept = res.energy < cur.energy
-                || rng.r#gen::<f64>() < (-(res.energy - cur.energy) / params.temperature).exp();
-            if accept {
-                cur = res;
-                consider(&mut best, &cur.conf, cur.energy);
+        let accept = res.energy < cur.energy
+            || rng.r#gen::<f64>() < (-(res.energy - cur.energy) / params.temperature).exp();
+        if accept {
+            cur = res;
+            if cur.energy < best.energy {
+                best = DockResult {
+                    conf: cur.conf.clone(),
+                    energy: cur.energy,
+                };
             }
         }
     }
-
-    best.expect("at least one run")
+    best
 }
 
 /// 受容体と好ましく接触する初期配置を棄却サンプリングで得る。
@@ -137,15 +175,6 @@ fn lock_torsions(conf: &mut Conformation, free_torsions: &[usize]) {
         if !free.contains(&k) {
             *t = 0.0;
         }
-    }
-}
-
-fn consider(best: &mut Option<DockResult>, conf: &Conformation, energy: f64) {
-    if best.as_ref().is_none_or(|b| energy < b.energy) {
-        *best = Some(DockResult {
-            conf: conf.clone(),
-            energy,
-        });
     }
 }
 

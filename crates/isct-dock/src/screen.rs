@@ -6,7 +6,8 @@
 
 use isct_core::geometry::Vec3;
 use isct_core::scoring::{apply_torsion_correction, ScoredAtom};
-use isct_io::library::{Library, MolEntry};
+use isct_io::library::{Cluster, Library, MolEntry};
+use rayon::prelude::*;
 
 use crate::energy::Scorer;
 use crate::ligand::LigandModel;
@@ -77,63 +78,86 @@ impl ScreenReport {
 
 /// ライブラリをスクリーニングする。
 pub fn screen(receptor: &[ScoredAtom], lib: &Library, params: &ScreenParams) -> ScreenReport {
+    // クラスタは独立 → 並列処理。collect で lib 順を保ち、出力は決定的。
+    let per_cluster: Vec<(ClusterOutcome, Vec<ScoredEntry>)> = lib
+        .clusters
+        .par_iter()
+        .map(|cluster| process_cluster(receptor, cluster, params))
+        .collect();
+
     let mut entries = Vec::new();
-    let mut clusters = Vec::new();
+    let mut clusters = Vec::with_capacity(per_cluster.len());
+    for (outcome, ents) in per_cluster {
+        clusters.push(outcome);
+        entries.extend(ents);
+    }
+    ScreenReport { entries, clusters }
+}
 
-    for cluster in &lib.clusters {
-        // ポケット（探索ボックス）はクラスタ指定 > 既定。
-        let (center, size) = match &cluster.pocket {
-            Some(p) => (
-                Vec3::new(p.center[0], p.center[1], p.center[2]),
-                Vec3::new(p.size[0], p.size[1], p.size[2]),
-            ),
-            None => (params.center, params.size),
-        };
-        let scorer = Scorer::new(receptor, center, size);
-        let mut sp = params.search.clone();
-        sp.center = center;
-        sp.size = size;
+/// 1 クラスタを Phase 1〜3 で処理し、クラスタ結果とスコア行（棄却時は空）を返す。
+fn process_cluster(
+    receptor: &[ScoredAtom],
+    cluster: &Cluster,
+    params: &ScreenParams,
+) -> (ClusterOutcome, Vec<ScoredEntry>) {
+    // ポケット（探索ボックス）はクラスタ指定 > 既定。
+    let (center, size) = match &cluster.pocket {
+        Some(p) => (
+            Vec3::new(p.center[0], p.center[1], p.center[2]),
+            Vec3::new(p.size[0], p.size[1], p.size[2]),
+        ),
+        None => (params.center, params.size),
+    };
+    let scorer = Scorer::new(receptor, center, size);
+    let mut sp = params.search.clone();
+    sp.center = center;
+    sp.size = size;
 
-        // Phase 1: seed ドッキング＋一括棄却（コアを剛体に保つ）。
-        let seed_lig = LigandModel::new(&cluster.seed.molecule);
-        let seed_core: std::collections::HashSet<usize> =
-            cluster.seed.core_atoms.iter().copied().collect();
-        let seed_res = phase1::dock_seed(&seed_lig, &scorer, &sp, &seed_core, params.prune_threshold);
+    // Phase 1: seed ドッキング＋一括棄却（コアを剛体に保つ）。
+    let seed_lig = LigandModel::new(&cluster.seed.molecule);
+    let seed_core: std::collections::HashSet<usize> =
+        cluster.seed.core_atoms.iter().copied().collect();
+    let seed_res = phase1::dock_seed(&seed_lig, &scorer, &sp, &seed_core, params.prune_threshold);
 
-        clusters.push(ClusterOutcome {
-            cluster_id: cluster.id.clone(),
-            seed_energy: seed_res.energy,
-            pruned: seed_res.pruned,
-            n_children: cluster.children.len(),
-        });
+    let outcome = ClusterOutcome {
+        cluster_id: cluster.id.clone(),
+        seed_energy: seed_res.energy,
+        pruned: seed_res.pruned,
+        n_children: cluster.children.len(),
+    };
 
-        if seed_res.pruned {
-            // クラスタ一括棄却: 子分子は計算しない。
-            continue;
-        }
-
-        // 生存クラスタ: seed もランキングに含める。
-        let seed_atoms = seed_lig.scored_atoms(&seed_res.conf);
-        let seed_inter = scorer.intermolecular(&seed_atoms);
-        entries.push(ScoredEntry {
-            compound_id: cluster.seed.compound_id.clone(),
-            cluster_id: cluster.id.clone(),
-            total_score: apply_torsion_correction(seed_inter, cluster.seed.molecule.torsdof),
-            e_inter: seed_inter,
-            role: "seed",
-        });
-
-        // docked seed のコア world 座標（Phase 2 の重ね合わせ目標）。
-        let seed_world = seed_lig.world_coords(&seed_res.conf);
-        let seed_core_world: Vec<Vec3> =
-            cluster.seed.core_atoms.iter().map(|&i| seed_world[i]).collect();
-
-        for child in &cluster.children {
-            entries.push(score_child(&scorer, child, &cluster.id, &seed_core_world, params));
-        }
+    if seed_res.pruned {
+        // クラスタ一括棄却: 子分子は計算しない。
+        return (outcome, Vec::new());
     }
 
-    ScreenReport { entries, clusters }
+    let mut entries = Vec::with_capacity(1 + cluster.children.len());
+
+    // 生存クラスタ: seed もランキングに含める。
+    let seed_atoms = seed_lig.scored_atoms(&seed_res.conf);
+    let seed_inter = scorer.intermolecular(&seed_atoms);
+    entries.push(ScoredEntry {
+        compound_id: cluster.seed.compound_id.clone(),
+        cluster_id: cluster.id.clone(),
+        total_score: apply_torsion_correction(seed_inter, cluster.seed.molecule.torsdof),
+        e_inter: seed_inter,
+        role: "seed",
+    });
+
+    // docked seed のコア world 座標（Phase 2 の重ね合わせ目標）。
+    let seed_world = seed_lig.world_coords(&seed_res.conf);
+    let seed_core_world: Vec<Vec3> =
+        cluster.seed.core_atoms.iter().map(|&i| seed_world[i]).collect();
+
+    // 子分子も独立 → 並列。
+    let child_entries: Vec<ScoredEntry> = cluster
+        .children
+        .par_iter()
+        .map(|child| score_child(&scorer, child, &cluster.id, &seed_core_world, params))
+        .collect();
+    entries.extend(child_entries);
+
+    (outcome, entries)
 }
 
 /// 1 子分子を Phase 2 + Phase 3 で配置・最適化してスコア行を作る。
