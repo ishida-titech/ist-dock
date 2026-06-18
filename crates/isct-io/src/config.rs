@@ -95,6 +95,12 @@ pub struct RunOpts {
     /// 探索の分子間評価方式（既定: direct）。
     #[serde(default)]
     pub scoring: Scoring,
+    /// 焼きなまし温度の初期値（高温で誤基脱出）。
+    #[serde(default = "default_temp_init")]
+    pub temp_init: f64,
+    /// 焼きなまし温度の終値（低温で収束）。
+    #[serde(default = "default_temp_final")]
+    pub temp_final: f64,
 }
 
 impl Default for RunOpts {
@@ -104,8 +110,18 @@ impl Default for RunOpts {
             n_runs: default_n_runs(),
             n_steps: default_n_steps(),
             scoring: Scoring::default(),
+            temp_init: default_temp_init(),
+            temp_final: default_temp_final(),
         }
     }
+}
+
+fn default_temp_init() -> f64 {
+    1.0
+}
+fn default_temp_final() -> f64 {
+    // 既定は固定温度（init==final）。焼きなましは temp_init>temp_final を明示指定したとき有効。
+    1.0
 }
 
 fn default_seed() -> u64 {

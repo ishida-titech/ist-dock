@@ -113,6 +113,8 @@ fn cmd_screen(
             seed: cfg.run.seed,
             n_runs: cfg.run.n_runs,
             n_steps: cfg.run.n_steps,
+            temp_init: cfg.run.temp_init,
+            temp_final: cfg.run.temp_final,
             uniform_start: use_grid,
             ..SearchParams::default()
         },
@@ -185,6 +187,8 @@ fn cmd_dock(
         seed: cfg.run.seed,
         n_runs: cfg.run.n_runs,
         n_steps: cfg.run.n_steps,
+        temp_init: cfg.run.temp_init,
+        temp_final: cfg.run.temp_final,
         uniform_start: use_grid,
         ..SearchParams::default()
     };

@@ -25,8 +25,10 @@ pub struct SearchParams {
     pub n_steps: usize,
     /// 局所最適化の最大反復。
     pub local_iters: usize,
-    /// Metropolis 温度（kcal/mol スケール）。
-    pub temperature: f64,
+    /// 焼きなまし Metropolis 温度の初期値（kcal/mol。高温で誤基を脱出し広く探索）。
+    pub temp_init: f64,
+    /// 焼きなまし温度の終値（低温で収束）。run 内で temp_init→temp_final へ幾何冷却。
+    pub temp_final: f64,
     /// 初期配置を一様ランダムにする（接触棄却を省く）。グリッドで勾配場が滑らかなとき有効。
     pub uniform_start: bool,
 }
@@ -40,7 +42,10 @@ impl Default for SearchParams {
             n_runs: 60,
             n_steps: 0, // 0 = 可動原子数から自動スケール（auto_n_steps）
             local_iters: 120,
-            temperature: 1.0,
+            // 既定は固定温度（temp_init==temp_final）。焼きなまし（temp_init>temp_final）は
+            // 誤基脱出に効く反面、探索が発散し exploitation 主体の標的を不安定化するため opt-in。
+            temp_init: 1.0,
+            temp_final: 1.0,
             uniform_start: false,
         }
     }
@@ -179,14 +184,21 @@ where
         energy: cur.energy,
     };
 
-    // 反復局所探索（ILS）: 毎ステップ 1 自由度だけ変異 → 局所最適化 → Metropolis 受理。
-    for _ in 0..n_steps {
+    // 反復局所探索（ILS）＋焼きなまし: 毎ステップ 1 自由度変異 → 局所最適化 → Metropolis 受理。
+    // 温度は temp_init→temp_final へ幾何冷却（高温で誤基脱出→低温で収束）。best は別途最小を保持。
+    for k in 0..n_steps {
         let mut trial = cur.conf.clone();
         mutate(&mut trial, &mut rng, free_torsions);
         let res = minimize_free(trial, value, value_grad, params.local_iters, free_dofs);
 
+        let frac = if n_steps > 1 {
+            k as f64 / (n_steps - 1) as f64
+        } else {
+            1.0
+        };
+        let temp = params.temp_init * (params.temp_final / params.temp_init).powf(frac);
         let accept = res.energy < cur.energy
-            || rng.r#gen::<f64>() < (-(res.energy - cur.energy) / params.temperature).exp();
+            || rng.r#gen::<f64>() < (-(res.energy - cur.energy) / temp).exp();
         if accept {
             cur = res;
             if cur.energy < best.energy {
