@@ -12,3 +12,4 @@ workspace = true
 nalgebra.workspace = true
 thiserror.workspace = true
 wide.workspace = true
+rayon.workspace = true

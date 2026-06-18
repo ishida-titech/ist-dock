@@ -103,6 +103,7 @@ fn cmd_screen(
     let size = Vec3::new(cfg.r#box.size[0], cfg.r#box.size[1], cfg.r#box.size[2]);
     let rec_scored = rec.scored_atoms();
 
+    let use_grid = cfg.run.scoring == config::Scoring::Grid;
     let params = ScreenParams {
         center,
         size,
@@ -112,10 +113,12 @@ fn cmd_screen(
             seed: cfg.run.seed,
             n_runs: cfg.run.n_runs,
             n_steps: cfg.run.n_steps,
+            uniform_start: use_grid,
             ..SearchParams::default()
         },
         prune_threshold: cfg.screen.prune_threshold,
         local_iters: cfg.screen.local_iters,
+        use_grid,
     };
 
     eprintln!(
@@ -165,8 +168,16 @@ fn cmd_dock(
     let size = Vec3::new(cfg.r#box.size[0], cfg.r#box.size[1], cfg.r#box.size[2]);
 
     let rec_scored = rec.scored_atoms();
-    let scorer = Scorer::new(&rec_scored, center, size);
     let lig = LigandModel::new(&lig_mol);
+
+    // スコアリング・バックエンド（direct=SIMD 直接 / grid=Vina グリッド）。
+    let use_grid = cfg.run.scoring == config::Scoring::Grid;
+    let scorer = if use_grid {
+        let lig_types: Vec<_> = lig_mol.scored_atoms().iter().map(|a| a.xs).collect();
+        Scorer::new_grid(&rec_scored, center, size, &lig_types)
+    } else {
+        Scorer::new(&rec_scored, center, size)
+    };
 
     let params = SearchParams {
         center,
@@ -174,6 +185,7 @@ fn cmd_dock(
         seed: cfg.run.seed,
         n_runs: cfg.run.n_runs,
         n_steps: cfg.run.n_steps,
+        uniform_start: use_grid,
         ..SearchParams::default()
     };
 

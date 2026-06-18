@@ -1,33 +1,49 @@
-//! ドッキングのエネルギー評価（M2）。
+//! ドッキングのエネルギー評価（M2 / 高速化）。
 //!
 //! 分子間（受容体–リガンド）エネルギーを Vina 互換スコアで計算する。受容体は探索ボックス
-//! ＋カットオフ余白の範囲に枝刈りして直接原子間計算のコストを抑える（grid 化は M4）。
-//! 探索を確実にボックス内へ閉じ込めるため、ボックス外に出たリガンド原子に罰則を課す
-//! （Vina のグリッド外ペナルティ相当）。分子内エネルギーは多 torsion 対応時に追加予定。
+//! ＋カットオフ余白の範囲に枝刈りする。探索の値＋勾配は **バックエンド切替**:
+//! `Direct`（f32 SIMD 直接原子間）/ `Grid`（Vina グリッドの trilinear 補間）。
+//! 最終スコア（`intermolecular`）と `vina --score_only` 一致ゲートは常に厳密 f64。
+//! 探索を確実にボックス内へ閉じ込めるため、ボックス外に出たリガンド原子に罰則を課す。
 
+use isct_core::atom_types::XsType;
 use isct_core::geometry::Vec3;
+use isct_core::grid::VinaGrid;
 use isct_core::scoring::{intermolecular_terms, ScoredAtom, CUTOFF};
 use isct_core::scoring_simd::{intermolecular_value_grad_simd, ReceptorSimd};
 
 /// ボックス外ペナルティ係数（kcal/mol/Å²。はみ出しの二乗に比例）。
 const BOX_PENALTY: f64 = 2.0;
 
+/// グリッド既定の格子間隔（Å）と探索窓への余白（Å）。
+pub const GRID_SPACING: f64 = 0.375;
+pub const GRID_MARGIN: f64 = 4.0;
+
+/// 探索の分子間「値＋力」評価バックエンド。
+#[derive(Debug, Clone)]
+enum Backend {
+    /// f32 SIMD 直接原子間計算（将来の非分解スコア・水分子もこの系統）。
+    Direct(ReceptorSimd),
+    /// Vina グリッドの trilinear 補間（探索専用近似）。
+    Grid(VinaGrid),
+}
+
 /// 枝刈り済み受容体に対しリガンドポーズを採点するスコアラ。
 #[derive(Debug, Clone)]
 pub struct Scorer {
     receptor: Vec<ScoredAtom>,
-    /// 探索の値＋勾配カーネル用の SoA（f32）受容体（`receptor` と同一原子）。
-    receptor_simd: ReceptorSimd,
+    /// 探索の値＋勾配バックエンド（`receptor` と同一原子）。
+    backend: Backend,
     center: Vec3,
     half: Vec3,
 }
 
 impl Scorer {
-    /// 探索ボックス（中心・サイズ）＋カットオフ余白に入る受容体原子だけを保持する。
-    pub fn new(receptor_full: &[ScoredAtom], center: Vec3, size: Vec3) -> Self {
+    /// 探索ボックス＋カットオフ余白に入る受容体原子を枝刈りする（共通）。
+    fn prune(receptor_full: &[ScoredAtom], center: Vec3, size: Vec3) -> (Vec<ScoredAtom>, Vec3) {
         let half = size * 0.5;
         let margin = Vec3::new(half.x + CUTOFF, half.y + CUTOFF, half.z + CUTOFF);
-        let receptor: Vec<ScoredAtom> = receptor_full
+        let receptor = receptor_full
             .iter()
             .filter(|a| {
                 (a.pos.x - center.x).abs() <= margin.x
@@ -36,10 +52,35 @@ impl Scorer {
             })
             .copied()
             .collect();
-        let receptor_simd = ReceptorSimd::new(&receptor);
+        (receptor, half)
+    }
+
+    /// 直接（SIMD）バックエンドの Scorer を作る（既定）。
+    pub fn new(receptor_full: &[ScoredAtom], center: Vec3, size: Vec3) -> Self {
+        let (receptor, half) = Self::prune(receptor_full, center, size);
+        let backend = Backend::Direct(ReceptorSimd::new(&receptor));
         Scorer {
             receptor,
-            receptor_simd,
+            backend,
+            center,
+            half,
+        }
+    }
+
+    /// グリッドバックエンドの Scorer を作る。`ligand_types` のマップを事前生成する
+    /// （探索の並列実行前に呼ぶこと）。`spacing`/`margin` は既定 `GRID_SPACING`/`GRID_MARGIN`。
+    pub fn new_grid(
+        receptor_full: &[ScoredAtom],
+        center: Vec3,
+        size: Vec3,
+        ligand_types: &[XsType],
+    ) -> Self {
+        let (receptor, half) = Self::prune(receptor_full, center, size);
+        let mut grid = VinaGrid::new(&receptor, center, size, GRID_SPACING, GRID_MARGIN);
+        grid.ensure(ligand_types);
+        Scorer {
+            receptor,
+            backend: Backend::Grid(grid),
             center,
             half,
         }
@@ -84,7 +125,10 @@ impl Scorer {
     /// 目的関数値（分子間＋ボックス罰則）と各リガンド原子に働く力 `force[i] = -dE/dpos_i` を
     /// 加算して返す。`force` は呼び出し側で 0 初期化（長さ = ligand.len()）。
     pub fn value_and_force(&self, ligand: &[ScoredAtom], force: &mut [Vec3]) -> f64 {
-        let mut e = intermolecular_value_grad_simd(ligand, &self.receptor_simd, force);
+        let mut e = match &self.backend {
+            Backend::Direct(rec) => intermolecular_value_grad_simd(ligand, rec, force),
+            Backend::Grid(grid) => grid.value_and_force(ligand, force),
+        };
         // ボックス外ペナルティの値と力。
         for (i, a) in ligand.iter().enumerate() {
             let over = |p: f64, c: f64, h: f64| -> f64 {

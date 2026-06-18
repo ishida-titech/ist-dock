@@ -257,6 +257,7 @@ name = "isct-core"
 version = "0.1.0"
 dependencies = [
  "nalgebra",
+ "rayon",
  "thiserror",
  "wide",
 ]

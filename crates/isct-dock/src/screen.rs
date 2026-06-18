@@ -27,6 +27,8 @@ pub struct ScreenParams {
     pub prune_threshold: f64,
     /// 子分子 R 基最適化の最大反復。
     pub local_iters: usize,
+    /// グリッドバックエンドを使うか（クラスタごとに seed+子の型でマップ生成）。
+    pub use_grid: bool,
 }
 
 /// 1 分子のスコア行。
@@ -108,7 +110,16 @@ fn process_cluster(
         ),
         None => (params.center, params.size),
     };
-    let scorer = Scorer::new(receptor, center, size);
+    // スコアラ（grid 時はクラスタの seed+子の全 XS 型でマップ生成）。
+    let scorer = if params.use_grid {
+        let mut types: Vec<_> = cluster.seed.molecule.scored_atoms().iter().map(|a| a.xs).collect();
+        for child in &cluster.children {
+            types.extend(child.molecule.scored_atoms().iter().map(|a| a.xs));
+        }
+        Scorer::new_grid(receptor, center, size, &types)
+    } else {
+        Scorer::new(receptor, center, size)
+    };
     let mut sp = params.search.clone();
     sp.center = center;
     sp.size = size;

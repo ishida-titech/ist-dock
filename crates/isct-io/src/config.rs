@@ -74,6 +74,15 @@ pub struct BoxConfig {
     pub size: [f64; 3],
 }
 
+/// 探索の分子間評価バックエンド。`direct`=直接原子間（SIMD）/ `grid`=Vina グリッド補間。
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Scoring {
+    #[default]
+    Direct,
+    Grid,
+}
+
 /// 実行パラメータ（既定値あり）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct RunOpts {
@@ -83,6 +92,9 @@ pub struct RunOpts {
     pub n_runs: usize,
     #[serde(default = "default_n_steps")]
     pub n_steps: usize,
+    /// 探索の分子間評価方式（既定: direct）。
+    #[serde(default)]
+    pub scoring: Scoring,
 }
 
 impl Default for RunOpts {
@@ -91,6 +103,7 @@ impl Default for RunOpts {
             seed: default_seed(),
             n_runs: default_n_runs(),
             n_steps: default_n_steps(),
+            scoring: Scoring::default(),
         }
     }
 }

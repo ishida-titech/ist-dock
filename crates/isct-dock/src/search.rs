@@ -27,6 +27,8 @@ pub struct SearchParams {
     pub local_iters: usize,
     /// Metropolis 温度（kcal/mol スケール）。
     pub temperature: f64,
+    /// 初期配置を一様ランダムにする（接触棄却を省く）。グリッドで勾配場が滑らかなとき有効。
+    pub uniform_start: bool,
 }
 
 impl Default for SearchParams {
@@ -39,6 +41,7 @@ impl Default for SearchParams {
             n_steps: 60,
             local_iters: 120,
             temperature: 1.0,
+            uniform_start: false,
         }
     }
 }
@@ -126,8 +129,16 @@ where
     VG: Fn(&Conformation) -> (f64, Vec<f64>) + Sync,
 {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    // 接触する初期配置から開始（浮遊・激突を避ける）。固定 torsion は 0 に保つ。
-    let start = contact_start(lig, scorer, &mut rng, params.center, params.size, free_torsions);
+    // 初期配置（grid 時は一様、direct 時は接触棄却）。固定 torsion は 0 に保つ。
+    let start = contact_start(
+        lig,
+        scorer,
+        &mut rng,
+        params.center,
+        params.size,
+        free_torsions,
+        params.uniform_start,
+    );
     let mut cur = minimize_free(start, value, value_grad, params.local_iters, free_dofs);
     let mut best = DockResult {
         conf: cur.conf.clone(),
@@ -157,6 +168,7 @@ where
 
 /// 受容体と好ましく接触する初期配置を棄却サンプリングで得る。
 /// 浮遊（エネルギー≈0, 勾配≈0 で局所最適化が無効）や激突を避け、productive な開始に絞る。
+#[allow(clippy::too_many_arguments)]
 fn contact_start<R: Rng>(
     lig: &LigandModel,
     scorer: &Scorer,
@@ -164,6 +176,7 @@ fn contact_start<R: Rng>(
     center: Vec3,
     size: Vec3,
     free_torsions: &[usize],
+    uniform: bool,
 ) -> Conformation {
     // 固定 torsion を 0（参照＝コア剛体）に戻した初期配置を作る。
     let sample = |rng: &mut R| -> Conformation {
@@ -171,6 +184,10 @@ fn contact_start<R: Rng>(
         lock_torsions(&mut c, free_torsions);
         c
     };
+    // grid 時は一様ランダム（接触棄却なし）。勾配場が滑らかなため最適化が引き込む。
+    if uniform {
+        return sample(rng);
+    }
     let energy = |c: &Conformation| scorer.intermolecular(&lig.scored_atoms(c));
     let mut best_c = sample(rng);
     let mut best_e = energy(&best_c);

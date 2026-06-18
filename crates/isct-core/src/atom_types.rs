@@ -158,6 +158,14 @@ pub enum XsType {
 }
 
 impl XsType {
+    /// XS 型の総数（グリッドの「型→マップ」配列サイズ）。`index()` は 0..COUNT を返す。
+    pub const COUNT: usize = 17;
+
+    /// 0..COUNT の連続インデックス（グリッドマップの添字）。
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
     /// XS VdW 半径（Å）。Vina の `xs_radius`。
     pub fn radius(self) -> f64 {
         use XsType::*;
