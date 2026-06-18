@@ -9,7 +9,7 @@
 use isct_core::atom_types::XsType;
 use isct_core::geometry::Vec3;
 use isct_core::grid::VinaGrid;
-use isct_core::scoring::{intermolecular_terms, ScoredAtom, CUTOFF};
+use isct_core::scoring::{intermolecular_terms, intermolecular_value_grad, ScoredAtom, CUTOFF};
 use isct_core::scoring_simd::{intermolecular_value_grad_simd, ReceptorSimd};
 
 /// ボックス外ペナルティ係数（kcal/mol/Å²。はみ出しの二乗に比例）。
@@ -125,11 +125,23 @@ impl Scorer {
     /// 目的関数値（分子間＋ボックス罰則）と各リガンド原子に働く力 `force[i] = -dE/dpos_i` を
     /// 加算して返す。`force` は呼び出し側で 0 初期化（長さ = ligand.len()）。
     pub fn value_and_force(&self, ligand: &[ScoredAtom], force: &mut [Vec3]) -> f64 {
-        let mut e = match &self.backend {
+        let e = match &self.backend {
             Backend::Direct(rec) => intermolecular_value_grad_simd(ligand, rec, force),
             Backend::Grid(grid) => grid.value_and_force(ligand, force),
         };
-        // ボックス外ペナルティの値と力。
+        e + self.add_box_penalty_force(ligand, force)
+    }
+
+    /// 厳密 f64 直接計算の分子間値＋力（バックエンドに依らない）。探索後の最終精密化（polish）と
+    /// 報告スコアの整合に使う。grid バックエンドでも真の極小へ refine するための厳密勾配。
+    pub fn exact_value_and_force(&self, ligand: &[ScoredAtom], force: &mut [Vec3]) -> f64 {
+        let e = intermolecular_value_grad(ligand, &self.receptor, force);
+        e + self.add_box_penalty_force(ligand, force)
+    }
+
+    /// ボックス外ペナルティの値を返し、対応する力を `force` に加算する。
+    fn add_box_penalty_force(&self, ligand: &[ScoredAtom], force: &mut [Vec3]) -> f64 {
+        let mut pen = 0.0;
         for (i, a) in ligand.iter().enumerate() {
             let over = |p: f64, c: f64, h: f64| -> f64 {
                 let d = (p - c).abs() - h;
@@ -139,18 +151,17 @@ impl Scorer {
                 let o = over(p, c, h);
                 if o > 0.0 {
                     *e += BOX_PENALTY * o * o;
-                    // penalty = BOX*o^2, dpenalty/dp = BOX*2*o*sign(p-c) → force = -それ。
                     *fcomp -= BOX_PENALTY * 2.0 * o * (p - c).signum();
                 }
             };
             let mut fx = 0.0;
             let mut fy = 0.0;
             let mut fz = 0.0;
-            comp(a.pos.x, self.center.x, self.half.x, &mut e, &mut fx);
-            comp(a.pos.y, self.center.y, self.half.y, &mut e, &mut fy);
-            comp(a.pos.z, self.center.z, self.half.z, &mut e, &mut fz);
+            comp(a.pos.x, self.center.x, self.half.x, &mut pen, &mut fx);
+            comp(a.pos.y, self.center.y, self.half.y, &mut pen, &mut fy);
+            comp(a.pos.z, self.center.z, self.half.z, &mut pen, &mut fz);
             force[i] += Vec3::new(fx, fy, fz);
         }
-        e
+        pen
     }
 }

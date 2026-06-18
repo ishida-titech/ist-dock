@@ -105,7 +105,7 @@ pub fn dock_constrained(
     };
 
     // 独立 run を並列実行し、(run_index, best) を決定的に reduce（min エネルギー、タイは index 昇順）。
-    run_seeds
+    let best = run_seeds
         .par_iter()
         .enumerate()
         .map(|(idx, &seed)| {
@@ -125,7 +125,24 @@ pub fn dock_constrained(
             }
         })
         .map(|(_, res)| res)
-        .expect("at least one run")
+        .expect("at least one run");
+
+    // 最終精密化（exact polish）: 探索（grid/f32）で見つけた basin を **厳密 f64 表面**で局所
+    // 最適化し、平滑化による極小ズレを補正して真の極小へ寄せる。値・勾配とも厳密で整合。
+    let exact_value_grad = |c: &Conformation| -> (f64, Vec<f64>) {
+        let (world_pos, world_axis, world_pivot) = lig.world_coords_frames(c);
+        let atoms = lig.scored_atoms_at(&world_pos);
+        let mut force = vec![Vec3::zeros(); atoms.len()];
+        let mut e = scorer.exact_value_and_force(&atoms, &mut force);
+        e += lig.intramolecular_value_grad(&atoms, &mut force);
+        let grad = lig.dof_gradient(c, &world_pos, &world_axis, &world_pivot, &force);
+        (e, grad)
+    };
+    let polished = minimize_free(best.conf, &value, &exact_value_grad, params.local_iters, &free_dofs);
+    DockResult {
+        conf: polished.conf,
+        energy: polished.energy,
+    }
 }
 
 /// 1 つの独立 run（接触開始 → ILS）を実行し、その run の最良ポーズを返す。
