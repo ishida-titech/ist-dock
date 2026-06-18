@@ -62,12 +62,16 @@ def vina_score_only(rec: Path, lig: Path, center, size) -> float | None:
     return vina_affinity(r.stdout)
 
 
+SCORING = os.environ.get("ISCT_SCORING", "direct")  # "direct" | "grid"
+
+
 def run_isct(rec, lig, center, size, threads, runs, out):
     cfg = out.with_suffix(".toml")
     cfg.write_text(
         f"[box]\ncenter = [{center[0]}, {center[1]}, {center[2]}]\n"
         f"size = [{size[0]}, {size[1]}, {size[2]}]\n"
         f"[run]\nseed = {SEED}\nn_runs = {runs}\nn_steps = {N_STEPS}\n"
+        f'scoring = "{SCORING}"\n'
     )
     env = {**os.environ, "RAYON_NUM_THREADS": str(threads)}
     t0 = time.perf_counter()
