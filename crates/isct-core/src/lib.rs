@@ -7,6 +7,7 @@ pub mod atom_types;
 pub mod delta_energy;
 pub mod geometry;
 pub mod scoring;
+pub mod scoring_simd;
 
 /// クレート共通のエラー型。
 #[derive(Debug, thiserror::Error)]

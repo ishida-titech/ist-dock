@@ -6,7 +6,8 @@
 //! （Vina のグリッド外ペナルティ相当）。分子内エネルギーは多 torsion 対応時に追加予定。
 
 use isct_core::geometry::Vec3;
-use isct_core::scoring::{intermolecular_terms, intermolecular_value_grad, ScoredAtom, CUTOFF};
+use isct_core::scoring::{intermolecular_terms, ScoredAtom, CUTOFF};
+use isct_core::scoring_simd::{intermolecular_value_grad_simd, ReceptorSimd};
 
 /// ボックス外ペナルティ係数（kcal/mol/Å²。はみ出しの二乗に比例）。
 const BOX_PENALTY: f64 = 2.0;
@@ -15,6 +16,8 @@ const BOX_PENALTY: f64 = 2.0;
 #[derive(Debug, Clone)]
 pub struct Scorer {
     receptor: Vec<ScoredAtom>,
+    /// 探索の値＋勾配カーネル用の SoA（f32）受容体（`receptor` と同一原子）。
+    receptor_simd: ReceptorSimd,
     center: Vec3,
     half: Vec3,
 }
@@ -24,7 +27,7 @@ impl Scorer {
     pub fn new(receptor_full: &[ScoredAtom], center: Vec3, size: Vec3) -> Self {
         let half = size * 0.5;
         let margin = Vec3::new(half.x + CUTOFF, half.y + CUTOFF, half.z + CUTOFF);
-        let receptor = receptor_full
+        let receptor: Vec<ScoredAtom> = receptor_full
             .iter()
             .filter(|a| {
                 (a.pos.x - center.x).abs() <= margin.x
@@ -33,8 +36,10 @@ impl Scorer {
             })
             .copied()
             .collect();
+        let receptor_simd = ReceptorSimd::new(&receptor);
         Scorer {
             receptor,
+            receptor_simd,
             center,
             half,
         }
@@ -79,7 +84,7 @@ impl Scorer {
     /// 目的関数値（分子間＋ボックス罰則）と各リガンド原子に働く力 `force[i] = -dE/dpos_i` を
     /// 加算して返す。`force` は呼び出し側で 0 初期化（長さ = ligand.len()）。
     pub fn value_and_force(&self, ligand: &[ScoredAtom], force: &mut [Vec3]) -> f64 {
-        let mut e = intermolecular_value_grad(ligand, &self.receptor, force);
+        let mut e = intermolecular_value_grad_simd(ligand, &self.receptor_simd, force);
         // ボックス外ペナルティの値と力。
         for (i, a) in ligand.iter().enumerate() {
             let over = |p: f64, c: f64, h: f64| -> f64 {

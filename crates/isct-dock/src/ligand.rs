@@ -513,8 +513,9 @@ TORSDOF 1
 
     #[test]
     fn analytic_dof_gradient_matches_numerical() {
-        use crate::energy::Scorer;
-        use isct_core::scoring::ScoredAtom;
+        // 連鎖則（座標力→DOF 勾配）をスカラ f64 カーネルで厳密検証する。
+        // SIMD(f32) との一致は scoring_simd の単体テストで別途検証している。
+        use isct_core::scoring::{intermolecular_terms, intermolecular_value_grad, ScoredAtom};
 
         let mol = pdbqt::parse_str(LIG).unwrap();
         let lig = LigandModel::new(&mol);
@@ -523,8 +524,6 @@ TORSDOF 1
             ScoredAtom { pos: Vec3::new(-1.0, -1.0, 1.0), xs: XsType::CarbonH },
             ScoredAtom { pos: Vec3::new(4.0, 0.0, 0.5), xs: XsType::NitrogenD },
         ];
-        // ボックスは十分大（罰則 0）にして剛体・torsion 勾配のみを検証。
-        let scorer = Scorer::new(&receptor, Vec3::new(1.5, 0.0, 0.0), Vec3::new(40.0, 40.0, 40.0));
 
         let mut conf = Conformation::identity(lig.n_torsions());
         conf.position = Vec3::new(0.7, -0.3, 0.4);
@@ -532,15 +531,16 @@ TORSDOF 1
             UnitQuaternion::from_axis_angle(&Unit::new_normalize(Vec3::new(0.2, 1.0, -0.4)), 0.6);
         conf.torsions[0] = 0.5;
 
+        // 値（罰則なし: 分子間＋分子内）。
         let value = |c: &Conformation| {
             let a = lig.scored_atoms(c);
-            scorer.score(&a) + lig.intramolecular(&a)
+            intermolecular_terms(&a, &receptor).weighted_sum() + lig.intramolecular(&a)
         };
 
         let (wp, wa, wpv) = lig.world_coords_frames(&conf);
         let atoms = lig.scored_atoms_at(&wp);
         let mut force = vec![Vec3::zeros(); atoms.len()];
-        let mut e = scorer.value_and_force(&atoms, &mut force);
+        let mut e = intermolecular_value_grad(&atoms, &receptor, &mut force);
         e += lig.intramolecular_value_grad(&atoms, &mut force);
         let grad = lig.dof_gradient(&conf, &wp, &wa, &wpv, &force);
 

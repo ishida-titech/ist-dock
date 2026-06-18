@@ -11,3 +11,4 @@ workspace = true
 [dependencies]
 nalgebra.workspace = true
 thiserror.workspace = true
+wide.workspace = true
