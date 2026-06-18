@@ -191,11 +191,9 @@ fn cmd_dock(
         let objective = |c: &isct_dock::ligand::Conformation| {
             scorer.intermolecular(&lig.scored_atoms(c))
         };
-        let r = isct_dock::optimizer::minimize(
-            isct_dock::ligand::Conformation::identity(lig.n_torsions()),
-            &objective,
-            200,
-        );
+        let start = isct_dock::ligand::Conformation::identity(lig.n_torsions());
+        let free = isct_dock::optimizer::all_dofs(start.dim());
+        let r = isct_dock::optimizer::minimize_free_fd(start, &objective, 200, &free);
         isct_dock::search::DockResult {
             conf: r.conf,
             energy: r.energy,

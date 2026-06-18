@@ -150,6 +150,94 @@ pub fn apply_torsion_correction(e_inter: f64, n_rot: u32) -> f64 {
     e_inter / (1.0 + W_ROT * n_rot as f64)
 }
 
+// --- 解析的勾配（M4 高速化） ---
+//
+// 各項の値とその d/dd（d=表面間距離、dd/dr=1 なので d/dr と等しい）を返す。`eval_pair` と
+// 完全に同一の関数形を用いる（値が一致することを単体テストで担保）。
+
+#[inline]
+fn gauss_value_grad(d: f64, offset: f64, width: f64) -> (f64, f64) {
+    let z = (d - offset) / width;
+    let g = (-(z * z)).exp();
+    // dg/dd = g * (-2 z / width)
+    (g, g * (-2.0 * z / width))
+}
+
+#[inline]
+fn repulsion_value_grad(d: f64) -> (f64, f64) {
+    if d < 0.0 { (d * d, 2.0 * d) } else { (0.0, 0.0) }
+}
+
+/// 疎水項（slope_step(1.5, 0.5, d)）の値と d/dd。
+#[inline]
+fn hydrophobic_value_grad(d: f64) -> (f64, f64) {
+    if d <= 0.5 {
+        (1.0, 0.0)
+    } else if d >= 1.5 {
+        (0.0, 0.0)
+    } else {
+        (1.5 - d, -1.0)
+    }
+}
+
+/// 水素結合項（slope_step(0.0, -0.7, d)）の値と d/dd。
+#[inline]
+fn hbond_value_grad(d: f64) -> (f64, f64) {
+    if d <= -0.7 {
+        (1.0, 0.0)
+    } else if d >= 0.0 {
+        (0.0, 0.0)
+    } else {
+        (-d / 0.7, -1.0 / 0.7)
+    }
+}
+
+/// 1 ペアの重み付きエネルギーと d(energy)/dr を返す（カットオフ判定は呼び出し側）。
+pub fn pair_energy_grad(a: XsType, b: XsType, r: f64) -> (f64, f64) {
+    let d = r - (a.radius() + b.radius());
+    let (g1, dg1) = gauss_value_grad(d, 0.0, 0.5);
+    let (g2, dg2) = gauss_value_grad(d, 3.0, 2.0);
+    let (rep, drep) = repulsion_value_grad(d);
+    let (hyd, dhyd) = if a.is_hydrophobic() && b.is_hydrophobic() {
+        hydrophobic_value_grad(d)
+    } else {
+        (0.0, 0.0)
+    };
+    let (hb, dhb) = if h_bond_possible(a, b) {
+        hbond_value_grad(d)
+    } else {
+        (0.0, 0.0)
+    };
+    let value =
+        W_GAUSS1 * g1 + W_GAUSS2 * g2 + W_REPULSION * rep + W_HYDROPHOBIC * hyd + W_HBOND * hb;
+    let dvalue =
+        W_GAUSS1 * dg1 + W_GAUSS2 * dg2 + W_REPULSION * drep + W_HYDROPHOBIC * dhyd + W_HBOND * dhb;
+    (value, dvalue)
+}
+
+/// 分子間エネルギー（重み付き）と、各リガンド原子に働く力 `force[i] = -dE/dpos_i` を計算する。
+/// `force` は長さ `ligand.len()`、呼び出し側で 0 初期化しておく（加算する）。
+pub fn intermolecular_value_grad(
+    ligand: &[ScoredAtom],
+    receptor: &[ScoredAtom],
+    force: &mut [Vec3],
+) -> f64 {
+    let mut e = 0.0;
+    for (i, l) in ligand.iter().enumerate() {
+        for rec in receptor {
+            let diff = l.pos - rec.pos;
+            let r = diff.norm();
+            if r < CUTOFF && r > 1e-8 {
+                let (v, dvdr) = pair_energy_grad(l.xs, rec.xs, r);
+                e += v;
+                // dE/dpos_i = dvdr * diff/r → force_i = -dvdr/r * diff
+                force[i] -= diff * (dvdr / r);
+            }
+        }
+    }
+    e
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +286,77 @@ mod tests {
         // アクセプタ同士は無し。
         let t2 = eval_pair(XsType::OxygenA, XsType::OxygenA, 3.0);
         assert_eq!(t2.hbond, 0.0);
+    }
+
+    #[test]
+    fn pair_grad_value_matches_eval_pair() {
+        // pair_energy_grad の値が eval_pair の重み付き和と一致する（複数の型・距離で）。
+        let types = [
+            XsType::CarbonH,
+            XsType::OxygenA,
+            XsType::OxygenD,
+            XsType::NitrogenD,
+        ];
+        for &a in &types {
+            for &b in &types {
+                for &r in &[2.0, 3.5, 4.0, 5.5, 7.9] {
+                    let (v, _) = pair_energy_grad(a, b, r);
+                    let want = eval_pair(a, b, r).weighted_sum();
+                    assert!((v - want).abs() < 1e-12, "{a:?},{b:?},{r}: {v} vs {want}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pair_grad_matches_numerical() {
+        // d(energy)/dr が中心差分と一致する（区分線形の折れ点を避けた点で）。
+        let types = [XsType::CarbonH, XsType::OxygenA, XsType::OxygenD];
+        let eps = 1e-6;
+        for &a in &types {
+            for &b in &types {
+                for &r in &[2.3, 3.1, 4.4, 5.2, 6.7] {
+                    let (_, dv) = pair_energy_grad(a, b, r);
+                    let (vp, _) = pair_energy_grad(a, b, r + eps);
+                    let (vm, _) = pair_energy_grad(a, b, r - eps);
+                    let num = (vp - vm) / (2.0 * eps);
+                    assert!((dv - num).abs() < 1e-4, "{a:?},{b:?},{r}: {dv} vs {num}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn intermolecular_grad_value_and_force() {
+        let ligand = vec![
+            ScoredAtom { pos: Vec3::new(0.0, 0.0, 0.0), xs: XsType::CarbonH },
+            ScoredAtom { pos: Vec3::new(1.4, 0.3, 0.0), xs: XsType::OxygenD },
+        ];
+        let receptor = vec![
+            ScoredAtom { pos: Vec3::new(3.0, 0.5, 0.2), xs: XsType::OxygenA },
+            ScoredAtom { pos: Vec3::new(-2.0, 1.0, 0.0), xs: XsType::CarbonH },
+            ScoredAtom { pos: Vec3::new(2.5, -1.5, 1.0), xs: XsType::NitrogenA },
+        ];
+        let mut force = vec![Vec3::zeros(); ligand.len()];
+        let e = intermolecular_value_grad(&ligand, &receptor, &mut force);
+        // 値はフル再計算と一致。
+        let want = intermolecular_terms(&ligand, &receptor).weighted_sum();
+        assert!((e - want).abs() < 1e-12, "{e} vs {want}");
+
+        // 力 = -dE/dpos を、各リガンド原子で数値微分と比較。
+        let eps = 1e-6;
+        for (i, f) in force.iter().enumerate() {
+            let mut num = Vec3::zeros();
+            for axis in 0..3 {
+                let mut lp = ligand.clone();
+                lp[i].pos[axis] += eps;
+                let ep = intermolecular_terms(&lp, &receptor).weighted_sum();
+                let mut lm = ligand.clone();
+                lm[i].pos[axis] -= eps;
+                let em = intermolecular_terms(&lm, &receptor).weighted_sum();
+                num[axis] = -(ep - em) / (2.0 * eps); // force = -grad
+            }
+            assert!((f - num).norm() < 1e-4, "atom {i}: force {f:?} vs {num:?}");
+        }
     }
 }

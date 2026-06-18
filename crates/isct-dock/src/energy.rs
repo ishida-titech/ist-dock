@@ -6,7 +6,7 @@
 //! （Vina のグリッド外ペナルティ相当）。分子内エネルギーは多 torsion 対応時に追加予定。
 
 use isct_core::geometry::Vec3;
-use isct_core::scoring::{intermolecular_terms, ScoredAtom, CUTOFF};
+use isct_core::scoring::{intermolecular_terms, intermolecular_value_grad, ScoredAtom, CUTOFF};
 
 /// ボックス外ペナルティ係数（kcal/mol/Å²。はみ出しの二乗に比例）。
 const BOX_PENALTY: f64 = 2.0;
@@ -74,5 +74,34 @@ impl Scorer {
     /// 探索用の目的関数値 = 分子間エネルギー + ボックス外ペナルティ。
     pub fn score(&self, ligand: &[ScoredAtom]) -> f64 {
         self.intermolecular(ligand) + self.box_penalty(ligand)
+    }
+
+    /// 目的関数値（分子間＋ボックス罰則）と各リガンド原子に働く力 `force[i] = -dE/dpos_i` を
+    /// 加算して返す。`force` は呼び出し側で 0 初期化（長さ = ligand.len()）。
+    pub fn value_and_force(&self, ligand: &[ScoredAtom], force: &mut [Vec3]) -> f64 {
+        let mut e = intermolecular_value_grad(ligand, &self.receptor, force);
+        // ボックス外ペナルティの値と力。
+        for (i, a) in ligand.iter().enumerate() {
+            let over = |p: f64, c: f64, h: f64| -> f64 {
+                let d = (p - c).abs() - h;
+                if d > 0.0 { d } else { 0.0 }
+            };
+            let comp = |p: f64, c: f64, h: f64, e: &mut f64, fcomp: &mut f64| {
+                let o = over(p, c, h);
+                if o > 0.0 {
+                    *e += BOX_PENALTY * o * o;
+                    // penalty = BOX*o^2, dpenalty/dp = BOX*2*o*sign(p-c) → force = -それ。
+                    *fcomp -= BOX_PENALTY * 2.0 * o * (p - c).signum();
+                }
+            };
+            let mut fx = 0.0;
+            let mut fy = 0.0;
+            let mut fz = 0.0;
+            comp(a.pos.x, self.center.x, self.half.x, &mut e, &mut fx);
+            comp(a.pos.y, self.center.y, self.half.y, &mut e, &mut fy);
+            comp(a.pos.z, self.center.z, self.half.z, &mut e, &mut fz);
+            force[i] += Vec3::new(fx, fy, fz);
+        }
+        e
     }
 }

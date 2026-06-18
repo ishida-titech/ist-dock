@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 use isct_core::atom_types::XsType;
 use isct_core::geometry::{distance, Vec3};
-use isct_core::scoring::{eval_pair, ScoredAtom, CUTOFF};
+use isct_core::scoring::{eval_pair, pair_energy_grad, ScoredAtom, CUTOFF};
 use isct_io::pdbqt::Molecule;
 use nalgebra::{Unit, UnitQuaternion};
 use rand::Rng;
@@ -64,6 +64,8 @@ pub struct LigandModel {
     /// 分子内エネルギーを評価する重原子ペア（scored インデックス空間）。
     /// 異なるフラグメント間（torsion で距離が変わる）かつ結合グラフ距離 ≥3（1-2/1-3 除外）。
     intra_pairs: Vec<(usize, usize)>,
+    /// フラグメント f（≥1）の部分木に属する **scored 原子インデックス**（torsion 勾配用）。
+    scored_subtree: Vec<Vec<usize>>,
     n_torsions: usize,
 }
 
@@ -107,6 +109,16 @@ impl LigandModel {
 
         let intra_pairs = Self::build_intra_pairs(mol, &ref_coords, &scored);
 
+        // 各フラグメントの部分木に属する scored 原子（all-atom idx → scored idx の逆引き）。
+        let mut all_to_scored: Vec<Option<usize>> = vec![None; ref_coords.len()];
+        for (k, &(ai, _)) in scored.iter().enumerate() {
+            all_to_scored[ai] = Some(k);
+        }
+        let scored_subtree: Vec<Vec<usize>> = subtree
+            .iter()
+            .map(|atoms| atoms.iter().filter_map(|&ai| all_to_scored[ai]).collect())
+            .collect();
+
         LigandModel {
             ref_coords,
             bonds,
@@ -114,6 +126,7 @@ impl LigandModel {
             root_pivot,
             scored,
             intra_pairs,
+            scored_subtree,
             n_torsions: nf - 1,
         }
     }
@@ -178,6 +191,111 @@ impl LigandModel {
             }
         }
         e
+    }
+
+    /// 分子内エネルギーと、各 scored 原子に働く力（`force[k] -= dE/dpos_k`）を加算する。
+    pub fn intramolecular_value_grad(&self, atoms: &[ScoredAtom], force: &mut [Vec3]) -> f64 {
+        let mut e = 0.0;
+        for &(a, b) in &self.intra_pairs {
+            let diff = atoms[a].pos - atoms[b].pos;
+            let r = diff.norm();
+            if r < CUTOFF && r > 1e-8 {
+                let (v, dvdr) = pair_energy_grad(atoms[a].xs, atoms[b].xs, r);
+                e += v;
+                // dE/dpos_a = dvdr*diff/r, dE/dpos_b = -それ。force = -dE/dpos。
+                let f = diff * (dvdr / r);
+                force[a] -= f;
+                force[b] += f;
+            }
+        }
+        e
+    }
+
+    /// world 座標（全原子）に加え、各非 root フラグメントの **world 系**回転軸・ピボットを返す。
+    /// torsion 勾配の連鎖則に使う。`world_coords` と同一のポーズ再構成を行う。
+    pub fn world_coords_frames(&self, conf: &Conformation) -> (Vec<Vec3>, Vec<Vec3>, Vec<Vec3>) {
+        let nf = self.bonds.len();
+        let mut pos = self.ref_coords.clone();
+        let mut ref_axis = vec![Vec3::zeros(); nf];
+        let mut ref_pivot = vec![Vec3::zeros(); nf];
+
+        for f in 1..nf {
+            let (a0, a1) = self.bonds[f].expect("non-root fragment must have a bond");
+            let axis = pos[a1] - pos[a0];
+            let an = axis.norm();
+            // 親 torsion 適用後・子 torsion はピボット/軸を動かさないため、ここが最終 ref 系の値。
+            ref_axis[f] = if an < 1e-9 { Vec3::zeros() } else { axis / an };
+            ref_pivot[f] = pos[a1];
+
+            let angle = conf.torsions[f - 1];
+            if angle != 0.0 && an >= 1e-9 {
+                let q = UnitQuaternion::from_axis_angle(&Unit::new_normalize(axis), angle);
+                let pivot = pos[a1];
+                for &i in &self.subtree[f] {
+                    pos[i] = pivot + q * (pos[i] - pivot);
+                }
+            }
+        }
+
+        // 剛体変換（root 重心を中心に回転 → 並進）。
+        for p in pos.iter_mut() {
+            *p = self.root_pivot + conf.orientation * (*p - self.root_pivot) + conf.position;
+        }
+        // ref 系の軸・ピボットを world 系へ。
+        let world_axis: Vec<Vec3> = ref_axis.iter().map(|a| conf.orientation * a).collect();
+        let world_pivot: Vec<Vec3> = ref_pivot
+            .iter()
+            .map(|p| self.root_pivot + conf.orientation * (p - self.root_pivot) + conf.position)
+            .collect();
+        (pos, world_axis, world_pivot)
+    }
+
+    /// 事前計算した world 座標から scored 原子（位置＋XS 型）を作る（再計算を避ける）。
+    pub fn scored_atoms_at(&self, world_pos: &[Vec3]) -> Vec<ScoredAtom> {
+        self.scored
+            .iter()
+            .map(|&(i, xs)| ScoredAtom { pos: world_pos[i], xs })
+            .collect()
+    }
+
+    /// scored 原子に働く力 `force[k] = -dE/dpos_k` から、DOF 勾配（長さ dim）を連鎖則で求める。
+    /// `world_pos`/`world_axis`/`world_pivot` は `world_coords_frames` の出力。
+    pub fn dof_gradient(
+        &self,
+        conf: &Conformation,
+        world_pos: &[Vec3],
+        world_axis: &[Vec3],
+        world_pivot: &[Vec3],
+        force: &[Vec3],
+    ) -> Vec<f64> {
+        let mut grad = vec![0.0; 6 + self.n_torsions];
+        // 回転のピボットは world 系の root（root_pivot + 並進）。
+        let rot_pivot = self.root_pivot + conf.position;
+
+        let mut g_trans = Vec3::zeros();
+        let mut g_rot = Vec3::zeros();
+        for (k, &(ai, _)) in self.scored.iter().enumerate() {
+            let g = -force[k]; // dE/dpos
+            g_trans += g;
+            g_rot += (world_pos[ai] - rot_pivot).cross(&g);
+        }
+        grad[0] = g_trans.x;
+        grad[1] = g_trans.y;
+        grad[2] = g_trans.z;
+        grad[3] = g_rot.x;
+        grad[4] = g_rot.y;
+        grad[5] = g_rot.z;
+
+        for f in 1..self.bonds.len() {
+            let mut acc = Vec3::zeros();
+            for &k in &self.scored_subtree[f] {
+                let ai = self.scored[k].0;
+                let g = -force[k];
+                acc += (world_pos[ai] - world_pivot[f]).cross(&g);
+            }
+            grad[6 + f - 1] = world_axis[f].dot(&acc);
+        }
+        grad
     }
 
     pub fn n_torsions(&self) -> usize {
@@ -373,6 +491,79 @@ TORSDOF 1
         let coords = lig.world_coords(&conf);
         for (c, a) in coords.iter().zip(&mol.atoms) {
             assert!((c.x - (a.pos.x + 10.0)).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn world_coords_frames_matches_world_coords() {
+        // frames 版の world 座標が world_coords と一致する（ポーズ再構成の同一性）。
+        let mol = pdbqt::parse_str(LIG).unwrap();
+        let lig = LigandModel::new(&mol);
+        let mut conf = Conformation::identity(lig.n_torsions());
+        conf.position = Vec3::new(0.7, -0.3, 0.4);
+        conf.orientation =
+            UnitQuaternion::from_axis_angle(&Unit::new_normalize(Vec3::new(0.2, 1.0, -0.4)), 0.6);
+        conf.torsions[0] = 0.5;
+        let a = lig.world_coords(&conf);
+        let (b, _, _) = lig.world_coords_frames(&conf);
+        for (x, y) in a.iter().zip(&b) {
+            assert!((x - y).norm() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn analytic_dof_gradient_matches_numerical() {
+        use crate::energy::Scorer;
+        use isct_core::scoring::ScoredAtom;
+
+        let mol = pdbqt::parse_str(LIG).unwrap();
+        let lig = LigandModel::new(&mol);
+        let receptor = vec![
+            ScoredAtom { pos: Vec3::new(2.0, 2.0, 0.0), xs: XsType::OxygenA },
+            ScoredAtom { pos: Vec3::new(-1.0, -1.0, 1.0), xs: XsType::CarbonH },
+            ScoredAtom { pos: Vec3::new(4.0, 0.0, 0.5), xs: XsType::NitrogenD },
+        ];
+        // ボックスは十分大（罰則 0）にして剛体・torsion 勾配のみを検証。
+        let scorer = Scorer::new(&receptor, Vec3::new(1.5, 0.0, 0.0), Vec3::new(40.0, 40.0, 40.0));
+
+        let mut conf = Conformation::identity(lig.n_torsions());
+        conf.position = Vec3::new(0.7, -0.3, 0.4);
+        conf.orientation =
+            UnitQuaternion::from_axis_angle(&Unit::new_normalize(Vec3::new(0.2, 1.0, -0.4)), 0.6);
+        conf.torsions[0] = 0.5;
+
+        let value = |c: &Conformation| {
+            let a = lig.scored_atoms(c);
+            scorer.score(&a) + lig.intramolecular(&a)
+        };
+
+        let (wp, wa, wpv) = lig.world_coords_frames(&conf);
+        let atoms = lig.scored_atoms_at(&wp);
+        let mut force = vec![Vec3::zeros(); atoms.len()];
+        let mut e = scorer.value_and_force(&atoms, &mut force);
+        e += lig.intramolecular_value_grad(&atoms, &mut force);
+        let grad = lig.dof_gradient(&conf, &wp, &wa, &wpv, &force);
+
+        assert!((e - value(&conf)).abs() < 1e-9, "value mismatch {e}");
+
+        let eps = 1e-6;
+        for k in 0..conf.dim() {
+            let mut d = vec![0.0; conf.dim()];
+            d[k] = eps;
+            let mut cp = conf.clone();
+            cp.apply_delta(&d);
+            let fp = value(&cp);
+            d[k] = -eps;
+            let mut cm = conf.clone();
+            cm.apply_delta(&d);
+            let fm = value(&cm);
+            let num = (fp - fm) / (2.0 * eps);
+            assert!(
+                (grad[k] - num).abs() < 1e-3,
+                "dof {k}: analytic {} numerical {}",
+                grad[k],
+                num
+            );
         }
     }
 }

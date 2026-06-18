@@ -12,7 +12,7 @@ use isct_core::scoring::ScoredAtom;
 
 use crate::energy::Scorer;
 use crate::ligand::{Conformation, LigandModel};
-use crate::optimizer::minimize_torsion_subset;
+use crate::optimizer::{minimize_free_fd, torsions_only};
 
 /// 子分子の最適化結果。
 pub struct ChildScore {
@@ -65,9 +65,9 @@ pub fn optimize_child(
         delta.intermolecular(&rgroup, receptor) + scorer.box_penalty(&atoms) + child.intramolecular(&atoms)
     };
 
-    // R 基 torsion（コアを動かさない torsion）のみ最適化。
+    // R 基 torsion（コアを動かさない torsion）のみ最適化（Δ目的関数は有限差分勾配）。
     let free = child.rgroup_torsions(core_atoms);
-    let res = minimize_torsion_subset(start, &objective, local_iters, &free);
+    let res = minimize_free_fd(start, &objective, local_iters, &torsions_only(&free));
 
     // 報告用に最終ポーズで分子間・分子内をフル計算する。
     let final_atoms = child.scored_atoms(&res.conf);

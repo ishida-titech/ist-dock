@@ -1,11 +1,11 @@
-//! 局所最適化（M2）。
+//! 局所最適化（M2 / 高速化）。
 //!
-//! 目的関数（リガンドポーズのエネルギー）に対し、**有限差分勾配 ＋ BFGS（逆ヘシアン近似）
-//! ＋ バックトラッキング直線探索**で局所最小化する。状態は Conformation の局所増分
-//! （並進3＋回転3＋torsion n）で表す。
+//! 目的関数（リガンドポーズのエネルギー）に対し **BFGS（逆ヘシアン近似）＋ バックトラッキング
+//! 直線探索**で局所最小化する。状態は Conformation の局所増分（並進3＋回転3＋torsion n）。
 //!
-//! 注: 計画では解析的勾配＋L-BFGS だが、まず動作・検証を優先して有限差分とした。
-//! 解析的勾配は後続の最適化（性能向上）で導入する。
+//! 勾配は **解析的勾配**（`value_grad` クロージャ）を使う。解析的勾配を持たない呼び出し側
+//! （Phase 3 の Δエネルギー等）向けに有限差分版 `minimize_free_fd` も用意する。
+//! `free` は最適化する **全 DOF インデックス**（並進=0..3, 回転=3..6, torsion k=6+k）の部分集合。
 
 use nalgebra::{DMatrix, DVector};
 
@@ -22,126 +22,86 @@ pub struct LocalResult {
     pub energy: f64,
 }
 
-/// 目的関数 `f` を起点 `start` から BFGS で局所最小化する（全自由度: 並進3＋回転3＋torsion n）。
-pub fn minimize<F>(start: Conformation, f: &F, max_iter: usize) -> LocalResult
-where
-    F: Fn(&Conformation) -> f64,
-{
-    let dim = start.dim();
-    // 縮約ベクトル = 全自由度増分そのもの。
-    minimize_reduced(start, f, max_iter, dim, |r| r.iter().copied().collect())
+/// 全 DOF（並進3＋回転3＋torsion n）のインデックス。
+pub fn all_dofs(dim: usize) -> Vec<usize> {
+    (0..dim).collect()
 }
 
-/// 全 torsion を自由度として局所最小化する（並進・回転＝コアはロック）。
-pub fn minimize_torsions<F>(start: Conformation, f: &F, max_iter: usize) -> LocalResult
-where
-    F: Fn(&Conformation) -> f64,
-{
-    let free: Vec<usize> = (0..start.torsions.len()).collect();
-    minimize_torsion_subset(start, f, max_iter, &free)
+/// 剛体 6 自由度 ＋ 指定 R 基 torsion の DOF インデックス（Phase 1 の Scaffold 固定探索用）。
+pub fn rigid_and_torsions(free_torsions: &[usize]) -> Vec<usize> {
+    let mut v: Vec<usize> = (0..6).collect();
+    v.extend(free_torsions.iter().map(|&t| 6 + t));
+    v
 }
 
-/// 指定した torsion 添字の部分集合のみを自由度として局所最小化する（その他は固定、並進・
-/// 回転もロック）。Phase 3 で「R 基 torsion のみ」を最適化するのに使う。`free` は torsion
-/// インデックス（0-based）の集合。
-pub fn minimize_torsion_subset<F>(
+/// 指定 torsion のみの DOF インデックス（Phase 3 の R 基最適化用）。
+pub fn torsions_only(free_torsions: &[usize]) -> Vec<usize> {
+    free_torsions.iter().map(|&t| 6 + t).collect()
+}
+
+/// 値クロージャ `value` と 値＋全 DOF 勾配クロージャ `value_grad` を用いて、`free` で指定した
+/// DOF 部分空間のみ BFGS 局所最小化する。`value_grad` は全 DOF（長さ dim）の勾配を返し、
+/// 本関数が `free` に射影する。
+pub fn minimize_free<V, VG>(
     start: Conformation,
-    f: &F,
+    value: &V,
+    value_grad: &VG,
     max_iter: usize,
     free: &[usize],
 ) -> LocalResult
 where
-    F: Fn(&Conformation) -> f64,
+    V: Fn(&Conformation) -> f64,
+    VG: Fn(&Conformation) -> (f64, Vec<f64>),
 {
-    let nt = start.torsions.len();
-    let free: Vec<usize> = free.to_vec();
     let n = free.len();
-    minimize_reduced(start, f, max_iter, n, move |r| {
-        let mut full = vec![0.0; 6 + nt];
-        for (j, &k) in free.iter().enumerate() {
-            full[6 + k] = r[j];
-        }
-        full
-    })
-}
-
-/// 並進・回転＋指定 torsion 部分集合のみを自由度として局所最小化する。コアを動かす torsion
-/// をロックしたまま剛体配置と R 基だけを最適化する（Phase 1 の Scaffold 固定 seed 探索）用。
-pub fn minimize_dofs<F>(
-    start: Conformation,
-    f: &F,
-    max_iter: usize,
-    free_torsions: &[usize],
-) -> LocalResult
-where
-    F: Fn(&Conformation) -> f64,
-{
-    let nt = start.torsions.len();
-    let free: Vec<usize> = free_torsions.to_vec();
-    let n = 6 + free.len();
-    minimize_reduced(start, f, max_iter, n, move |r| {
-        let mut full = vec![0.0; 6 + nt];
-        full[..6].copy_from_slice(&r.as_slice()[..6]);
-        for (j, &k) in free.iter().enumerate() {
-            full[6 + k] = r[6 + j];
-        }
-        full
-    })
-}
-
-/// 縮約自由度空間での BFGS 最小化。`to_full` は縮約増分ベクトルを Conformation の全増分
-/// （長さ dim）へ写す（`minimize`=恒等, `minimize_torsions`=先頭6つを0埋め）。
-fn minimize_reduced<F, M>(
-    start: Conformation,
-    f: &F,
-    max_iter: usize,
-    n: usize,
-    to_full: M,
-) -> LocalResult
-where
-    F: Fn(&Conformation) -> f64,
-    M: Fn(&DVector<f64>) -> Vec<f64>,
-{
     if n == 0 {
-        let energy = f(&start);
+        let energy = value(&start);
         return LocalResult {
             conf: start,
             energy,
         };
     }
 
+    let dim = start.dim();
+    let project = |gfull: &[f64]| -> DVector<f64> {
+        DVector::from_iterator(n, free.iter().map(|&i| gfull[i]))
+    };
+    let to_full = |r: &DVector<f64>| -> Vec<f64> {
+        let mut full = vec![0.0; dim];
+        for (j, &idx) in free.iter().enumerate() {
+            full[idx] = r[j];
+        }
+        full
+    };
+
     let mut conf = start;
-    let mut energy = f(&conf);
-    let mut grad = num_grad(&conf, f, n, &to_full);
+    let (mut energy, gfull) = value_grad(&conf);
+    let mut grad = project(&gfull);
     let mut hinv = DMatrix::<f64>::identity(n, n);
 
     for _ in 0..max_iter {
-        let gnorm = grad.norm();
-        if gnorm < 1e-4 {
+        if grad.norm() < 1e-4 {
             break;
         }
-        // 探索方向 p = -Hinv * grad
+        // 探索方向 p = -Hinv * grad。降下方向でなければ最急降下へフォールバック。
         let mut p = -(&hinv * &grad);
-        // 降下方向でなければ最急降下にフォールバック。
         if p.dot(&grad) >= 0.0 {
             p = -grad.clone();
             hinv = DMatrix::identity(n, n);
         }
 
-        // バックトラッキング直線探索（Armijo）。
+        // バックトラッキング直線探索（Armijo）。値のみ評価。
         let g_dot_p = grad.dot(&p);
         let mut step = 1.0;
         let mut accepted = false;
         let mut new_conf = conf.clone();
-        let mut new_energy = energy;
         for _ in 0..40 {
             let s = step * &p;
             let mut trial = conf.clone();
             trial.apply_delta(&to_full(&s));
-            let e = f(&trial);
+            let e = value(&trial);
             if e <= energy + ARMIJO_C1 * step * g_dot_p {
                 new_conf = trial;
-                new_energy = e;
                 accepted = true;
                 break;
             }
@@ -152,7 +112,8 @@ where
         }
 
         let s = step * &p;
-        let new_grad = num_grad(&new_conf, f, n, &to_full);
+        let (new_energy, new_gfull) = value_grad(&new_conf);
+        let new_grad = project(&new_gfull);
         let y = &new_grad - &grad;
         let sy = s.dot(&y);
         if sy > 1e-10 {
@@ -166,25 +127,36 @@ where
     LocalResult { conf, energy }
 }
 
-/// 縮約自由度空間での中心差分勾配。`n`＝縮約次元、`to_full`＝縮約増分→全増分の写像。
-fn num_grad<F, M>(conf: &Conformation, f: &F, n: usize, to_full: &M) -> DVector<f64>
+/// 解析的勾配を持たない呼び出し側向け: 値クロージャだけから有限差分勾配を作って最小化する。
+pub fn minimize_free_fd<V>(
+    start: Conformation,
+    value: &V,
+    max_iter: usize,
+    free: &[usize],
+) -> LocalResult
 where
-    F: Fn(&Conformation) -> f64,
-    M: Fn(&DVector<f64>) -> Vec<f64>,
+    V: Fn(&Conformation) -> f64,
 {
-    let mut g = DVector::zeros(n);
-    let mut d = DVector::zeros(n);
-    for k in 0..n {
-        d[k] = GRAD_EPS;
+    let value_grad = |c: &Conformation| (value(c), fd_grad(value, c, free));
+    minimize_free(start, value, &value_grad, max_iter, free)
+}
+
+/// `free` の DOF のみ中心差分で勾配を求める（全 DOF 長、非 free は 0）。
+fn fd_grad<V: Fn(&Conformation) -> f64>(value: &V, conf: &Conformation, free: &[usize]) -> Vec<f64> {
+    let dim = conf.dim();
+    let mut g = vec![0.0; dim];
+    let mut d = vec![0.0; dim];
+    for &idx in free {
+        d[idx] = GRAD_EPS;
         let mut cp = conf.clone();
-        cp.apply_delta(&to_full(&d));
-        let fp = f(&cp);
-        d[k] = -GRAD_EPS;
+        cp.apply_delta(&d);
+        let fp = value(&cp);
+        d[idx] = -GRAD_EPS;
         let mut cm = conf.clone();
-        cm.apply_delta(&to_full(&d));
-        let fm = f(&cm);
-        d[k] = 0.0;
-        g[k] = (fp - fm) / (2.0 * GRAD_EPS);
+        cm.apply_delta(&d);
+        let fm = value(&cm);
+        d[idx] = 0.0;
+        g[idx] = (fp - fm) / (2.0 * GRAD_EPS);
     }
     g
 }
@@ -206,7 +178,7 @@ mod tests {
     use super::*;
     use isct_core::geometry::Vec3;
 
-    // 並進のみの二次関数で BFGS が最小（原点）へ収束するか。
+    // 並進のみの二次関数で BFGS が最小（原点）へ収束するか（有限差分版）。
     #[test]
     fn minimizes_quadratic_translation() {
         let start = Conformation {
@@ -215,7 +187,7 @@ mod tests {
             torsions: vec![],
         };
         let f = |c: &Conformation| c.position.norm_squared();
-        let res = minimize(start, &f, 50);
+        let res = minimize_free_fd(start.clone(), &f, 50, &all_dofs(start.dim()));
         assert!(res.energy < 1e-6, "energy {}", res.energy);
         assert!(res.conf.position.norm() < 1e-3);
     }
@@ -228,11 +200,9 @@ mod tests {
             orientation: nalgebra::UnitQuaternion::identity(),
             torsions: vec![0.0],
         };
-        // torsion[0] の最小は 0.5。並進項も持たせて「動かさない」ことを確認する。
         let f = |c: &Conformation| (c.torsions[0] - 0.5).powi(2) + c.position.norm_squared();
-        let res = minimize_torsions(start.clone(), &f, 50);
+        let res = minimize_free_fd(start.clone(), &f, 50, &torsions_only(&[0]));
         assert!((res.conf.torsions[0] - 0.5).abs() < 1e-3, "torsion {}", res.conf.torsions[0]);
-        // 並進は初期値のまま（ロック）。
         assert!((res.conf.position - start.position).norm() < 1e-12);
     }
 }

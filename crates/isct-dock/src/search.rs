@@ -11,7 +11,7 @@ use rayon::prelude::*;
 
 use crate::energy::Scorer;
 use crate::ligand::{Conformation, LigandModel};
-use crate::optimizer::minimize_dofs;
+use crate::optimizer::{minimize_free, rigid_and_torsions};
 
 /// 探索パラメータ。
 #[derive(Debug, Clone)]
@@ -69,18 +69,35 @@ pub fn dock_constrained(
     let mut seed_rng = ChaCha8Rng::seed_from_u64(params.seed);
     let run_seeds: Vec<u64> = (0..params.n_runs).map(|_| seed_rng.next_u64()).collect();
 
-    // 目的関数 = 分子間エネルギー + ボックス外ペナルティ + 分子内エネルギー。
-    // lig/scorer は &（Sync）なのでスレッド間で共有できる。
-    let objective = |c: &Conformation| {
+    // 最適化する全 DOF（剛体6 ＋ R 基 torsion）。コアを動かす torsion は除外される。
+    let free_dofs = rigid_and_torsions(free_torsions);
+
+    // 値クロージャ（直線探索用）= 分子間 + ボックス罰則 + 分子内。lig/scorer は &（Sync）。
+    let value = |c: &Conformation| {
         let atoms = lig.scored_atoms(c);
         scorer.score(&atoms) + lig.intramolecular(&atoms)
+    };
+    // 値＋解析的勾配（全 DOF）。1 回の前向き計算で力を集約し連鎖則で DOF 勾配へ。
+    let value_grad = |c: &Conformation| -> (f64, Vec<f64>) {
+        let (world_pos, world_axis, world_pivot) = lig.world_coords_frames(c);
+        let atoms = lig.scored_atoms_at(&world_pos);
+        let mut force = vec![isct_core::geometry::Vec3::zeros(); atoms.len()];
+        let mut e = scorer.value_and_force(&atoms, &mut force);
+        e += lig.intramolecular_value_grad(&atoms, &mut force);
+        let grad = lig.dof_gradient(c, &world_pos, &world_axis, &world_pivot, &force);
+        (e, grad)
     };
 
     // 独立 run を並列実行し、(run_index, best) を決定的に reduce（min エネルギー、タイは index 昇順）。
     run_seeds
         .par_iter()
         .enumerate()
-        .map(|(idx, &seed)| (idx, single_run(lig, scorer, params, free_torsions, &objective, seed)))
+        .map(|(idx, &seed)| {
+            (
+                idx,
+                single_run(lig, scorer, params, free_torsions, &free_dofs, &value, &value_grad, seed),
+            )
+        })
         .reduce_with(|a, b| {
             if a.1.energy < b.1.energy || (a.1.energy == b.1.energy && a.0 <= b.0) {
                 a
@@ -93,21 +110,25 @@ pub fn dock_constrained(
 }
 
 /// 1 つの独立 run（接触開始 → ILS）を実行し、その run の最良ポーズを返す。
-fn single_run<F>(
+#[allow(clippy::too_many_arguments)]
+fn single_run<V, VG>(
     lig: &LigandModel,
     scorer: &Scorer,
     params: &SearchParams,
     free_torsions: &[usize],
-    objective: &F,
+    free_dofs: &[usize],
+    value: &V,
+    value_grad: &VG,
     seed: u64,
 ) -> DockResult
 where
-    F: Fn(&Conformation) -> f64 + Sync,
+    V: Fn(&Conformation) -> f64 + Sync,
+    VG: Fn(&Conformation) -> (f64, Vec<f64>) + Sync,
 {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     // 接触する初期配置から開始（浮遊・激突を避ける）。固定 torsion は 0 に保つ。
     let start = contact_start(lig, scorer, &mut rng, params.center, params.size, free_torsions);
-    let mut cur = minimize_dofs(start, objective, params.local_iters, free_torsions);
+    let mut cur = minimize_free(start, value, value_grad, params.local_iters, free_dofs);
     let mut best = DockResult {
         conf: cur.conf.clone(),
         energy: cur.energy,
@@ -117,7 +138,7 @@ where
     for _ in 0..params.n_steps {
         let mut trial = cur.conf.clone();
         mutate(&mut trial, &mut rng, free_torsions);
-        let res = minimize_dofs(trial, objective, params.local_iters, free_torsions);
+        let res = minimize_free(trial, value, value_grad, params.local_iters, free_dofs);
 
         let accept = res.energy < cur.energy
             || rng.r#gen::<f64>() < (-(res.energy - cur.energy) / params.temperature).exp();
