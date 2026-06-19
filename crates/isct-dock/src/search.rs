@@ -119,12 +119,12 @@ impl Default for SearchParams {
             // ドリフト蓄積させて別基(native)へ届かせる（Vina 流）。単独の浅化は収束を損ねるため、
             // 多 step（auto_n_steps 増）と最終深 polish（polish_iters/polish_modes）とセットで用いる。
             chain_iters: 30,
-            polish_iters: 200,
+            polish_iters: 20,
             cluster_rmsd: 2.0,
             n_modes: 9,
             // 粗い near-native 代表が精密化で勝ちモードへ昇格する機会を増やすため、出力数よりやや広く
             // polish（ただし 20 まで深 polish するのは無駄＝12 で精度を保ちつつ polish コストを削減）。
-            polish_modes: 12,
+            polish_modes: 9,
             // 早期停止は既定 OFF（0）。収束ベースの停止はドリフト鎖のハード標的を退行させうるため
             // （native へ終盤に跳ぶ標的を切ってしまう, measured）、opt-in に留める。
             early_stop_patience: 0,

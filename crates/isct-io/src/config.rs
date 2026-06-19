@@ -153,7 +153,8 @@ fn default_chain_iters() -> usize {
     30
 }
 fn default_polish_iters() -> usize {
-    200
+    // grid 整合探索後、代表は既にほぼ最適。深い exact polish は精度をほぼ変えず高コストのため浅く。
+    20
 }
 fn default_cluster_rmsd() -> f64 {
     2.0
@@ -162,7 +163,7 @@ fn default_n_modes() -> usize {
     9
 }
 fn default_polish_modes() -> usize {
-    12
+    9
 }
 fn default_early_stop_patience() -> usize {
     // 既定 OFF。収束ベースの早期停止はドリフト鎖のハード標的を退行させうるため opt-in に留める。
