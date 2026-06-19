@@ -42,6 +42,10 @@ pub fn torsions_only(free_torsions: &[usize]) -> Vec<usize> {
 /// 値クロージャ `value` と 値＋全 DOF 勾配クロージャ `value_grad` を用いて、`free` で指定した
 /// DOF 部分空間のみ BFGS 局所最小化する。`value_grad` は全 DOF（長さ dim）の勾配を返し、
 /// 本関数が `free` に射影する。
+///
+/// 不変条件（呼び出し側のバッファ再利用に利用）: `free` が非空のとき、**最後に評価する `value_grad` は
+/// 返却する `conf` 上で呼ばれる**（収束 break・直線探索失敗 break・通常更新のいずれでも成立。直線探索は
+/// `value` のみ呼ぶ）。これにより `value_grad` 側スクラッチは返却 conf の中間量を保持する。
 pub fn minimize_free<V, VG>(
     start: Conformation,
     value: &V,

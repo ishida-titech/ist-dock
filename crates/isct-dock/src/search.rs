@@ -29,6 +29,8 @@ struct EvalScratch {
     atoms: Vec<ScoredAtom>,
     force: Vec<Vec3>,
     grad: Vec<f64>,
+    /// 直近に評価した conformation の scored 原子 world 座標（RMSD クラスタリングの再計算回避用）。
+    scored_pos: Vec<Vec3>,
 }
 
 /// 値（直線探索用）= 分子間 + ボックス罰則 + 分子内。バッファ再利用でアロケーションしない。
@@ -64,6 +66,9 @@ fn eval_value_grad(
         c, &mut s.pos, &mut s.ref_axis, &mut s.ref_pivot, &mut s.world_axis, &mut s.world_pivot,
     );
     lig.scored_atoms_into(&s.pos, &mut s.atoms);
+    // scored 原子 world 座標を控える（cluster_insert の RMSD 用。world_coords 再計算を避ける）。
+    s.scored_pos.clear();
+    s.scored_pos.extend(s.atoms.iter().map(|a| a.pos));
     s.force.clear();
     s.force.resize(s.atoms.len(), Vec3::zeros());
     let mut e = if exact {
@@ -244,15 +249,15 @@ fn cluster_poses(
 }
 
 /// 局所最小を per-run プールへクラスタ挿入（近傍代表より低ければ置換、無ければ追加、cap 超過で最悪退避）。
+/// `pos` は `conf` の scored 原子 world 座標（呼び出し側が評価時に算出済みのものを渡す＝再計算回避）。
 fn cluster_insert(
-    lig: &LigandModel,
     pool: &mut Vec<(Conformation, f64, Vec<Vec3>)>,
     conf: Conformation,
     energy: f64,
+    pos: Vec<Vec3>,
     threshold: f64,
     cap: usize,
 ) {
-    let pos = lig.scored_positions(&conf);
     for rep in pool.iter_mut() {
         if rmsd(&pos, &rep.2) < threshold {
             if energy < rep.1 {
@@ -283,10 +288,14 @@ fn single_run(
     free_dofs: &[usize],
     seed: u64,
 ) -> Vec<(Conformation, f64)> {
-    // この run 専用の評価バッファ（スレッドローカル）。直線探索・勾配計算でアロケーションせず使い回す。
-    let scratch = RefCell::new(EvalScratch::default());
-    let value = |c: &Conformation| eval_value(lig, scorer, &mut scratch.borrow_mut(), c, false);
-    let value_grad = |c: &Conformation| eval_value_grad(lig, scorer, &mut scratch.borrow_mut(), c, false);
+    // この run 専用の評価バッファ（スレッドローカル）。直線探索と勾配で**別バッファ**にすることで、
+    // `minimize_free` 返却後に `scratch_g.scored_pos` が **返却 conf の scored 座標**を保持する（直線探索の
+    // value 呼び出しに上書きされない）。`minimize_free` の最後の value_grad は常に返却 conf 上で呼ばれるため、
+    // cluster_insert はこの座標を再利用でき world_coords 再計算を避けられる。
+    let scratch_v = RefCell::new(EvalScratch::default());
+    let scratch_g = RefCell::new(EvalScratch::default());
+    let value = |c: &Conformation| eval_value(lig, scorer, &mut scratch_v.borrow_mut(), c, false);
+    let value_grad = |c: &Conformation| eval_value_grad(lig, scorer, &mut scratch_g.borrow_mut(), c, false);
 
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     // 初期配置（grid 時は一様、direct 時は接触棄却）。固定 torsion は 0 に保つ。
@@ -305,7 +314,8 @@ fn single_run(
     // 残し、ドリフトで稀に訪れた near-native モードを大域 polish 候補へ確実に渡す。
     let pool_cap = params.polish_modes.max(params.n_modes);
     let mut pool: Vec<(Conformation, f64, Vec<Vec3>)> = Vec::new();
-    cluster_insert(lig, &mut pool, cur.conf.clone(), cur.energy, params.cluster_rmsd, pool_cap);
+    let cur_pos = scratch_g.borrow().scored_pos.clone();
+    cluster_insert(&mut pool, cur.conf.clone(), cur.energy, cur_pos, params.cluster_rmsd, pool_cap);
 
     // 早期停止（任意・既定 OFF）: best エネルギーが patience ステップ改善しなければ打ち切る。
     // 注意: ドリフト鎖のハード標的（1iep/1y6b 等）は **decoy 基で best が長く停滞してから終盤に native へ
@@ -320,7 +330,8 @@ fn single_run(
         let mut trial = cur.conf.clone();
         mutate(&mut trial, &mut rng, free_torsions);
         let res = minimize_free(trial, &value, &value_grad, params.chain_iters, free_dofs);
-        cluster_insert(lig, &mut pool, res.conf.clone(), res.energy, params.cluster_rmsd, pool_cap);
+        let res_pos = scratch_g.borrow().scored_pos.clone();
+        cluster_insert(&mut pool, res.conf.clone(), res.energy, res_pos, params.cluster_rmsd, pool_cap);
         if patience > 0 {
             if res.energy < best_e - 1e-3 {
                 best_e = res.energy;
