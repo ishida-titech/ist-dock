@@ -23,14 +23,16 @@ pub struct SearchParams {
     pub n_runs: usize,
     /// 各 run の MC ステップ数。
     pub n_steps: usize,
-    /// ILS 鎖の各ステップの局所最適化反復（浅く保ち探索の幅を広げる）。
+    /// ILS 鎖の各ステップの局所最適化反復（浅く保ち、鎖を基底間でドリフトさせ広く探索する）。
     pub chain_iters: usize,
     /// 代表ポーズの最終精密化の反復（厳密 f64 表面で厚く収束）。
     pub polish_iters: usize,
     /// ポーズ RMSD クラスタリングの閾値（Å）。これ未満を同一モードとみなす。
     pub cluster_rmsd: f64,
-    /// 保持・出力する最大モード数（Vina 流）。
+    /// 出力・保持する最大モード数（Vina 流）。
     pub n_modes: usize,
+    /// 最終精密化にかける代表モード数（≥ n_modes）。粗極小の near-native を精密化で救う漏斗を広げる。
+    pub polish_modes: usize,
     /// 焼きなまし Metropolis 温度の初期値（kcal/mol。高温で誤基を脱出し広く探索）。
     pub temp_init: f64,
     /// 焼きなまし温度の終値（低温で収束）。run 内で temp_init→temp_final へ幾何冷却。
@@ -47,12 +49,15 @@ impl Default for SearchParams {
             seed: 42,
             n_runs: 60,
             n_steps: 0, // 0 = 可動原子数から自動スケール（auto_n_steps）
-            // 浅い chain は収束を損ね（3ptb/1iep が誤基に留まる）逆効果と判明したため、
-            // 既定はフル反復。探索の幅はクラスタリング（複数モード保持）で確保する。
-            chain_iters: 120,
+            // 浅い per-step BFGS は、各ステップが decoy 基へ底打ちするのを避け、受理小移動を基底間で
+            // ドリフト蓄積させて別基(native)へ届かせる（Vina 流）。単独の浅化は収束を損ねるため、
+            // 多 step（auto_n_steps 増）と最終深 polish（polish_iters/polish_modes）とセットで用いる。
+            chain_iters: 30,
             polish_iters: 200,
             cluster_rmsd: 2.0,
             n_modes: 9,
+            // 粗い near-native 代表が精密化で勝ちモードへ昇格する機会を増やすため、出力数より広く polish。
+            polish_modes: 20,
             // 既定は固定温度（temp_init==temp_final）。焼きなまし（temp_init>temp_final）は
             // 誤基脱出に効く反面、探索が発散し exploitation 主体の標的を不安定化するため opt-in。
             temp_init: 1.0,
@@ -69,9 +74,11 @@ pub struct DockResult {
 }
 
 /// per-run の MC ステップ数を可動原子数から自動算出する（Vina 流: 探索難度 ∝ 原子数）。
-/// `SearchParams.n_steps == 0` のとき使う。3ptb(9 原子)≈63, 1stp(16)≈112, 1iep(37)≈259。
+/// `SearchParams.n_steps == 0` のとき使う。per-step BFGS を浅く（chain_iters≈30）した分、鎖の
+/// ドリフト蓄積に十分な長さを確保するため step を厚くとる。3ptb(9 原子)=300, 1stp(16)=480,
+/// 1iep(37)≈1110。per-step が ~4–6× 安価なので計算量は概ね中立。
 pub fn auto_n_steps(n_movable_atoms: usize) -> usize {
-    (7 * n_movable_atoms).max(60)
+    (30 * n_movable_atoms).max(300)
 }
 
 /// リガンドを受容体ボックスへドッキングし、**RMSD クラスタリングした上位モード**を
@@ -131,9 +138,11 @@ pub fn dock_constrained(
         })
         .collect();
 
-    // 全 run の代表を集約し、大域 RMSD クラスタリングで上位 n_modes モードへ絞る。
+    // 全 run の代表を集約し、大域 RMSD クラスタリングで上位 polish_modes（≥ n_modes）モードへ絞る。
+    // 出力数(n_modes)より広く残すことで、粗極小の near-native 代表を精密化の候補として取りこぼさない。
     let all: Vec<(Conformation, f64)> = per_run.into_iter().flatten().collect();
-    let reps = cluster_poses(lig, all, params.cluster_rmsd, params.n_modes);
+    let polish_cap = params.polish_modes.max(params.n_modes);
+    let reps = cluster_poses(lig, all, params.cluster_rmsd, polish_cap);
 
     // 各代表を **厳密 f64 表面**で厚く精密化（grid/f32 の平滑化ズレを補正）。
     let exact_value_grad = |c: &Conformation| -> (f64, Vec<f64>) {
@@ -243,16 +252,18 @@ where
     );
     let mut cur = minimize_free(start, value, value_grad, params.chain_iters, free_dofs);
 
-    // 訪れた局所最小をクラスタ保持（受理/非受理を問わず）＝探索の幅を保持。
+    // 訪れた局所最小をクラスタ保持（受理/非受理を問わず）＝探索の幅を保持。出力数(n_modes)より広く
+    // 残し、ドリフトで稀に訪れた near-native モードを大域 polish 候補へ確実に渡す。
+    let pool_cap = params.polish_modes.max(params.n_modes);
     let mut pool: Vec<(Conformation, f64, Vec<Vec3>)> = Vec::new();
-    cluster_insert(lig, &mut pool, cur.conf.clone(), cur.energy, params.cluster_rmsd, params.n_modes);
+    cluster_insert(lig, &mut pool, cur.conf.clone(), cur.energy, params.cluster_rmsd, pool_cap);
 
     // 反復局所探索（ILS）＋焼きなまし: 毎ステップ 1 自由度変異 → 浅い局所最適化 → Metropolis 受理。
     for k in 0..n_steps {
         let mut trial = cur.conf.clone();
         mutate(&mut trial, &mut rng, free_torsions);
         let res = minimize_free(trial, value, value_grad, params.chain_iters, free_dofs);
-        cluster_insert(lig, &mut pool, res.conf.clone(), res.energy, params.cluster_rmsd, params.n_modes);
+        cluster_insert(lig, &mut pool, res.conf.clone(), res.energy, params.cluster_rmsd, pool_cap);
 
         let frac = if n_steps > 1 {
             k as f64 / (n_steps - 1) as f64

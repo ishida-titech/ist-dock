@@ -101,7 +101,7 @@ pub struct RunOpts {
     /// 焼きなまし温度の終値（低温で収束）。
     #[serde(default = "default_temp_final")]
     pub temp_final: f64,
-    /// ILS 鎖の各ステップ局所最適化反復（浅く広く探索）。
+    /// ILS 鎖の各ステップ局所最適化反復（浅く保ち、鎖を基底間でドリフトさせ広く探索）。
     #[serde(default = "default_chain_iters")]
     pub chain_iters: usize,
     /// 代表ポーズの最終精密化反復（厳密 f64 で厚く）。
@@ -113,6 +113,9 @@ pub struct RunOpts {
     /// 保持・出力する最大モード数。
     #[serde(default = "default_n_modes")]
     pub n_modes: usize,
+    /// 最終精密化にかける代表モード数（≥ n_modes）。粗極小の near-native を救う漏斗を広げる。
+    #[serde(default = "default_polish_modes")]
+    pub polish_modes: usize,
 }
 
 impl Default for RunOpts {
@@ -128,6 +131,7 @@ impl Default for RunOpts {
             polish_iters: default_polish_iters(),
             cluster_rmsd: default_cluster_rmsd(),
             n_modes: default_n_modes(),
+            polish_modes: default_polish_modes(),
         }
     }
 }
@@ -140,8 +144,9 @@ fn default_temp_final() -> f64 {
     1.0
 }
 fn default_chain_iters() -> usize {
-    // 浅い chain は収束を損ね逆効果のためフル反復を既定とする（探索の幅はクラスタリングで確保）。
-    120
+    // 浅い per-step BFGS で鎖を基底間にドリフトさせ広く探索する（Vina 流）。単独の浅化は収束を損ねる
+    // ため、多 step（auto_n_steps 増）と最終深 polish（polish_iters/polish_modes）とセットで用いる。
+    30
 }
 fn default_polish_iters() -> usize {
     200
@@ -151,6 +156,9 @@ fn default_cluster_rmsd() -> f64 {
 }
 fn default_n_modes() -> usize {
     9
+}
+fn default_polish_modes() -> usize {
+    20
 }
 
 fn default_seed() -> u64 {

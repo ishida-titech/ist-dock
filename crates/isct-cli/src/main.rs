@@ -119,6 +119,7 @@ fn cmd_screen(
             polish_iters: cfg.run.polish_iters,
             cluster_rmsd: cfg.run.cluster_rmsd,
             n_modes: cfg.run.n_modes,
+            polish_modes: cfg.run.polish_modes,
             uniform_start: use_grid,
         },
         prune_threshold: cfg.screen.prune_threshold,
@@ -196,6 +197,7 @@ fn cmd_dock(
         polish_iters: cfg.run.polish_iters,
         cluster_rmsd: cfg.run.cluster_rmsd,
         n_modes: cfg.run.n_modes,
+        polish_modes: cfg.run.polish_modes,
         uniform_start: use_grid,
     };
 
