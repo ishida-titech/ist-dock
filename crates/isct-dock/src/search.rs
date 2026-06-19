@@ -4,7 +4,10 @@
 //! Metropolis 受理」を繰り返し、複数の独立 run で最良ポーズを探す。`rand_chacha` の
 //! 固定シードで完全に決定論的。
 
+use std::cell::RefCell;
+
 use isct_core::geometry::{rmsd, Vec3};
+use isct_core::scoring::ScoredAtom;
 use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
@@ -12,6 +15,66 @@ use rayon::prelude::*;
 use crate::energy::Scorer;
 use crate::ligand::{Conformation, LigandModel};
 use crate::optimizer::{minimize_free, rigid_and_torsions};
+
+/// ポーズ評価の再利用バッファ（ゼロアロケーション探索用）。run ごと（または polish ループごと）に
+/// 1 つ確保し、毎ステップ・直線探索試行で使い回す。`minimize_free` は per-run で逐次のため、
+/// `RefCell` 経由の内部可変で `Fn` クロージャから安全に再利用できる（スレッド間共有しない）。
+#[derive(Default)]
+struct EvalScratch {
+    pos: Vec<Vec3>,
+    ref_axis: Vec<Vec3>,
+    ref_pivot: Vec<Vec3>,
+    world_axis: Vec<Vec3>,
+    world_pivot: Vec<Vec3>,
+    atoms: Vec<ScoredAtom>,
+    force: Vec<Vec3>,
+    grad: Vec<f64>,
+}
+
+/// 値（直線探索用）= 分子間 + ボックス罰則 + 分子内。バッファ再利用でアロケーションしない。
+/// `exact=false`（探索）は探索バックエンドに整合した値（Grid なら補間で高速）、`exact=true`（polish）は
+/// 厳密 direct 値。勾配側（`eval_value_grad`）と表面を揃える。
+fn eval_value(
+    lig: &LigandModel,
+    scorer: &Scorer,
+    s: &mut EvalScratch,
+    c: &Conformation,
+    exact: bool,
+) -> f64 {
+    lig.world_coords_into(c, &mut s.pos);
+    lig.scored_atoms_into(&s.pos, &mut s.atoms);
+    let inter_box = if exact {
+        scorer.score(&s.atoms)
+    } else {
+        scorer.search_score(&s.atoms)
+    };
+    inter_box + lig.intramolecular(&s.atoms)
+}
+
+/// 値＋解析的勾配（全 DOF）。`exact=true` で厳密 f64 表面（polish 用）、false で探索バックエンド。
+/// 勾配 Vec（dim 長）のみ確保し、その他（world 座標・原子・力）はバッファ再利用。
+fn eval_value_grad(
+    lig: &LigandModel,
+    scorer: &Scorer,
+    s: &mut EvalScratch,
+    c: &Conformation,
+    exact: bool,
+) -> (f64, Vec<f64>) {
+    lig.world_coords_frames_into(
+        c, &mut s.pos, &mut s.ref_axis, &mut s.ref_pivot, &mut s.world_axis, &mut s.world_pivot,
+    );
+    lig.scored_atoms_into(&s.pos, &mut s.atoms);
+    s.force.clear();
+    s.force.resize(s.atoms.len(), Vec3::zeros());
+    let mut e = if exact {
+        scorer.exact_value_and_force(&s.atoms, &mut s.force)
+    } else {
+        scorer.value_and_force(&s.atoms, &mut s.force)
+    };
+    e += lig.intramolecular_value_grad(&s.atoms, &mut s.force);
+    lig.dof_gradient_into(c, &s.pos, &s.world_axis, &s.world_pivot, &s.force, &mut s.grad);
+    (e, s.grad.clone())
+}
 
 /// 探索パラメータ。
 #[derive(Debug, Clone)]
@@ -122,30 +185,11 @@ pub fn dock_constrained(
     // 最適化する全 DOF（剛体6 ＋ R 基 torsion）。コアを動かす torsion は除外される。
     let free_dofs = rigid_and_torsions(free_torsions);
 
-    // 値クロージャ（直線探索用）= 分子間 + ボックス罰則 + 分子内。lig/scorer は &（Sync）。
-    let value = |c: &Conformation| {
-        let atoms = lig.scored_atoms(c);
-        scorer.score(&atoms) + lig.intramolecular(&atoms)
-    };
-    // 値＋解析的勾配（全 DOF）。1 回の前向き計算で力を集約し連鎖則で DOF 勾配へ。
-    let value_grad = |c: &Conformation| -> (f64, Vec<f64>) {
-        let (world_pos, world_axis, world_pivot) = lig.world_coords_frames(c);
-        let atoms = lig.scored_atoms_at(&world_pos);
-        let mut force = vec![isct_core::geometry::Vec3::zeros(); atoms.len()];
-        let mut e = scorer.value_and_force(&atoms, &mut force);
-        e += lig.intramolecular_value_grad(&atoms, &mut force);
-        let grad = lig.dof_gradient(c, &world_pos, &world_axis, &world_pivot, &force);
-        (e, grad)
-    };
-
     // 独立 run を並列実行。各 run は RMSD クラスタした代表ポーズ群を返す。collect で run 順保持＝決定的。
+    // 評価バッファは single_run 内で run ごとに確保（スレッドごとに独立）。
     let per_run: Vec<Vec<(Conformation, f64)>> = run_seeds
         .par_iter()
-        .map(|&seed| {
-            single_run(
-                lig, scorer, params, n_steps, free_torsions, &free_dofs, &value, &value_grad, seed,
-            )
-        })
+        .map(|&seed| single_run(lig, scorer, params, n_steps, free_torsions, &free_dofs, seed))
         .collect();
 
     // 全 run の代表を集約し、大域 RMSD クラスタリングで上位 polish_modes（≥ n_modes）モードへ絞る。
@@ -154,16 +198,12 @@ pub fn dock_constrained(
     let polish_cap = params.polish_modes.max(params.n_modes);
     let reps = cluster_poses(lig, all, params.cluster_rmsd, polish_cap);
 
-    // 各代表を **厳密 f64 表面**で厚く精密化（grid/f32 の平滑化ズレを補正）。
-    let exact_value_grad = |c: &Conformation| -> (f64, Vec<f64>) {
-        let (world_pos, world_axis, world_pivot) = lig.world_coords_frames(c);
-        let atoms = lig.scored_atoms_at(&world_pos);
-        let mut force = vec![Vec3::zeros(); atoms.len()];
-        let mut e = scorer.exact_value_and_force(&atoms, &mut force);
-        e += lig.intramolecular_value_grad(&atoms, &mut force);
-        let grad = lig.dof_gradient(c, &world_pos, &world_axis, &world_pivot, &force);
-        (e, grad)
-    };
+    // 各代表を **厳密 f64 表面**で厚く精密化（grid/f32 の平滑化ズレを補正）。直線探索値は grid（探索と
+    // 同一表面）、勾配は厳密 f64。polish ループ専用の再利用バッファを 1 つ確保。
+    let polish_scratch = RefCell::new(EvalScratch::default());
+    let value = |c: &Conformation| eval_value(lig, scorer, &mut polish_scratch.borrow_mut(), c, true);
+    let exact_value_grad =
+        |c: &Conformation| eval_value_grad(lig, scorer, &mut polish_scratch.borrow_mut(), c, true);
     let polished: Vec<(Conformation, f64)> = reps
         .into_iter()
         .map(|(conf, _)| {
@@ -234,21 +274,20 @@ fn cluster_insert(
 /// 1 つの独立 run（接触開始 → ILS）を実行し、その run で見つけた **区別されるモードの代表群**
 /// （RMSD クラスタ済み, エネルギー昇順）を返す。鎖は浅い `chain_iters` で広く探索する。
 #[allow(clippy::too_many_arguments)]
-fn single_run<V, VG>(
+fn single_run(
     lig: &LigandModel,
     scorer: &Scorer,
     params: &SearchParams,
     n_steps: usize,
     free_torsions: &[usize],
     free_dofs: &[usize],
-    value: &V,
-    value_grad: &VG,
     seed: u64,
-) -> Vec<(Conformation, f64)>
-where
-    V: Fn(&Conformation) -> f64 + Sync,
-    VG: Fn(&Conformation) -> (f64, Vec<f64>) + Sync,
-{
+) -> Vec<(Conformation, f64)> {
+    // この run 専用の評価バッファ（スレッドローカル）。直線探索・勾配計算でアロケーションせず使い回す。
+    let scratch = RefCell::new(EvalScratch::default());
+    let value = |c: &Conformation| eval_value(lig, scorer, &mut scratch.borrow_mut(), c, false);
+    let value_grad = |c: &Conformation| eval_value_grad(lig, scorer, &mut scratch.borrow_mut(), c, false);
+
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     // 初期配置（grid 時は一様、direct 時は接触棄却）。固定 torsion は 0 に保つ。
     let start = contact_start(
@@ -260,7 +299,7 @@ where
         free_torsions,
         params.uniform_start,
     );
-    let mut cur = minimize_free(start, value, value_grad, params.chain_iters, free_dofs);
+    let mut cur = minimize_free(start, &value, &value_grad, params.chain_iters, free_dofs);
 
     // 訪れた局所最小をクラスタ保持（受理/非受理を問わず）＝探索の幅を保持。出力数(n_modes)より広く
     // 残し、ドリフトで稀に訪れた near-native モードを大域 polish 候補へ確実に渡す。
@@ -280,7 +319,7 @@ where
     for k in 0..n_steps {
         let mut trial = cur.conf.clone();
         mutate(&mut trial, &mut rng, free_torsions);
-        let res = minimize_free(trial, value, value_grad, params.chain_iters, free_dofs);
+        let res = minimize_free(trial, &value, &value_grad, params.chain_iters, free_dofs);
         cluster_insert(lig, &mut pool, res.conf.clone(), res.energy, params.cluster_rmsd, pool_cap);
         if patience > 0 {
             if res.energy < best_e - 1e-3 {

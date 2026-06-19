@@ -163,6 +163,38 @@ impl GridMap {
 
         (value, Vec3::new(dvx, dvy, dvz))
     }
+
+    /// `pos` における trilinear 補間値のみ（勾配を計算しない直線探索用の高速版）。境界外はクランプ。
+    pub fn interpolate_value(&self, pos: Vec3) -> f64 {
+        let inv = 1.0 / self.spacing;
+        let clamp = |t: f64, n: usize| -> (usize, f64) {
+            let tc = t.clamp(0.0, (n - 1) as f64 - 1e-9);
+            let i = tc.floor() as usize;
+            (i.min(n - 2), tc - i as f64)
+        };
+        let (ix, fx) = clamp((pos.x - self.origin.x) * inv, self.nx);
+        let (iy, fy) = clamp((pos.y - self.origin.y) * inv, self.ny);
+        let (iz, fz) = clamp((pos.z - self.origin.z) * inv, self.nz);
+
+        let c000 = self.at(ix, iy, iz) as f64;
+        let c100 = self.at(ix + 1, iy, iz) as f64;
+        let c010 = self.at(ix, iy + 1, iz) as f64;
+        let c110 = self.at(ix + 1, iy + 1, iz) as f64;
+        let c001 = self.at(ix, iy, iz + 1) as f64;
+        let c101 = self.at(ix + 1, iy, iz + 1) as f64;
+        let c011 = self.at(ix, iy + 1, iz + 1) as f64;
+        let c111 = self.at(ix + 1, iy + 1, iz + 1) as f64;
+
+        let (gx, gy, gz) = (1.0 - fx, 1.0 - fy, 1.0 - fz);
+        c000 * gx * gy * gz
+            + c100 * fx * gy * gz
+            + c010 * gx * fy * gz
+            + c110 * fx * fy * gz
+            + c001 * gx * gy * fz
+            + c101 * fx * gy * fz
+            + c011 * gx * fy * fz
+            + c111 * fx * fy * fz
+    }
 }
 
 /// 受容体ボックスに対する型→マップの集合（オンデマンド生成）。
@@ -261,6 +293,11 @@ impl VinaGrid {
             force[i] -= g; // force = -∇value
         }
         e
+    }
+
+    /// リガンド原子群の分子間エネルギーのみ（勾配なし）。直線探索（値のみ評価）の高速版。
+    pub fn value(&self, ligand: &[ScoredAtom]) -> f64 {
+        ligand.iter().map(|a| self.map(a.xs).interpolate_value(a.pos)).sum()
     }
 }
 

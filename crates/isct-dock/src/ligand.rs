@@ -214,10 +214,32 @@ impl LigandModel {
     /// world 座標（全原子）に加え、各非 root フラグメントの **world 系**回転軸・ピボットを返す。
     /// torsion 勾配の連鎖則に使う。`world_coords` と同一のポーズ再構成を行う。
     pub fn world_coords_frames(&self, conf: &Conformation) -> (Vec<Vec3>, Vec<Vec3>, Vec<Vec3>) {
+        let (mut pos, mut world_axis, mut world_pivot) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut ref_axis, mut ref_pivot) = (Vec::new(), Vec::new());
+        self.world_coords_frames_into(
+            conf, &mut pos, &mut ref_axis, &mut ref_pivot, &mut world_axis, &mut world_pivot,
+        );
+        (pos, world_axis, world_pivot)
+    }
+
+    /// `world_coords_frames` のゼロアロケーション版: 与えられた再利用バッファへ書き込む。
+    /// `ref_axis`/`ref_pivot` は中間バッファ（呼び出し側は無視してよい）。
+    pub fn world_coords_frames_into(
+        &self,
+        conf: &Conformation,
+        pos: &mut Vec<Vec3>,
+        ref_axis: &mut Vec<Vec3>,
+        ref_pivot: &mut Vec<Vec3>,
+        world_axis: &mut Vec<Vec3>,
+        world_pivot: &mut Vec<Vec3>,
+    ) {
         let nf = self.bonds.len();
-        let mut pos = self.ref_coords.clone();
-        let mut ref_axis = vec![Vec3::zeros(); nf];
-        let mut ref_pivot = vec![Vec3::zeros(); nf];
+        pos.clear();
+        pos.extend_from_slice(&self.ref_coords);
+        ref_axis.clear();
+        ref_axis.resize(nf, Vec3::zeros());
+        ref_pivot.clear();
+        ref_pivot.resize(nf, Vec3::zeros());
 
         for f in 1..nf {
             let (a0, a1) = self.bonds[f].expect("non-root fragment must have a bond");
@@ -242,20 +264,27 @@ impl LigandModel {
             *p = self.root_pivot + conf.orientation * (*p - self.root_pivot) + conf.position;
         }
         // ref 系の軸・ピボットを world 系へ。
-        let world_axis: Vec<Vec3> = ref_axis.iter().map(|a| conf.orientation * a).collect();
-        let world_pivot: Vec<Vec3> = ref_pivot
-            .iter()
-            .map(|p| self.root_pivot + conf.orientation * (p - self.root_pivot) + conf.position)
-            .collect();
-        (pos, world_axis, world_pivot)
+        world_axis.clear();
+        world_axis.extend(ref_axis.iter().map(|a| conf.orientation * a));
+        world_pivot.clear();
+        world_pivot.extend(
+            ref_pivot
+                .iter()
+                .map(|p| self.root_pivot + conf.orientation * (p - self.root_pivot) + conf.position),
+        );
     }
 
     /// 事前計算した world 座標から scored 原子（位置＋XS 型）を作る（再計算を避ける）。
     pub fn scored_atoms_at(&self, world_pos: &[Vec3]) -> Vec<ScoredAtom> {
-        self.scored
-            .iter()
-            .map(|&(i, xs)| ScoredAtom { pos: world_pos[i], xs })
-            .collect()
+        let mut atoms = Vec::new();
+        self.scored_atoms_into(world_pos, &mut atoms);
+        atoms
+    }
+
+    /// `scored_atoms_at` のゼロアロケーション版: 再利用バッファ `atoms` へ書き込む。
+    pub fn scored_atoms_into(&self, world_pos: &[Vec3], atoms: &mut Vec<ScoredAtom>) {
+        atoms.clear();
+        atoms.extend(self.scored.iter().map(|&(i, xs)| ScoredAtom { pos: world_pos[i], xs }));
     }
 
     /// scored 原子に働く力 `force[k] = -dE/dpos_k` から、DOF 勾配（長さ dim）を連鎖則で求める。
@@ -268,7 +297,23 @@ impl LigandModel {
         world_pivot: &[Vec3],
         force: &[Vec3],
     ) -> Vec<f64> {
-        let mut grad = vec![0.0; 6 + self.n_torsions];
+        let mut grad = Vec::new();
+        self.dof_gradient_into(conf, world_pos, world_axis, world_pivot, force, &mut grad);
+        grad
+    }
+
+    /// `dof_gradient` のゼロアロケーション版: 再利用バッファ `grad`（長さ dim）へ書き込む。
+    pub fn dof_gradient_into(
+        &self,
+        conf: &Conformation,
+        world_pos: &[Vec3],
+        world_axis: &[Vec3],
+        world_pivot: &[Vec3],
+        force: &[Vec3],
+        grad: &mut Vec<f64>,
+    ) {
+        grad.clear();
+        grad.resize(6 + self.n_torsions, 0.0);
         // 回転のピボットは world 系の root（root_pivot + 並進）。
         let rot_pivot = self.root_pivot + conf.position;
 
@@ -295,7 +340,6 @@ impl LigandModel {
             }
             grad[6 + f - 1] = world_axis[f].dot(&acc);
         }
-        grad
     }
 
     pub fn n_torsions(&self) -> usize {
@@ -346,7 +390,15 @@ impl LigandModel {
 
     /// 与えられた conformation の全原子 world 座標を再構成する。
     pub fn world_coords(&self, conf: &Conformation) -> Vec<Vec3> {
-        let mut pos = self.ref_coords.clone();
+        let mut pos = Vec::new();
+        self.world_coords_into(conf, &mut pos);
+        pos
+    }
+
+    /// `world_coords` のゼロアロケーション版: 再利用バッファ `pos` へ書き込む。
+    pub fn world_coords_into(&self, conf: &Conformation, pos: &mut Vec<Vec3>) {
+        pos.clear();
+        pos.extend_from_slice(&self.ref_coords);
 
         // torsion をフラグメント木順（親→子, 添字昇順）に適用。
         for f in 1..self.bonds.len() {
@@ -370,7 +422,6 @@ impl LigandModel {
         for p in pos.iter_mut() {
             *p = self.root_pivot + conf.orientation * (*p - self.root_pivot) + conf.position;
         }
-        pos
     }
 
     /// スコア対象重原子（位置＋XS 型）を返す。

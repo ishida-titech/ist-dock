@@ -117,9 +117,20 @@ impl Scorer {
         BOX_PENALTY * pen
     }
 
-    /// 探索用の目的関数値 = 分子間エネルギー + ボックス外ペナルティ。
+    /// 厳密な目的関数値 = 厳密分子間（direct）+ ボックス外ペナルティ。報告・polish の直線探索用。
     pub fn score(&self, ligand: &[ScoredAtom]) -> f64 {
         self.intermolecular(ligand) + self.box_penalty(ligand)
+    }
+
+    /// **探索バックエンドに整合した**目的関数値 = 分子間（Grid なら補間, Direct なら直接）+ ボックス罰則。
+    /// 探索の直線探索（値のみ評価, 1 BFGS 反復あたり最大 ~40 回）で使う。Grid 時は受容体全原子の直接和
+    /// （O(n_lig×n_rec)）を避け補間（O(n_lig)）で大幅に高速化し、勾配（value_and_force）と同一表面に揃える。
+    pub fn search_score(&self, ligand: &[ScoredAtom]) -> f64 {
+        let inter = match &self.backend {
+            Backend::Direct(_) => self.intermolecular(ligand),
+            Backend::Grid(grid) => grid.value(ligand),
+        };
+        inter + self.box_penalty(ligand)
     }
 
     /// 目的関数値（分子間＋ボックス罰則）と各リガンド原子に働く力 `force[i] = -dE/dpos_i` を
