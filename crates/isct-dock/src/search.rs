@@ -33,6 +33,9 @@ pub struct SearchParams {
     pub n_modes: usize,
     /// 最終精密化にかける代表モード数（≥ n_modes）。粗極小の near-native を精密化で救う漏斗を広げる。
     pub polish_modes: usize,
+    /// 早期停止の patience（新規モードも代表改善も無いステップ数の上限）。0 で無効（フル n_steps）。
+    /// 収束した易標的の過剰計算を抑える。進展があるハード標的は停止しない。
+    pub early_stop_patience: usize,
     /// 焼きなまし Metropolis 温度の初期値（kcal/mol。高温で誤基を脱出し広く探索）。
     pub temp_init: f64,
     /// 焼きなまし温度の終値（低温で収束）。run 内で temp_init→temp_final へ幾何冷却。
@@ -56,8 +59,12 @@ impl Default for SearchParams {
             polish_iters: 200,
             cluster_rmsd: 2.0,
             n_modes: 9,
-            // 粗い near-native 代表が精密化で勝ちモードへ昇格する機会を増やすため、出力数より広く polish。
-            polish_modes: 20,
+            // 粗い near-native 代表が精密化で勝ちモードへ昇格する機会を増やすため、出力数よりやや広く
+            // polish（ただし 20 まで深 polish するのは無駄＝12 で精度を保ちつつ polish コストを削減）。
+            polish_modes: 12,
+            // 早期停止は既定 OFF（0）。収束ベースの停止はドリフト鎖のハード標的を退行させうるため
+            // （native へ終盤に跳ぶ標的を切ってしまう, measured）、opt-in に留める。
+            early_stop_patience: 0,
             // 既定は固定温度（temp_init==temp_final）。焼きなまし（temp_init>temp_final）は
             // 誤基脱出に効く反面、探索が発散し exploitation 主体の標的を不安定化するため opt-in。
             temp_init: 1.0,
@@ -73,12 +80,15 @@ pub struct DockResult {
     pub energy: f64,
 }
 
-/// per-run の MC ステップ数を可動原子数から自動算出する（Vina 流: 探索難度 ∝ 原子数）。
-/// `SearchParams.n_steps == 0` のとき使う。per-step BFGS を浅く（chain_iters≈30）した分、鎖の
-/// ドリフト蓄積に十分な長さを確保するため step を厚くとる。3ptb(9 原子)=300, 1stp(16)=480,
-/// 1iep(37)≈1110。per-step が ~4–6× 安価なので計算量は概ね中立。
-pub fn auto_n_steps(n_movable_atoms: usize) -> usize {
-    (30 * n_movable_atoms).max(300)
+/// per-run の MC ステップ数を自動算出する。`SearchParams.n_steps == 0` のとき使う。
+///
+/// 基本は可動原子数スケール（`30 * n_scored`）だが、**探索難度は原子数でなく自由度（torsion）で決まる**
+/// ため、原子数を torsion 由来の上限 `8 + 5*tors` で**頭打ち**にする。これにより 1 torsion の剛性大
+/// リガンド（例 1gpk: 18 原子で 540→390）の過剰計算だけを削り、**高 torsion 標的の予算は不変**に保つ
+/// （1iep 7tor: min(37,43)=37→1110, 1y6b 9tor→1020, 1eby 17tor→不変）＝ハード標的を退行させない。
+pub fn auto_n_steps(n_scored_atoms: usize, n_torsions: usize) -> usize {
+    let eff = n_scored_atoms.min(8 + 5 * n_torsions);
+    (30 * eff).max(300)
 }
 
 /// リガンドを受容体ボックスへドッキングし、**RMSD クラスタリングした上位モード**を
@@ -102,9 +112,9 @@ pub fn dock_constrained(
     let mut seed_rng = ChaCha8Rng::seed_from_u64(params.seed);
     let run_seeds: Vec<u64> = (0..params.n_runs).map(|_| seed_rng.next_u64()).collect();
 
-    // per-run ステップ数: n_steps==0 なら可動原子数から自動スケール（Vina 流）。
+    // per-run ステップ数: n_steps==0 なら自動スケール（原子数を torsion 上限で頭打ち）。
     let n_steps = if params.n_steps == 0 {
-        auto_n_steps(lig.n_scored())
+        auto_n_steps(lig.n_scored(), free_torsions.len())
     } else {
         params.n_steps
     };
@@ -258,12 +268,31 @@ where
     let mut pool: Vec<(Conformation, f64, Vec<Vec3>)> = Vec::new();
     cluster_insert(lig, &mut pool, cur.conf.clone(), cur.energy, params.cluster_rmsd, pool_cap);
 
+    // 早期停止（任意・既定 OFF）: best エネルギーが patience ステップ改善しなければ打ち切る。
+    // 注意: ドリフト鎖のハード標的（1iep/1y6b 等）は **decoy 基で best が長く停滞してから終盤に native へ
+    // 跳ぶ** ため、収束ベースの早期停止は native 到達前に切ってしまい退行させうる（measured）。よって
+    // 既定は patience==0（無効＝フル n_steps）。収束が明確な易標的のみ短縮したい場合の opt-in。
+    let patience = params.early_stop_patience;
+    let mut best_e = cur.energy;
+    let mut stale = 0usize;
+
     // 反復局所探索（ILS）＋焼きなまし: 毎ステップ 1 自由度変異 → 浅い局所最適化 → Metropolis 受理。
     for k in 0..n_steps {
         let mut trial = cur.conf.clone();
         mutate(&mut trial, &mut rng, free_torsions);
         let res = minimize_free(trial, value, value_grad, params.chain_iters, free_dofs);
         cluster_insert(lig, &mut pool, res.conf.clone(), res.energy, params.cluster_rmsd, pool_cap);
+        if patience > 0 {
+            if res.energy < best_e - 1e-3 {
+                best_e = res.energy;
+                stale = 0;
+            } else {
+                stale += 1;
+                if stale >= patience {
+                    break;
+                }
+            }
+        }
 
         let frac = if n_steps > 1 {
             k as f64 / (n_steps - 1) as f64

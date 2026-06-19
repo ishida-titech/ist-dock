@@ -120,6 +120,7 @@ fn cmd_screen(
             cluster_rmsd: cfg.run.cluster_rmsd,
             n_modes: cfg.run.n_modes,
             polish_modes: cfg.run.polish_modes,
+            early_stop_patience: cfg.run.early_stop_patience,
             uniform_start: use_grid,
         },
         prune_threshold: cfg.screen.prune_threshold,
@@ -198,11 +199,12 @@ fn cmd_dock(
         cluster_rmsd: cfg.run.cluster_rmsd,
         n_modes: cfg.run.n_modes,
         polish_modes: cfg.run.polish_modes,
+        early_stop_patience: cfg.run.early_stop_patience,
         uniform_start: use_grid,
     };
 
     let eff_steps = if params.n_steps == 0 {
-        auto_n_steps(lig.n_scored())
+        auto_n_steps(lig.n_scored(), lig.n_torsions())
     } else {
         params.n_steps
     };

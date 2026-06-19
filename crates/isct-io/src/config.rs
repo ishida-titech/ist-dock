@@ -116,6 +116,9 @@ pub struct RunOpts {
     /// 最終精密化にかける代表モード数（≥ n_modes）。粗極小の near-native を救う漏斗を広げる。
     #[serde(default = "default_polish_modes")]
     pub polish_modes: usize,
+    /// 早期停止 patience（新規モードも改善も無いステップ数の上限）。0 で無効。収束した易標的を短縮。
+    #[serde(default = "default_early_stop_patience")]
+    pub early_stop_patience: usize,
 }
 
 impl Default for RunOpts {
@@ -132,6 +135,7 @@ impl Default for RunOpts {
             cluster_rmsd: default_cluster_rmsd(),
             n_modes: default_n_modes(),
             polish_modes: default_polish_modes(),
+            early_stop_patience: default_early_stop_patience(),
         }
     }
 }
@@ -158,7 +162,11 @@ fn default_n_modes() -> usize {
     9
 }
 fn default_polish_modes() -> usize {
-    20
+    12
+}
+fn default_early_stop_patience() -> usize {
+    // 既定 OFF。収束ベースの早期停止はドリフト鎖のハード標的を退行させうるため opt-in に留める。
+    0
 }
 
 fn default_seed() -> u64 {
