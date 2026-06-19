@@ -4,7 +4,7 @@
 //! Metropolis 受理」を繰り返し、複数の独立 run で最良ポーズを探す。`rand_chacha` の
 //! 固定シードで完全に決定論的。
 
-use isct_core::geometry::Vec3;
+use isct_core::geometry::{rmsd, Vec3};
 use rand::{Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
@@ -23,8 +23,14 @@ pub struct SearchParams {
     pub n_runs: usize,
     /// 各 run の MC ステップ数。
     pub n_steps: usize,
-    /// 局所最適化の最大反復。
-    pub local_iters: usize,
+    /// ILS 鎖の各ステップの局所最適化反復（浅く保ち探索の幅を広げる）。
+    pub chain_iters: usize,
+    /// 代表ポーズの最終精密化の反復（厳密 f64 表面で厚く収束）。
+    pub polish_iters: usize,
+    /// ポーズ RMSD クラスタリングの閾値（Å）。これ未満を同一モードとみなす。
+    pub cluster_rmsd: f64,
+    /// 保持・出力する最大モード数（Vina 流）。
+    pub n_modes: usize,
     /// 焼きなまし Metropolis 温度の初期値（kcal/mol。高温で誤基を脱出し広く探索）。
     pub temp_init: f64,
     /// 焼きなまし温度の終値（低温で収束）。run 内で temp_init→temp_final へ幾何冷却。
@@ -41,7 +47,12 @@ impl Default for SearchParams {
             seed: 42,
             n_runs: 60,
             n_steps: 0, // 0 = 可動原子数から自動スケール（auto_n_steps）
-            local_iters: 120,
+            // 浅い chain は収束を損ね（3ptb/1iep が誤基に留まる）逆効果と判明したため、
+            // 既定はフル反復。探索の幅はクラスタリング（複数モード保持）で確保する。
+            chain_iters: 120,
+            polish_iters: 200,
+            cluster_rmsd: 2.0,
+            n_modes: 9,
             // 既定は固定温度（temp_init==temp_final）。焼きなまし（temp_init>temp_final）は
             // 誤基脱出に効く反面、探索が発散し exploitation 主体の標的を不安定化するため opt-in。
             temp_init: 1.0,
@@ -63,8 +74,9 @@ pub fn auto_n_steps(n_movable_atoms: usize) -> usize {
     (7 * n_movable_atoms).max(60)
 }
 
-/// リガンドを受容体ボックスへドッキングし、最良ポーズを返す（全 torsion 自由）。
-pub fn dock(lig: &LigandModel, scorer: &Scorer, params: &SearchParams) -> DockResult {
+/// リガンドを受容体ボックスへドッキングし、**RMSD クラスタリングした上位モード**を
+/// エネルギー昇順で返す（[0]=最良。全 torsion 自由）。
+pub fn dock(lig: &LigandModel, scorer: &Scorer, params: &SearchParams) -> Vec<DockResult> {
     let free: Vec<usize> = (0..lig.n_torsions()).collect();
     dock_constrained(lig, scorer, params, &free)
 }
@@ -77,7 +89,7 @@ pub fn dock_constrained(
     scorer: &Scorer,
     params: &SearchParams,
     free_torsions: &[usize],
-) -> DockResult {
+) -> Vec<DockResult> {
     // 各 run の seed を親 rng から順に生成する（実行順非依存・再現可能）。これにより run を
     // rayon で並列化しても結果が決定的になる。
     let mut seed_rng = ChaCha8Rng::seed_from_u64(params.seed);
@@ -109,31 +121,21 @@ pub fn dock_constrained(
         (e, grad)
     };
 
-    // 独立 run を並列実行し、(run_index, best) を決定的に reduce（min エネルギー、タイは index 昇順）。
-    let best = run_seeds
+    // 独立 run を並列実行。各 run は RMSD クラスタした代表ポーズ群を返す。collect で run 順保持＝決定的。
+    let per_run: Vec<Vec<(Conformation, f64)>> = run_seeds
         .par_iter()
-        .enumerate()
-        .map(|(idx, &seed)| {
-            (
-                idx,
-                single_run(
-                    lig, scorer, params, n_steps, free_torsions, &free_dofs, &value, &value_grad,
-                    seed,
-                ),
+        .map(|&seed| {
+            single_run(
+                lig, scorer, params, n_steps, free_torsions, &free_dofs, &value, &value_grad, seed,
             )
         })
-        .reduce_with(|a, b| {
-            if a.1.energy < b.1.energy || (a.1.energy == b.1.energy && a.0 <= b.0) {
-                a
-            } else {
-                b
-            }
-        })
-        .map(|(_, res)| res)
-        .expect("at least one run");
+        .collect();
 
-    // 最終精密化（exact polish）: 探索（grid/f32）で見つけた basin を **厳密 f64 表面**で局所
-    // 最適化し、平滑化による極小ズレを補正して真の極小へ寄せる。値・勾配とも厳密で整合。
+    // 全 run の代表を集約し、大域 RMSD クラスタリングで上位 n_modes モードへ絞る。
+    let all: Vec<(Conformation, f64)> = per_run.into_iter().flatten().collect();
+    let reps = cluster_poses(lig, all, params.cluster_rmsd, params.n_modes);
+
+    // 各代表を **厳密 f64 表面**で厚く精密化（grid/f32 の平滑化ズレを補正）。
     let exact_value_grad = |c: &Conformation| -> (f64, Vec<f64>) {
         let (world_pos, world_axis, world_pivot) = lig.world_coords_frames(c);
         let atoms = lig.scored_atoms_at(&world_pos);
@@ -143,14 +145,75 @@ pub fn dock_constrained(
         let grad = lig.dof_gradient(c, &world_pos, &world_axis, &world_pivot, &force);
         (e, grad)
     };
-    let polished = minimize_free(best.conf, &value, &exact_value_grad, params.local_iters, &free_dofs);
-    DockResult {
-        conf: polished.conf,
-        energy: polished.energy,
+    let polished: Vec<(Conformation, f64)> = reps
+        .into_iter()
+        .map(|(conf, _)| {
+            let r = minimize_free(conf, &value, &exact_value_grad, params.polish_iters, &free_dofs);
+            (r.conf, r.energy)
+        })
+        .collect();
+
+    // 精密化でポーズが寄りうるので再クラスタ・再ソート → 上位モード（昇順, [0]=最良）。
+    cluster_poses(lig, polished, params.cluster_rmsd, params.n_modes)
+        .into_iter()
+        .map(|(conf, energy)| DockResult { conf, energy })
+        .collect()
+}
+
+/// エネルギー昇順の greedy RMSD クラスタリング。候補をエネルギー昇順で処理し、既存代表と
+/// RMSD<threshold なら同一モード（低エネルギー側＝先に来る方が代表）、無ければ新代表。
+/// 代表＝区別される最低エネルギーポーズ群（最大 cap 個）。決定論的（安定ソート＋入力順）。
+fn cluster_poses(
+    lig: &LigandModel,
+    mut cands: Vec<(Conformation, f64)>,
+    threshold: f64,
+    cap: usize,
+) -> Vec<(Conformation, f64)> {
+    cands.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut reps: Vec<(Conformation, f64, Vec<Vec3>)> = Vec::new();
+    for (conf, e) in cands {
+        let pos = lig.scored_positions(&conf);
+        if reps.iter().any(|(_, _, rpos)| rmsd(&pos, rpos) < threshold) {
+            continue; // 既存モードに支配される（より高エネルギー）
+        }
+        reps.push((conf, e, pos));
+        if reps.len() >= cap {
+            break;
+        }
+    }
+    reps.into_iter().map(|(c, e, _)| (c, e)).collect()
+}
+
+/// 局所最小を per-run プールへクラスタ挿入（近傍代表より低ければ置換、無ければ追加、cap 超過で最悪退避）。
+fn cluster_insert(
+    lig: &LigandModel,
+    pool: &mut Vec<(Conformation, f64, Vec<Vec3>)>,
+    conf: Conformation,
+    energy: f64,
+    threshold: f64,
+    cap: usize,
+) {
+    let pos = lig.scored_positions(&conf);
+    for rep in pool.iter_mut() {
+        if rmsd(&pos, &rep.2) < threshold {
+            if energy < rep.1 {
+                *rep = (conf, energy, pos);
+            }
+            return;
+        }
+    }
+    pool.push((conf, energy, pos));
+    if pool.len() > cap {
+        // 最大エネルギーの代表を退避（タイは最初）。
+        let worst = (0..pool.len())
+            .max_by(|&i, &j| pool[i].1.partial_cmp(&pool[j].1).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap();
+        pool.remove(worst);
     }
 }
 
-/// 1 つの独立 run（接触開始 → ILS）を実行し、その run の最良ポーズを返す。
+/// 1 つの独立 run（接触開始 → ILS）を実行し、その run で見つけた **区別されるモードの代表群**
+/// （RMSD クラスタ済み, エネルギー昇順）を返す。鎖は浅い `chain_iters` で広く探索する。
 #[allow(clippy::too_many_arguments)]
 fn single_run<V, VG>(
     lig: &LigandModel,
@@ -162,7 +225,7 @@ fn single_run<V, VG>(
     value: &V,
     value_grad: &VG,
     seed: u64,
-) -> DockResult
+) -> Vec<(Conformation, f64)>
 where
     V: Fn(&Conformation) -> f64 + Sync,
     VG: Fn(&Conformation) -> (f64, Vec<f64>) + Sync,
@@ -178,18 +241,18 @@ where
         free_torsions,
         params.uniform_start,
     );
-    let mut cur = minimize_free(start, value, value_grad, params.local_iters, free_dofs);
-    let mut best = DockResult {
-        conf: cur.conf.clone(),
-        energy: cur.energy,
-    };
+    let mut cur = minimize_free(start, value, value_grad, params.chain_iters, free_dofs);
 
-    // 反復局所探索（ILS）＋焼きなまし: 毎ステップ 1 自由度変異 → 局所最適化 → Metropolis 受理。
-    // 温度は temp_init→temp_final へ幾何冷却（高温で誤基脱出→低温で収束）。best は別途最小を保持。
+    // 訪れた局所最小をクラスタ保持（受理/非受理を問わず）＝探索の幅を保持。
+    let mut pool: Vec<(Conformation, f64, Vec<Vec3>)> = Vec::new();
+    cluster_insert(lig, &mut pool, cur.conf.clone(), cur.energy, params.cluster_rmsd, params.n_modes);
+
+    // 反復局所探索（ILS）＋焼きなまし: 毎ステップ 1 自由度変異 → 浅い局所最適化 → Metropolis 受理。
     for k in 0..n_steps {
         let mut trial = cur.conf.clone();
         mutate(&mut trial, &mut rng, free_torsions);
-        let res = minimize_free(trial, value, value_grad, params.local_iters, free_dofs);
+        let res = minimize_free(trial, value, value_grad, params.chain_iters, free_dofs);
+        cluster_insert(lig, &mut pool, res.conf.clone(), res.energy, params.cluster_rmsd, params.n_modes);
 
         let frac = if n_steps > 1 {
             k as f64 / (n_steps - 1) as f64
@@ -201,15 +264,12 @@ where
             || rng.r#gen::<f64>() < (-(res.energy - cur.energy) / temp).exp();
         if accept {
             cur = res;
-            if cur.energy < best.energy {
-                best = DockResult {
-                    conf: cur.conf.clone(),
-                    energy: cur.energy,
-                };
-            }
         }
     }
-    best
+
+    let mut reps: Vec<(Conformation, f64)> = pool.into_iter().map(|(c, e, _)| (c, e)).collect();
+    reps.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    reps
 }
 
 /// 受容体と好ましく接触する初期配置を棄却サンプリングで得る。
@@ -289,4 +349,62 @@ fn mutate<R: Rng>(conf: &mut Conformation, rng: &mut R, free_torsions: &[usize])
         }
     }
     conf.apply_delta(&d);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ligand::LigandModel;
+    use isct_io::pdbqt;
+
+    const LIG: &str = "\
+ROOT
+ATOM      1  C   LIG A   1       0.000   0.000   0.000  0.00  0.00    +0.000 C
+ATOM      2  C   LIG A   1       1.500   0.000   0.000  0.00  0.00    +0.000 C
+ATOM      3  O   LIG A   1       0.000   1.500   0.000  0.00  0.00    -0.300 OA
+ENDROOT
+TORSDOF 0
+";
+
+    fn translated(base: &Conformation, dx: f64) -> Conformation {
+        let mut c = base.clone();
+        c.apply_delta(&[dx, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        c
+    }
+
+    #[test]
+    fn cluster_poses_separates_modes_and_keeps_lowest() {
+        let mol = pdbqt::parse_str(LIG).unwrap();
+        let lig = LigandModel::new(&mol);
+        let id = Conformation::identity(lig.n_torsions());
+
+        // モード A: 原点近傍に 2 ポーズ（0Å e=-5, 0.5Å e=-6）→ 同一クラスタ、代表は -6。
+        // モード B: 10Å 離れ e=-4 → 別クラスタ。
+        let cands = vec![
+            (id.clone(), -5.0),
+            (translated(&id, 0.5), -6.0),
+            (translated(&id, 10.0), -4.0),
+        ];
+        let reps = cluster_poses(&lig, cands, 2.0, 9);
+        assert_eq!(reps.len(), 2, "2 distinct modes expected");
+        // 昇順: [0]=モードA代表(-6), [1]=モードB(-4)。
+        assert!((reps[0].1 - (-6.0)).abs() < 1e-9, "lowest-energy rep of mode A");
+        assert!((reps[1].1 - (-4.0)).abs() < 1e-9, "mode B");
+        // 代表 A は 0.5Å 側（低エネルギー）であること。
+        let p0 = lig.scored_positions(&reps[0].0);
+        assert!((p0[0].x - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cluster_poses_respects_cap() {
+        let mol = pdbqt::parse_str(LIG).unwrap();
+        let lig = LigandModel::new(&mol);
+        let id = Conformation::identity(lig.n_torsions());
+        // 5 個の十分離れたモード、cap=3 → 3 個（最低エネルギー側）。
+        let cands: Vec<(Conformation, f64)> = (0..5)
+            .map(|i| (translated(&id, 10.0 * i as f64), -(i as f64)))
+            .collect();
+        let reps = cluster_poses(&lig, cands, 2.0, 3);
+        assert_eq!(reps.len(), 3);
+    }
 }

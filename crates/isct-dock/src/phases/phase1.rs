@@ -34,11 +34,13 @@ pub fn dock_seed(
     prune_threshold: f64,
 ) -> SeedResult {
     let free = seed.rgroup_torsions(core_atoms);
-    let result = dock_constrained(seed, scorer, params, &free);
-    let pruned = result.energy > prune_threshold;
+    // 多モードのうち最良（[0]）を seed のベストポーズとして使う。
+    let modes = dock_constrained(seed, scorer, params, &free);
+    let best = modes.into_iter().next().expect("at least one mode");
+    let pruned = best.energy > prune_threshold;
     SeedResult {
-        conf: result.conf,
-        energy: result.energy,
+        conf: best.conf,
+        energy: best.energy,
         pruned,
     }
 }

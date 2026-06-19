@@ -115,8 +115,11 @@ fn cmd_screen(
             n_steps: cfg.run.n_steps,
             temp_init: cfg.run.temp_init,
             temp_final: cfg.run.temp_final,
+            chain_iters: cfg.run.chain_iters,
+            polish_iters: cfg.run.polish_iters,
+            cluster_rmsd: cfg.run.cluster_rmsd,
+            n_modes: cfg.run.n_modes,
             uniform_start: use_grid,
-            ..SearchParams::default()
         },
         prune_threshold: cfg.screen.prune_threshold,
         local_iters: cfg.screen.local_iters,
@@ -189,8 +192,11 @@ fn cmd_dock(
         n_steps: cfg.run.n_steps,
         temp_init: cfg.run.temp_init,
         temp_final: cfg.run.temp_final,
+        chain_iters: cfg.run.chain_iters,
+        polish_iters: cfg.run.polish_iters,
+        cluster_rmsd: cfg.run.cluster_rmsd,
+        n_modes: cfg.run.n_modes,
         uniform_start: use_grid,
-        ..SearchParams::default()
     };
 
     let eff_steps = if params.n_steps == 0 {
@@ -209,7 +215,7 @@ fn cmd_dock(
         cfg.run.scoring,
     );
 
-    let result = if local_only {
+    let modes = if local_only {
         // 診断: 結晶（恒等）ポーズから局所最適化のみ。
         let objective = |c: &isct_dock::ligand::Conformation| {
             scorer.intermolecular(&lig.scored_atoms(c))
@@ -217,38 +223,48 @@ fn cmd_dock(
         let start = isct_dock::ligand::Conformation::identity(lig.n_torsions());
         let free = isct_dock::optimizer::all_dofs(start.dim());
         let r = isct_dock::optimizer::minimize_free_fd(start, &objective, 200, &free);
-        isct_dock::search::DockResult {
+        vec![isct_dock::search::DockResult {
             conf: r.conf,
             energy: r.energy,
-        }
+        }]
     } else {
         dock(&lig, &scorer, &params)
     };
 
-    // エネルギー内訳（分子間・分子内）。result.energy は目的関数合計。
-    let final_atoms = lig.scored_atoms(&result.conf);
+    let best = &modes[0];
+    // 内訳・RMSD は最良モードで。
+    let final_atoms = lig.scored_atoms(&best.conf);
     let e_inter = scorer.intermolecular(&final_atoms);
     let e_intra = lig.intramolecular(&final_atoms);
-
-    // 入力（結晶）ポーズを基準にした RMSD。
-    let pred = lig.scored_positions(&result.conf);
     let reference = lig.reference_scored_positions();
-    let rmsd = geometry::rmsd(&pred, &reference);
+    let rmsd = geometry::rmsd(&lig.scored_positions(&best.conf), &reference);
 
-    // ポーズ出力。
-    let pose = pdbqt::write_pose(&lig_text, &lig.world_coords(&result.conf))?;
+    // マルチモデル PDBQT 出力（Vina 流）: 各モードを MODEL/ENDMDL で包む。
+    let mut out_text = String::new();
+    for (i, m) in modes.iter().enumerate() {
+        let pose = pdbqt::write_pose(&lig_text, &lig.world_coords(&m.conf))?;
+        out_text.push_str(&format!("MODEL {}\n", i + 1));
+        out_text.push_str(&pose);
+        out_text.push_str("ENDMDL\n");
+    }
     let out_path = out.map(PathBuf::from).unwrap_or_else(|| {
         let stem = ligand.file_stem().and_then(|s| s.to_str()).unwrap_or("ligand");
         ligand.with_file_name(format!("{stem}_isct_out.pdbqt"))
     });
-    std::fs::write(&out_path, pose)?;
+    std::fs::write(&out_path, out_text)?;
 
-    println!("# isct-dock dock (Vina 互換, M2)");
+    println!("# isct-dock dock (Vina 互換, RMSD クラスタリング)");
     println!("intermolecular energy      : {e_inter:.4} kcal/mol");
     println!("intramolecular energy      : {e_intra:.4} kcal/mol");
-    println!("total (objective)          : {:.4} kcal/mol", result.energy);
+    println!("total (objective)          : {:.4} kcal/mol", best.energy);
     println!("RMSD vs input(crystal) pose: {rmsd:.3} Å");
-    println!("output pose                : {}", out_path.display());
+    println!("modes (RMSD-clustered)     : {}", modes.len());
+    for (i, m) in modes.iter().enumerate() {
+        let inter = scorer.intermolecular(&lig.scored_atoms(&m.conf));
+        let rm = geometry::rmsd(&lig.scored_positions(&m.conf), &reference);
+        println!("  mode {:2}  inter={:8.4}  rmsd_vs_crystal={:6.3} Å", i + 1, inter, rm);
+    }
+    println!("output poses               : {}", out_path.display());
     Ok(())
 }
 

@@ -101,6 +101,18 @@ pub struct RunOpts {
     /// 焼きなまし温度の終値（低温で収束）。
     #[serde(default = "default_temp_final")]
     pub temp_final: f64,
+    /// ILS 鎖の各ステップ局所最適化反復（浅く広く探索）。
+    #[serde(default = "default_chain_iters")]
+    pub chain_iters: usize,
+    /// 代表ポーズの最終精密化反復（厳密 f64 で厚く）。
+    #[serde(default = "default_polish_iters")]
+    pub polish_iters: usize,
+    /// ポーズ RMSD クラスタリング閾値（Å）。
+    #[serde(default = "default_cluster_rmsd")]
+    pub cluster_rmsd: f64,
+    /// 保持・出力する最大モード数。
+    #[serde(default = "default_n_modes")]
+    pub n_modes: usize,
 }
 
 impl Default for RunOpts {
@@ -112,6 +124,10 @@ impl Default for RunOpts {
             scoring: Scoring::default(),
             temp_init: default_temp_init(),
             temp_final: default_temp_final(),
+            chain_iters: default_chain_iters(),
+            polish_iters: default_polish_iters(),
+            cluster_rmsd: default_cluster_rmsd(),
+            n_modes: default_n_modes(),
         }
     }
 }
@@ -122,6 +138,19 @@ fn default_temp_init() -> f64 {
 fn default_temp_final() -> f64 {
     // 既定は固定温度（init==final）。焼きなましは temp_init>temp_final を明示指定したとき有効。
     1.0
+}
+fn default_chain_iters() -> usize {
+    // 浅い chain は収束を損ね逆効果のためフル反復を既定とする（探索の幅はクラスタリングで確保）。
+    120
+}
+fn default_polish_iters() -> usize {
+    200
+}
+fn default_cluster_rmsd() -> f64 {
+    2.0
+}
+fn default_n_modes() -> usize {
+    9
 }
 
 fn default_seed() -> u64 {
