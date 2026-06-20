@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod library;
+pub mod library_bin;
 pub mod pdbqt;
 
 /// クレート共通のエラー型。

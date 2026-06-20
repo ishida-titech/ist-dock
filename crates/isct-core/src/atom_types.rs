@@ -7,6 +7,8 @@
 //!
 //! 参考: AutoDock Vina `atom_constants.h`（Apache-2.0、関数形・定数は公開）。
 
+use serde::{Deserialize, Serialize};
+
 use crate::CoreError;
 
 /// 元素種別（結合検出・型付与に必要な範囲）。
@@ -50,7 +52,7 @@ impl Element {
 }
 
 /// PDBQT に現れる AutoDock 原子型。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AdType {
     /// 脂肪族炭素。
     C,
@@ -133,7 +135,7 @@ impl AdType {
 }
 
 /// Vina XS 原子型。スコアリングの半径・疎水性・H 結合性を担う。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum XsType {
     /// 疎水性炭素（異種原子に未結合）。
     CarbonH,

@@ -4,16 +4,62 @@
 //! Phase 2（子の核固定配置）→ Phase 3（R 基 torsion 最適化＋Δエネルギー）を実行して、
 //! 全分子のスコアとクラスタ生存統計を集計する。単一受容体・固定シードで決定論的。
 
+use std::borrow::Cow;
+
+use isct_core::atom_types::XsType;
 use isct_core::geometry::Vec3;
 use isct_core::scoring::{apply_torsion_correction, ScoredAtom};
 use isct_io::library::{Cluster, Library, MolEntry};
-use isct_io::{pdbqt, IoError};
+use isct_io::library_bin::BinaryLibrary;
+use isct_io::pdbqt;
 use rayon::prelude::*;
 
 use crate::energy::Scorer;
 use crate::ligand::LigandModel;
 use crate::phases::{phase1, phase2, phase3};
 use crate::search::SearchParams;
+
+/// クラスタの供給元（in-RAM の [`Library`] か memmap streaming の [`BinaryLibrary`]）。
+/// `screen` をこの trait に汎用化し、バイナリでは**クラスタ単位の遅延デコード**でメモリ有界にする。
+pub trait ClusterSource: Sync {
+    fn n_clusters(&self) -> usize;
+    /// クラスタ `i`（Library は借用、Binary は遅延デコードの所有値）。
+    fn cluster(&self, i: usize) -> Cow<'_, Cluster>;
+    /// pocket 未指定（既定ボックス）クラスタが存在するか（共有スコアラ構築の要否）。
+    fn has_default_box(&self) -> bool;
+    /// 既定ボックスクラスタの XS 型 union（共有 grid マップ生成用）。
+    fn shared_xs_types(&self) -> Vec<XsType>;
+}
+
+impl ClusterSource for Library {
+    fn n_clusters(&self) -> usize {
+        self.clusters.len()
+    }
+    fn cluster(&self, i: usize) -> Cow<'_, Cluster> {
+        Cow::Borrowed(&self.clusters[i])
+    }
+    fn has_default_box(&self) -> bool {
+        self.clusters.iter().any(|c| c.pocket.is_none())
+    }
+    fn shared_xs_types(&self) -> Vec<XsType> {
+        shared_xs_types(self)
+    }
+}
+
+impl ClusterSource for BinaryLibrary {
+    fn n_clusters(&self) -> usize {
+        self.n_clusters()
+    }
+    fn cluster(&self, i: usize) -> Cow<'_, Cluster> {
+        Cow::Owned(self.cluster(i).expect("binary library: cluster decode failed (corrupt file)"))
+    }
+    fn has_default_box(&self) -> bool {
+        self.has_default_box()
+    }
+    fn shared_xs_types(&self) -> Vec<XsType> {
+        self.xs_union().to_vec()
+    }
+}
 
 /// スクリーニング実行パラメータ。
 #[derive(Debug, Clone)]
@@ -48,8 +94,9 @@ pub struct ScoredEntry {
     pub e_inter: f64,
     /// 役割（"seed" または "child"）。
     pub role: &'static str,
-    /// ベストポーズの全原子 world 座標（`keep_poses` 有効時のみ。ポーズ出力に使う）。
-    pub pose: Option<Vec<Vec3>>,
+    /// ベストポーズの PDBQT ボディ（`write_pose` 済み, `keep_poses` 有効時のみ）。ライブラリ非依存に
+    /// 採点時へ書き込む（streaming 時に元 PDBQT を引けないため）。
+    pub pose: Option<String>,
 }
 
 /// クラスタ単位の処理結果。
@@ -86,26 +133,24 @@ impl ScreenReport {
     }
 }
 
-/// ライブラリをスクリーニングする。
-pub fn screen(receptor: &[ScoredAtom], lib: &Library, params: &ScreenParams) -> ScreenReport {
+/// ライブラリ（in-RAM `Library` / streaming `BinaryLibrary`）をスクリーニングする。
+pub fn screen<S: ClusterSource>(receptor: &[ScoredAtom], src: &S, params: &ScreenParams) -> ScreenReport {
     // 既定ボックス（pocket 未指定クラスタ用）のスコアラを **1 度だけ**構築して共有する。grid マップは
     // (受容体, ボックス, 型) のみに依存＝全 pocket 未指定クラスタで同一なので、クラスタ毎の再構築を避ける。
     // pocket 指定クラスタは process_cluster 内でローカル構築（フォールバック）。出力はビット一致・決定的。
-    let any_default_box = lib.clusters.iter().any(|c| c.pocket.is_none());
-    let shared: Option<Scorer> = any_default_box.then(|| {
+    let shared: Option<Scorer> = src.has_default_box().then(|| {
         if params.use_grid {
-            let types = shared_xs_types(lib);
-            Scorer::new_grid(receptor, params.center, params.size, &types)
+            Scorer::new_grid(receptor, params.center, params.size, &src.shared_xs_types())
         } else {
             Scorer::new(receptor, params.center, params.size)
         }
     });
 
-    // クラスタは独立 → 並列処理。collect で lib 順を保ち、出力は決定的。
-    let per_cluster: Vec<(ClusterOutcome, Vec<ScoredEntry>)> = lib
-        .clusters
-        .par_iter()
-        .map(|cluster| process_cluster(receptor, cluster, params, shared.as_ref()))
+    // クラスタは独立 → 並列処理。binary は cluster() で遅延デコード→処理→破棄でメモリ有界。
+    // インデックス順 collect で出力順序を保ち決定的。
+    let per_cluster: Vec<(ClusterOutcome, Vec<ScoredEntry>)> = (0..src.n_clusters())
+        .into_par_iter()
+        .map(|i| process_cluster(receptor, &src.cluster(i), params, shared.as_ref()))
         .collect();
 
     let mut entries = Vec::new();
@@ -208,7 +253,10 @@ fn process_cluster(
         total_score: apply_torsion_correction(seed_inter, cluster.seed.molecule.torsdof),
         e_inter: seed_inter,
         role: "seed",
-        pose: params.keep_poses.then(|| seed_lig.world_coords(&best.conf)),
+        pose: params
+            .keep_poses
+            .then(|| pdbqt::write_pose(&cluster.seed.source_text, &seed_lig.world_coords(&best.conf)).ok())
+            .flatten(),
     });
 
     // 各 seed モードの docked コア world 座標（Phase 2 の重ね合わせ目標。子は各モードへ配置し最良を採用）。
@@ -265,7 +313,10 @@ fn score_child(
         total_score: apply_torsion_correction(best.e_inter, child.molecule.torsdof),
         e_inter: best.e_inter,
         role: "child",
-        pose: params.keep_poses.then(|| child_lig.world_coords(&best.conf)),
+        pose: params
+            .keep_poses
+            .then(|| pdbqt::write_pose(&child.source_text, &child_lig.world_coords(&best.conf)).ok())
+            .flatten(),
     }
 }
 
@@ -295,34 +346,21 @@ pub fn ranking_tsv(report: &ScreenReport) -> String {
 
 /// 上位 `top_n` ランク（スコア昇順）の分子のベストポーズを **マルチモデル PDBQT** で返す。
 /// `keep_poses=true` でドッキングした場合のみポーズが入る（未保持エントリはスキップ）。各 MODEL に
-/// REMARK で Rank/Compound/Cluster/Score/Role を付す。`lib` から元 PDBQT テキスト（テンプレート）を引く。
-pub fn poses_pdbqt(report: &ScreenReport, lib: &Library, top_n: usize) -> Result<String, IoError> {
-    // (cluster_id, compound_id) → 元 PDBQT テキスト。
-    let mut src: std::collections::HashMap<(&str, &str), &str> = std::collections::HashMap::new();
-    for c in &lib.clusters {
-        src.insert((c.id.as_str(), c.seed.compound_id.as_str()), c.seed.source_text.as_str());
-        for ch in &c.children {
-            src.insert((c.id.as_str(), ch.compound_id.as_str()), ch.source_text.as_str());
-        }
-    }
+/// REMARK で Rank/Compound/Cluster/Score/Role を付す。ポーズは採点時に書き込み済み（ライブラリ非依存）。
+pub fn poses_pdbqt(report: &ScreenReport, top_n: usize) -> String {
     let mut ranked: Vec<&ScoredEntry> = report.entries.iter().filter(|e| e.pose.is_some()).collect();
     ranked.sort_by(|a, b| a.total_score.partial_cmp(&b.total_score).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut out = String::new();
     for (i, e) in ranked.iter().take(top_n).enumerate() {
-        let coords = e.pose.as_ref().unwrap();
-        let text = src.get(&(e.cluster_id.as_str(), e.compound_id.as_str())).ok_or_else(|| {
-            IoError::Pdbqt(format!("source text not found: {}/{}", e.cluster_id, e.compound_id))
-        })?;
-        let body = pdbqt::write_pose(text, coords)?;
         out.push_str(&format!(
             "MODEL {}\nREMARK Rank {} Compound {} Cluster {} Score {:.4} Role {}\n",
             i + 1, i + 1, e.compound_id, e.cluster_id, e.total_score, e.role,
         ));
-        out.push_str(&body);
+        out.push_str(e.pose.as_ref().unwrap());
         out.push_str("ENDMDL\n");
     }
-    Ok(out)
+    out
 }
 
 #[cfg(test)]
@@ -414,7 +452,7 @@ TORSDOF 0
         // keep_poses 有効時は各エントリにポーズ座標が入る。
         assert!(report.entries.iter().all(|e| e.pose.is_some()));
         // マルチモデル PDBQT が生成され、REMARK 付き MODEL を含む。
-        let poses = poses_pdbqt(&report, &lib, 100).unwrap();
+        let poses = poses_pdbqt(&report, 100);
         assert!(poses.contains("MODEL 1\n"));
         assert!(poses.contains("REMARK Rank 1"));
         assert!(poses.contains("ENDMDL"));

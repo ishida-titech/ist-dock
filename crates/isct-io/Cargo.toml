@@ -13,3 +13,5 @@ isct-core.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 toml.workspace = true
+bincode.workspace = true
+memmap2.workspace = true

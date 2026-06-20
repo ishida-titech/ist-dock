@@ -21,7 +21,7 @@ isct-io = { path = "crates/isct-io" }
 isct-dock = { path = "crates/isct-dock" }
 
 # 外部クレート（暫定。各クレートの Cargo.toml で必要なものだけ有効化する）
-nalgebra = "0.33"
+nalgebra = { version = "0.33", features = ["serde-serialize"] }
 thiserror = "2"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -36,8 +36,9 @@ env_logger = "0.11"
 rayon = "1"
 wide = "0.7"
 criterion = { version = "0.5", default-features = false }
-# core_affinity = "0.8"
-# memmap2 = "0.9"
+core_affinity = "0.8"
+memmap2 = "0.9"
+bincode = "1"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"

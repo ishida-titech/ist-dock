@@ -14,6 +14,7 @@ use std::path::Path;
 use isct_core::atom_types::{assign_xs_type, AdType, Element};
 use isct_core::geometry::{distance, Vec3};
 use isct_core::scoring::ScoredAtom;
+use serde::{Deserialize, Serialize};
 
 use crate::IoError;
 
@@ -21,7 +22,7 @@ use crate::IoError;
 const BOND_TOLERANCE: f64 = 1.1;
 
 /// PDBQT の 1 原子。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Atom {
     pub serial: u32,
     pub pos: Vec3,
@@ -31,7 +32,7 @@ pub struct Atom {
 }
 
 /// torsion 木のフラグメント（剛体片）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fragment {
     /// 親フラグメント（root は None）。
     pub parent: Option<usize>,
@@ -42,7 +43,7 @@ pub struct Fragment {
 }
 
 /// パース済み分子（全原子。水素も保持し、結合検出に使う）。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Molecule {
     pub atoms: Vec<Atom>,
     /// フラグメント木。`fragments[0]` が root。受容体では root 1 個のみ。

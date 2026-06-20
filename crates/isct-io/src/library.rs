@@ -29,20 +29,20 @@
 
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::pdbqt::{self, Molecule};
 use crate::IoError;
 
 /// ポケット拘束（探索ボックス）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pocket {
     pub center: [f64; 3],
     pub size: [f64; 3],
 }
 
 /// ライブラリ中の 1 分子（seed または子）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MolEntry {
     pub compound_id: String,
     /// パース済み分子（torsion 木を含む）。
@@ -54,7 +54,7 @@ pub struct MolEntry {
 }
 
 /// 1 クラスタ（代表 seed ＋ 子分子群）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cluster {
     pub id: String,
     pub pocket: Option<Pocket>,

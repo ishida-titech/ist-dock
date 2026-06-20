@@ -71,6 +71,16 @@ enum Command {
         /// `--poses-out` で書き出す上位ランク数（既定 100）。
         #[arg(long, default_value_t = 100)]
         top: usize,
+        /// ワーカスレッドを物理コアにピン留め（Linux。他 OS は no-op）。
+        #[arg(long)]
+        pin_threads: bool,
+    },
+    /// TOML マニフェスト＋PDBQT のクラスタライブラリを memmap 用バイナリへ変換する（M4）。
+    Pack {
+        /// クラスタライブラリのマニフェスト（TOML）。
+        manifest: PathBuf,
+        /// 出力バイナリ（.bin）。
+        out: PathBuf,
     },
 }
 
@@ -94,11 +104,42 @@ fn main() -> Result<()> {
             out,
             poses_out,
             top,
-        } => cmd_screen(&receptor, &library, &config, out.as_deref(), poses_out.as_deref(), top),
+            pin_threads,
+        } => cmd_screen(&receptor, &library, &config, out.as_deref(), poses_out.as_deref(), top, pin_threads),
+        Command::Pack { manifest, out } => cmd_pack(&manifest, &out),
     }
 }
 
-/// クラスタライブラリをスクリーニングする（M3）。
+/// `--pin-threads` 時、rayon グローバルプールのワーカを物理コアへピン留めする（Linux）。
+/// `RAYON_NUM_THREADS` を尊重。既に構築済み等で失敗しても続行（best-effort）。
+fn setup_thread_pinning(pin: bool) {
+    if !pin {
+        return;
+    }
+    let core_ids = core_affinity::get_core_ids().unwrap_or_default();
+    if core_ids.is_empty() {
+        return;
+    }
+    let _ = rayon::ThreadPoolBuilder::new()
+        .start_handler(move |i| {
+            let id = core_ids[i % core_ids.len()];
+            core_affinity::set_for_current(id);
+        })
+        .build_global();
+}
+
+/// TOML マニフェストを memmap 用バイナリへ変換する（M4）。
+fn cmd_pack(manifest: &PathBuf, out: &PathBuf) -> Result<()> {
+    let lib = library::load(manifest)
+        .with_context(|| format!("failed to load library: {}", manifest.display()))?;
+    isct_io::library_bin::pack(&lib, out)
+        .with_context(|| format!("failed to pack: {}", out.display()))?;
+    println!("packed {} clusters -> {}", lib.clusters.len(), out.display());
+    Ok(())
+}
+
+/// クラスタライブラリをスクリーニングする（M3/M4）。ライブラリは TOML マニフェスト（小・デバッグ）か
+/// `pack` 済みバイナリ（拡張子 .bin。大規模・memmap streaming）。
 fn cmd_screen(
     receptor: &PathBuf,
     library_path: &PathBuf,
@@ -106,11 +147,11 @@ fn cmd_screen(
     out: Option<&std::path::Path>,
     poses_out: Option<&std::path::Path>,
     top: usize,
+    pin_threads: bool,
 ) -> Result<()> {
+    setup_thread_pinning(pin_threads);
     let rec = pdbqt::parse_file(receptor)
         .with_context(|| format!("failed to parse receptor: {}", receptor.display()))?;
-    let lib = library::load(library_path)
-        .with_context(|| format!("failed to load library: {}", library_path.display()))?;
     let cfg = config::load(config_path)
         .with_context(|| format!("failed to load config: {}", config_path.display()))?;
 
@@ -147,28 +188,38 @@ fn cmd_screen(
         keep_poses: poses_out.is_some(), // ポーズ出力要求時のみ座標を保持
     };
 
+    let is_binary = library_path.extension().is_some_and(|e| e == "bin");
     eprintln!(
-        "screen: receptor(scored)={} atoms, clusters={}, children={}, seed={}, runs={}, steps={}, prune>{}",
+        "screen: receptor(scored)={} atoms, library={} ({}), seed={}, runs={}, steps={}, prune>{}, pin={}",
         rec_scored.len(),
-        lib.clusters.len(),
-        lib.n_children(),
+        library_path.display(),
+        if is_binary { "binary/memmap" } else { "toml" },
         params.search.seed,
         params.search.n_runs,
         params.search.n_steps,
         params.prune_threshold,
+        pin_threads,
     );
 
-    let report = screen(&rec_scored, &lib, &params);
+    // TOML（in-RAM）か バイナリ（memmap streaming）かでソースを選び、汎用 screen を呼ぶ。
+    let report = if is_binary {
+        let src = isct_io::library_bin::BinaryLibrary::open(library_path)
+            .with_context(|| format!("failed to open binary library: {}", library_path.display()))?;
+        screen(&rec_scored, &src, &params)
+    } else {
+        let lib = library::load(library_path)
+            .with_context(|| format!("failed to load library: {}", library_path.display()))?;
+        screen(&rec_scored, &lib, &params)
+    };
 
     let out_path = out.map(PathBuf::from).unwrap_or_else(|| {
         library_path.with_file_name("ranking.tsv")
     });
     std::fs::write(&out_path, ranking_tsv(&report))?;
 
-    // 上位ポーズのマルチモデル PDBQT 出力（--poses-out 指定時）。
+    // 上位ポーズのマルチモデル PDBQT 出力（--poses-out 指定時。ポーズは採点時に書き込み済み＝lib 非依存）。
     if let Some(poses_path) = poses_out {
-        let poses = isct_dock::screen::poses_pdbqt(&report, &lib, top)?;
-        std::fs::write(poses_path, poses)?;
+        std::fs::write(poses_path, isct_dock::screen::poses_pdbqt(&report, top))?;
     }
 
     println!("# isct-dock screen (ISCT-Dock Phase 1-3, M3)");

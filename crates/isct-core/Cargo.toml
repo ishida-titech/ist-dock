@@ -13,3 +13,4 @@ nalgebra.workspace = true
 thiserror.workspace = true
 wide.workspace = true
 rayon.workspace = true
+serde.workspace = true

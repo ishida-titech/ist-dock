@@ -13,7 +13,7 @@
 | M1 Vina スコア一致 | **完了** | `score`。`vina --score_only` と差<1e-2。 |
 | M2 Vina 互換ドッキング | **完了** | `dock`。torsion 木・剛体+回転+torsion・**解析的勾配**・MC+BFGS・決定論。再ドッキング<2Å。 |
 | M3 クラスタ高速化 | **完了** | library/Phase1-3/delta_energy・前処理・manifest・効果検証・**screen ポーズ出力**・**複数 seed ポーズ保持**。 |
-| M4 単一ノード最適化 | **大部分実装** | grid・SIMD・ゼロアロケーション・rayon 並列・解析的勾配 済。**core_affinity / memmap+バイナリ 未**。 |
+| M4 単一ノード最適化 | **完了** | grid・SIMD・ゼロアロケーション・rayon・解析的勾配・**core_affinity**・**memmap+バイナリ・ライブラリ streaming**。 |
 | M5 追加高速化（動的 box） | 未着手 | PCA 身の丈ボックス等。 |
 | M6 精度向上 | 未着手 | アンサンブル・Soft-core・柔軟側鎖。 |
 | 分散（複数ノード） | スコープ外 | 別計画。 |
@@ -42,12 +42,15 @@
   緩和（ampc_mini で 114 −1.93→−5.31）。既定 1＝従来。
 - **スクリーニング grid 再利用**（既定ボックス Scorer 共有, ビット一致, N=50 で 10.4×, `docs/results.202606201138`）。
 
-### M4 — 単一ノード最適化【大部分実装】
-- 実装済: グリッド補間（`grid.rs`）、SIMD f32x8（`scoring_simd.rs`, AVX2 codegen で有効）、ゼロアロケーション
-  再利用バッファ（`EvalScratch`）、rayon スレッド並列、解析的勾配。
-- **未実装**: `core_affinity`（コアピン留め）、`memmap2` + カスタムバイナリ・ライブラリ（10M 入力レイアウト, 
-  `docs/findings.202606200933`）。
+### M4 — 単一ノード最適化【完了】
+- グリッド補間（`grid.rs`）、SIMD f32x8（`scoring_simd.rs`, AVX2 codegen で有効）、ゼロアロケーション再利用
+  バッファ（`EvalScratch`）、rayon スレッド並列、解析的勾配。
+- **core_affinity**: `screen --pin-threads` でワーカを物理コアにピン留め（Linux）。
+- **memmap+カスタムバイナリ・ライブラリ**: `isct-io/library_bin.rs`（serde+bincode）。`pack` で TOML→バイナリ、
+  `screen <lib.bin>` は memmap で**クラスタ単位の遅延デコード**＝全 RAM ロード回避。`ClusterSource` trait で
+  `Library`/`BinaryLibrary` 両対応の汎用 `screen`。TOML 経路とビット一致（`docs/results.202606201419`）。
 - 検証: 最適化前後でスコア不変・スループット計測済（`docs/results.20260618*`, `docs/results.202606191907` 等）。
+- 残: **10M 規模の大規模テスト（スループット/メモリ実測）は後日**（別途実施）。
 
 ### M5 / M6 — 未着手
 - M5: 動的バウンディングボックス（PCA）・二面角優先度。
@@ -69,3 +72,5 @@
   スクリーニング grid 再利用を追記。
 - 2026-06-20: M3 残項目（screen 上位ポーズ出力・複数 seed ポーズ保持）を実装→ **M3 完了**に更新
   （`docs/results.202606201202`）。
+- 2026-06-20: M4 残（core_affinity・memmap+バイナリ・ライブラリ streaming）を実装→ **M4 完了**に更新
+  （`docs/results.202606201419`）。大規模テストは後日。
