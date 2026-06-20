@@ -1,0 +1,67 @@
+# PROGRESS.md — ISCT-Dock 進捗
+
+マイルストーン（[PLAN.md](PLAN.md)）の実装・検証状況を**随時更新する living document**。
+（`docs/results.*`・`docs/findings.*` は一度作成したら更新しない時系列ログ。**本ファイルは現状を反映して
+上書き・追記する**。新機能・検証を入れたらこの表と詳細・更新履歴を更新すること。）
+
+最終更新: 2026-06-20
+
+## マイルストーン状態
+
+| マイルストーン | 状態 | 要点 |
+|---|---|---|
+| M1 Vina スコア一致 | **完了** | `score`。`vina --score_only` と差<1e-2。 |
+| M2 Vina 互換ドッキング | **完了** | `dock`。torsion 木・剛体+回転+torsion・**解析的勾配**・MC+BFGS・決定論。再ドッキング<2Å。 |
+| M3 クラスタ高速化 | **完了（中核＋効果検証）** | library/Phase1-3/delta_energy・前処理・manifest・効果検証済。軽微 2 件未対応（下記）。 |
+| M4 単一ノード最適化 | **大部分実装** | grid・SIMD・ゼロアロケーション・rayon 並列・解析的勾配 済。**core_affinity / memmap+バイナリ 未**。 |
+| M5 追加高速化（動的 box） | 未着手 | PCA 身の丈ボックス等。 |
+| M6 精度向上 | 未着手 | アンサンブル・Soft-core・柔軟側鎖。 |
+| 分散（複数ノード） | スコープ外 | 別計画。 |
+
+## 詳細
+
+### M1 — Vina スコア一致【完了】
+- PDBQT パーサ・XS 原子型・Vina スコア（gauss1/2・repulsion・hydrophobic・hbond, inter+intra）・`score` サブコマンド。
+- `vina --score_only` 一致ゲート <1e-2 達成。
+
+### M2 — Vina 互換ドッキング【完了】
+- リガンド torsion 木、剛体並進(3)+回転(四元数)+torsion、ボックス罰則、接触開始、分子内エネルギー。
+- **解析的勾配**（`dof_gradient` 連鎖則）＋ BFGS 局所最適化＋ Monte Carlo（ILS）。固定シードで決定論。
+- 再ドッキング RMSD<2Å（3ptb/1stp/1iep, pdb/1iep 5/5）。
+
+### M3 — クラスタ高速化【完了（中核＋効果検証）】
+- クラスタデータ構造（Seed+Children/MCS, `isct-io/library.rs`）、前処理 `tools/preprocess/build_library.py`、
+  manifest（`bench/data/library/ampc_*`）。
+- Phase 1（seed ドッキング＋一括棄却）/ Phase 2（コア座標ロック・固定マージン）/ Phase 3（R 基 torsion＋
+  Δエネルギーキャッシュ `delta_energy.rs`）。RMSD ポーズクラスタリング。
+- 効果検証（`docs/results.202606172136`）: 削減率/棄却/偽陰性/Scaffold 拘束劣化/速度。結論＝ampc@0.55 は
+  旨味小・拘束劣化が本質課題。
+- **未対応（軽微）**:
+  - `screen` の**上位ポーズ出力**（現状ランキング TSV のみ。PDBQT/SDF 未出力。`dock` は出力済）。
+  - **Phase 1 の複数 seed ポーズ保持・dedup**（現状 `phase1.rs` で単一 best のみ。doc に「後置」明記）。
+
+### M4 — 単一ノード最適化【大部分実装】
+- 実装済: グリッド補間（`grid.rs`）、SIMD f32x8（`scoring_simd.rs`, AVX2 codegen で有効）、ゼロアロケーション
+  再利用バッファ（`EvalScratch`）、rayon スレッド並列、解析的勾配。
+- **未実装**: `core_affinity`（コアピン留め）、`memmap2` + カスタムバイナリ・ライブラリ（10M 入力レイアウト, 
+  `docs/findings.202606200933`）。
+- 検証: 最適化前後でスコア不変・スループット計測済（`docs/results.20260618*`, `docs/results.202606191907` 等）。
+
+### M5 / M6 — 未着手
+- M5: 動的バウンディングボックス（PCA）・二面角優先度。
+- M6: マルチ受容体アンサンブル・Soft-core・柔軟側鎖。
+
+## マイルストーン外の追加実装・最適化（本体性能/機能）
+
+- **探索の改良**: ドリフト鎖（浅い per-step＋多 step＋最終深 polish）、RMSD ポーズクラスタリング（多モード出力）、
+  直線探索を grid 値に整合（3.5×）、深 polish 浅化、torsion 連動 step 予算。
+  → 多様 74 標的で **63%（2.05s）、Vina(64%/7.6s) 比 ~3.7× 高速**（`docs/results.202606191907` 等）。
+- **QuickVina2 相当の局所探索スキップ**（opt-in `search="qvina2"`, `qvina_cos` 可変, 既定 0.90, 決定論維持,
+  `docs/results.202606201115`）。QuickVina-W は未対応。
+- **スクリーニング grid 再利用**（既定ボックスの Scorer を 1 度構築・共有, ビット一致, クラスタ数に比例して
+  高速化 N=50 で 10.4×, `docs/results.202606201138`）。
+- 知見ドキュメント: `SIMD_OPTIMIZE.md`（SIMD は不規則 gather/精度感受性で割に合わず撤回）、`MANUAL.md`（利用法）。
+
+## 更新履歴
+- 2026-06-20: PROGRESS.md を PLAN.md から分離・新規作成。M1-M3 完了・M4 大部分実装を反映。QuickVina2・
+  スクリーニング grid 再利用を追記。
