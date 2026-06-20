@@ -30,11 +30,12 @@ RE_SCORE_INTER = re.compile(r"Intermolecular energy \(Ligand - Receptor\):\s*([-
 
 
 def isct_dock(d: Path, center, size, seed, out: Path):
+    search = os.environ.get("ISCT_SEARCH", "standard")  # standard / qvina2
     cfg = out.with_suffix(".toml")
     cfg.write_text(
         f"[box]\ncenter = [{center[0]}, {center[1]}, {center[2]}]\n"
         f"size = [{size[0]}, {size[1]}, {size[2]}]\n"
-        f'[run]\nseed = {seed}\nn_runs = {N_RUNS}\nscoring = "grid"\n'
+        f'[run]\nseed = {seed}\nn_runs = {N_RUNS}\nscoring = "grid"\nsearch = "{search}"\n'
     )
     env = {**os.environ, "RAYON_NUM_THREADS": str(THREADS)}
     t0 = time.perf_counter()

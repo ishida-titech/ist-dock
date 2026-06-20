@@ -83,6 +83,16 @@ pub enum Scoring {
     Grid,
 }
 
+/// 探索モード。`standard`=毎ステップ局所探索（既定・決定論）/ `qvina2`=QuickVina2 相当の局所探索スキップ
+/// （opt-in 高速化・決定論維持）。`qvinaw`（QuickVina-W: 協調 blind docking・非決定論）は後続フェーズ。
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchMode {
+    #[default]
+    Standard,
+    Qvina2,
+}
+
 /// 実行パラメータ（既定値あり）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct RunOpts {
@@ -95,6 +105,9 @@ pub struct RunOpts {
     /// 探索の分子間評価方式（既定: direct）。
     #[serde(default)]
     pub scoring: Scoring,
+    /// 探索モード（既定: standard。`qvina2` で局所探索スキップ＝opt-in 高速化）。
+    #[serde(default)]
+    pub search: SearchMode,
     /// 焼きなまし温度の初期値（高温で誤基脱出）。
     #[serde(default = "default_temp_init")]
     pub temp_init: f64,
@@ -128,6 +141,7 @@ impl Default for RunOpts {
             n_runs: default_n_runs(),
             n_steps: default_n_steps(),
             scoring: Scoring::default(),
+            search: SearchMode::default(),
             temp_init: default_temp_init(),
             temp_final: default_temp_final(),
             chain_iters: default_chain_iters(),

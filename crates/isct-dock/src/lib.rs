@@ -7,6 +7,7 @@ pub mod energy;
 pub mod ligand;
 pub mod optimizer;
 pub mod phases;
+pub mod qvina;
 pub mod screen;
 pub mod search;
 

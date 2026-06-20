@@ -15,6 +15,7 @@ use rayon::prelude::*;
 use crate::energy::Scorer;
 use crate::ligand::{Conformation, LigandModel};
 use crate::optimizer::{minimize_free, rigid_and_torsions};
+use crate::qvina::{dof_vector, project_grad, HistoryBuffer, QVinaParams};
 
 /// ポーズ評価の再利用バッファ（ゼロアロケーション探索用）。run ごと（または polish ループごと）に
 /// 1 つ確保し、毎ステップ・直線探索試行で使い回す。`minimize_free` は per-run で逐次のため、
@@ -110,6 +111,8 @@ pub struct SearchParams {
     pub temp_final: f64,
     /// 初期配置を一様ランダムにする（接触棄却を省く）。グリッドで勾配場が滑らかなとき有効。
     pub uniform_start: bool,
+    /// QuickVina2 相当の局所探索スキップを有効化（opt-in 高速化・決定論維持）。
+    pub qvina2: bool,
 }
 
 impl Default for SearchParams {
@@ -138,6 +141,7 @@ impl Default for SearchParams {
             temp_init: 1.0,
             temp_final: 1.0,
             uniform_start: false,
+            qvina2: false,
         }
     }
 }
@@ -325,10 +329,28 @@ fn single_run(
     let mut best_e = cur.energy;
     let mut stale = 0usize;
 
+    // QuickVina2: 変異後の試行点が「新しい井戸」でなければ局所探索をスキップ（per-run 履歴＝決定論）。
+    let mut history = params
+        .qvina2
+        .then(|| HistoryBuffer::new(QVinaParams::for_dofs(free_dofs.len())));
+
     // 反復局所探索（ILS）＋焼きなまし: 毎ステップ 1 自由度変異 → 浅い局所最適化 → Metropolis 受理。
     for k in 0..n_steps {
         let mut trial = cur.conf.clone();
         mutate(&mut trial, &mut rng, free_torsions);
+
+        // QuickVina2 スキップ判定: 安価な勾配 1 回で「既知の斜面」と判定したら local 探索を省く。
+        if let Some(hist) = history.as_mut() {
+            let (_e, g_full) = value_grad(&trial);
+            let dof = dof_vector(&trial, free_dofs);
+            let g = project_grad(&g_full, free_dofs);
+            let significant = hist.is_new_well(&dof, &g);
+            hist.push(dof, g);
+            if !significant {
+                continue; // 局所探索をスキップ（cur 不変＝棄却扱い）
+            }
+        }
+
         let res = minimize_free(trial, &value, &value_grad, params.chain_iters, free_dofs);
         let res_pos = scratch_g.borrow().scored_pos.clone();
         cluster_insert(&mut pool, res.conf.clone(), res.energy, res_pos, params.cluster_rmsd, pool_cap);

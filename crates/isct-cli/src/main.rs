@@ -122,6 +122,7 @@ fn cmd_screen(
             polish_modes: cfg.run.polish_modes,
             early_stop_patience: cfg.run.early_stop_patience,
             uniform_start: use_grid,
+            qvina2: cfg.run.search == config::SearchMode::Qvina2,
         },
         prune_threshold: cfg.screen.prune_threshold,
         local_iters: cfg.screen.local_iters,
@@ -201,6 +202,7 @@ fn cmd_dock(
         polish_modes: cfg.run.polish_modes,
         early_stop_patience: cfg.run.early_stop_patience,
         uniform_start: use_grid,
+        qvina2: cfg.run.search == config::SearchMode::Qvina2,
     };
 
     let eff_steps = if params.n_steps == 0 {
