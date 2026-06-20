@@ -114,7 +114,7 @@ pub struct SearchParams {
     /// QuickVina2 相当の局所探索スキップを有効化（opt-in 高速化・決定論維持）。
     pub qvina2: bool,
     /// QuickVina2 の勾配方向一致閾値（cos）。近傍の勾配と cos>これで局所探索をスキップ。
-    /// 高いほど保守的（スキップ少・速度↓精度↑）、低いほど攻める（スキップ多・速度↑精度↓）。既定 0.95。
+    /// 高いほど保守的（スキップ少・速度↓精度↑）、低いほど攻める（スキップ多・速度↑精度↓）。既定 0.90。
     pub qvina_cos: f64,
 }
 
@@ -145,7 +145,7 @@ impl Default for SearchParams {
             temp_final: 1.0,
             uniform_start: false,
             qvina2: false,
-            qvina_cos: 0.95,
+            qvina_cos: 0.90,
         }
     }
 }

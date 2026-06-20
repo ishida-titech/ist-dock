@@ -184,7 +184,8 @@ fn default_polish_modes() -> usize {
     9
 }
 fn default_qvina_cos() -> f64 {
-    0.95
+    // 74 標的スイープで 0.90 が 0.95 を支配（1.27× 高速かつ精度も僅かに上）。0.85 は更に速いが精度低下大。
+    0.90
 }
 fn default_early_stop_patience() -> usize {
     // 既定 OFF。収束ベースの早期停止はドリフト鎖のハード標的を退行させうるため opt-in に留める。

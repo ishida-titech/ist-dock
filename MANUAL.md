@@ -79,7 +79,7 @@ Estimated Free Energy of Binding         : -7.45678 kcal/mol
 | `-c, --config` | TOML 設定（§4）。探索ボックス必須。 |
 | `-o, --out` | 出力ポーズ PDBQT（既定: `<ligand>_isct_out.pdbqt`）。 |
 | `--local-only` | 診断用。大域探索せず入力ポーズから局所最適化のみ。 |
-| `--qvina-cos <f64>` | `search="qvina2"` 時の勾配方向一致閾値（cos）を上書き。高い=保守的(速度↓精度↑)、低い=攻める(速度↑精度↓)。省略時は config `qvina_cos`（既定 0.95）。 |
+| `--qvina-cos <f64>` | `search="qvina2"` 時の勾配方向一致閾値（cos）を上書き。高い=保守的(速度↓精度↑)、低い=攻める(速度↑精度↓)。省略時は config `qvina_cos`（既定 0.90）。 |
 
 出力（stdout）例:
 
@@ -140,7 +140,7 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
 | `n_steps` | 0 | per-run の MC ステップ数。**0=自動**（可動原子数×torsion 上限で算出）。 |
 | `scoring` | `"direct"` | 探索の分子間評価。`"grid"`=Vina グリッド補間（高速・推奨）/ `"direct"`=直接原子間(SIMD)。 |
 | `search` | `"standard"` | 探索モード。`"standard"`=毎ステップ局所探索（決定論）/ `"qvina2"`=QuickVina2 相当の局所探索スキップ（opt-in 高速化・決定論維持・精度トレードオフ）。 |
-| `qvina_cos` | 0.95 | `qvina2` の勾配方向一致閾値（cos）。低いほどスキップ多＝速度↑精度↓。`--qvina-cos` で上書き可。 |
+| `qvina_cos` | 0.90 | `qvina2` の勾配方向一致閾値（cos）。低いほどスキップ多＝速度↑精度↓。`--qvina-cos` で上書き可。 |
 | `chain_iters` | 30 | ILS 各ステップの局所最適化反復（浅く保ち基底間をドリフト）。 |
 | `polish_iters` | 20 | 代表ポーズの最終厳密 f64 精密化反復。 |
 | `polish_modes` | 9 | 最終精密化にかける代表モード数。 |

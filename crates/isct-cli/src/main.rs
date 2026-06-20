@@ -49,7 +49,7 @@ enum Command {
         #[arg(long)]
         local_only: bool,
         /// QuickVina2（search="qvina2"）の勾配方向一致閾値（cos）を上書き。高い=保守的(速度↓精度↑)、
-        /// 低い=攻める(速度↑精度↓)。省略時は config の qvina_cos（既定 0.95）。
+        /// 低い=攻める(速度↑精度↓)。省略時は config の qvina_cos（既定 0.90）。
         #[arg(long)]
         qvina_cos: Option<f64>,
     },
