@@ -113,6 +113,9 @@ pub struct SearchParams {
     pub uniform_start: bool,
     /// QuickVina2 相当の局所探索スキップを有効化（opt-in 高速化・決定論維持）。
     pub qvina2: bool,
+    /// QuickVina2 の勾配方向一致閾値（cos）。近傍の勾配と cos>これで局所探索をスキップ。
+    /// 高いほど保守的（スキップ少・速度↓精度↑）、低いほど攻める（スキップ多・速度↑精度↓）。既定 0.95。
+    pub qvina_cos: f64,
 }
 
 impl Default for SearchParams {
@@ -142,6 +145,7 @@ impl Default for SearchParams {
             temp_final: 1.0,
             uniform_start: false,
             qvina2: false,
+            qvina_cos: 0.95,
         }
     }
 }
@@ -332,7 +336,7 @@ fn single_run(
     // QuickVina2: 変異後の試行点が「新しい井戸」でなければ局所探索をスキップ（per-run 履歴＝決定論）。
     let mut history = params
         .qvina2
-        .then(|| HistoryBuffer::new(QVinaParams::for_dofs(free_dofs.len())));
+        .then(|| HistoryBuffer::new(QVinaParams::for_dofs(free_dofs.len(), params.qvina_cos)));
 
     // 反復局所探索（ILS）＋焼きなまし: 毎ステップ 1 自由度変異 → 浅い局所最適化 → Metropolis 受理。
     for k in 0..n_steps {

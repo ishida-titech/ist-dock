@@ -23,12 +23,12 @@ pub struct QVinaParams {
 }
 
 impl QVinaParams {
-    /// 自由 DOF 数 `n` から既定パラメータを構成。
-    pub fn for_dofs(n: usize) -> Self {
+    /// 自由 DOF 数 `n` と勾配方向一致閾値 `cos_threshold` からパラメータを構成。
+    pub fn for_dofs(n: usize, cos_threshold: f64) -> Self {
         QVinaParams {
             buffer_cap: (10 * n).max(10),
             p_neighbors: (2 * n).max(2),
-            cos_threshold: 0.95,
+            cos_threshold,
         }
     }
 }
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn empty_history_is_significant() {
-        let h = HistoryBuffer::new(QVinaParams::for_dofs(3));
+        let h = HistoryBuffer::new(QVinaParams::for_dofs(3, 0.95));
         assert!(h.is_new_well(&[0.0, 0.0, 0.0], &[1.0, 1.0, 1.0]));
     }
 

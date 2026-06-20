@@ -108,6 +108,9 @@ pub struct RunOpts {
     /// 探索モード（既定: standard。`qvina2` で局所探索スキップ＝opt-in 高速化）。
     #[serde(default)]
     pub search: SearchMode,
+    /// QuickVina2 の勾配方向一致閾値（cos, 既定 0.95）。CLI `--qvina-cos` で上書き可。
+    #[serde(default = "default_qvina_cos")]
+    pub qvina_cos: f64,
     /// 焼きなまし温度の初期値（高温で誤基脱出）。
     #[serde(default = "default_temp_init")]
     pub temp_init: f64,
@@ -142,6 +145,7 @@ impl Default for RunOpts {
             n_steps: default_n_steps(),
             scoring: Scoring::default(),
             search: SearchMode::default(),
+            qvina_cos: default_qvina_cos(),
             temp_init: default_temp_init(),
             temp_final: default_temp_final(),
             chain_iters: default_chain_iters(),
@@ -178,6 +182,9 @@ fn default_n_modes() -> usize {
 }
 fn default_polish_modes() -> usize {
     9
+}
+fn default_qvina_cos() -> f64 {
+    0.95
 }
 fn default_early_stop_patience() -> usize {
     // 既定 OFF。収束ベースの早期停止はドリフト鎖のハード標的を退行させうるため opt-in に留める。

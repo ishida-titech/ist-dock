@@ -48,6 +48,10 @@ enum Command {
         /// 診断用: 大域探索をせず結晶（入力）ポーズから局所最適化のみ行う。
         #[arg(long)]
         local_only: bool,
+        /// QuickVina2（search="qvina2"）の勾配方向一致閾値（cos）を上書き。高い=保守的(速度↓精度↑)、
+        /// 低い=攻める(速度↑精度↓)。省略時は config の qvina_cos（既定 0.95）。
+        #[arg(long)]
+        qvina_cos: Option<f64>,
     },
     /// クラスタライブラリをスクリーニングする（M3）。
     Screen {
@@ -75,7 +79,8 @@ fn main() -> Result<()> {
             config,
             out,
             local_only,
-        } => cmd_dock(&receptor, &ligand, &config, out.as_deref(), local_only),
+            qvina_cos,
+        } => cmd_dock(&receptor, &ligand, &config, out.as_deref(), local_only, qvina_cos),
         Command::Screen {
             receptor,
             library,
@@ -123,6 +128,7 @@ fn cmd_screen(
             early_stop_patience: cfg.run.early_stop_patience,
             uniform_start: use_grid,
             qvina2: cfg.run.search == config::SearchMode::Qvina2,
+            qvina_cos: cfg.run.qvina_cos,
         },
         prune_threshold: cfg.screen.prune_threshold,
         local_iters: cfg.screen.local_iters,
@@ -163,6 +169,7 @@ fn cmd_dock(
     config_path: &PathBuf,
     out: Option<&std::path::Path>,
     local_only: bool,
+    qvina_cos: Option<f64>,
 ) -> Result<()> {
     let rec = pdbqt::parse_file(receptor)
         .with_context(|| format!("failed to parse receptor: {}", receptor.display()))?;
@@ -203,6 +210,7 @@ fn cmd_dock(
         early_stop_patience: cfg.run.early_stop_patience,
         uniform_start: use_grid,
         qvina2: cfg.run.search == config::SearchMode::Qvina2,
+        qvina_cos: qvina_cos.unwrap_or(cfg.run.qvina_cos),
     };
 
     let eff_steps = if params.n_steps == 0 {
