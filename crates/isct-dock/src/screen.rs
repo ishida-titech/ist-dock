@@ -80,11 +80,24 @@ impl ScreenReport {
 
 /// ライブラリをスクリーニングする。
 pub fn screen(receptor: &[ScoredAtom], lib: &Library, params: &ScreenParams) -> ScreenReport {
+    // 既定ボックス（pocket 未指定クラスタ用）のスコアラを **1 度だけ**構築して共有する。grid マップは
+    // (受容体, ボックス, 型) のみに依存＝全 pocket 未指定クラスタで同一なので、クラスタ毎の再構築を避ける。
+    // pocket 指定クラスタは process_cluster 内でローカル構築（フォールバック）。出力はビット一致・決定的。
+    let any_default_box = lib.clusters.iter().any(|c| c.pocket.is_none());
+    let shared: Option<Scorer> = any_default_box.then(|| {
+        if params.use_grid {
+            let types = shared_xs_types(lib);
+            Scorer::new_grid(receptor, params.center, params.size, &types)
+        } else {
+            Scorer::new(receptor, params.center, params.size)
+        }
+    });
+
     // クラスタは独立 → 並列処理。collect で lib 順を保ち、出力は決定的。
     let per_cluster: Vec<(ClusterOutcome, Vec<ScoredEntry>)> = lib
         .clusters
         .par_iter()
-        .map(|cluster| process_cluster(receptor, cluster, params))
+        .map(|cluster| process_cluster(receptor, cluster, params, shared.as_ref()))
         .collect();
 
     let mut entries = Vec::new();
@@ -96,11 +109,44 @@ pub fn screen(receptor: &[ScoredAtom], lib: &Library, params: &ScreenParams) -> 
     ScreenReport { entries, clusters }
 }
 
+/// ライブラリ中で **既定ボックスを使う（pocket 未指定）クラスタ**の seed＋子の XS 型の union。
+/// 共有 grid スコアラのマップ生成に使う（≤17 型・典型 ~10）。
+fn shared_xs_types(lib: &Library) -> Vec<isct_core::atom_types::XsType> {
+    let mut set = std::collections::HashSet::new();
+    for c in lib.clusters.iter().filter(|c| c.pocket.is_none()) {
+        for a in c.seed.molecule.scored_atoms() {
+            set.insert(a.xs);
+        }
+        for child in &c.children {
+            for a in child.molecule.scored_atoms() {
+                set.insert(a.xs);
+            }
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// 1 クラスタ専用のローカルスコアラを構築する（pocket 指定クラスタ用フォールバック）。
+/// grid 時は当該クラスタの seed＋子の型のみマップ生成。
+fn build_local(receptor: &[ScoredAtom], center: Vec3, size: Vec3, params: &ScreenParams, cluster: &Cluster) -> Scorer {
+    if params.use_grid {
+        let mut types: Vec<_> = cluster.seed.molecule.scored_atoms().iter().map(|a| a.xs).collect();
+        for child in &cluster.children {
+            types.extend(child.molecule.scored_atoms().iter().map(|a| a.xs));
+        }
+        Scorer::new_grid(receptor, center, size, &types)
+    } else {
+        Scorer::new(receptor, center, size)
+    }
+}
+
 /// 1 クラスタを Phase 1〜3 で処理し、クラスタ結果とスコア行（棄却時は空）を返す。
+/// `shared` は既定ボックスの共有スコアラ（pocket 未指定クラスタはこれを再利用＝grid 再構築回避）。
 fn process_cluster(
     receptor: &[ScoredAtom],
     cluster: &Cluster,
     params: &ScreenParams,
+    shared: Option<&Scorer>,
 ) -> (ClusterOutcome, Vec<ScoredEntry>) {
     // ポケット（探索ボックス）はクラスタ指定 > 既定。
     let (center, size) = match &cluster.pocket {
@@ -110,15 +156,14 @@ fn process_cluster(
         ),
         None => (params.center, params.size),
     };
-    // スコアラ（grid 時はクラスタの seed+子の全 XS 型でマップ生成）。
-    let scorer = if params.use_grid {
-        let mut types: Vec<_> = cluster.seed.molecule.scored_atoms().iter().map(|a| a.xs).collect();
-        for child in &cluster.children {
-            types.extend(child.molecule.scored_atoms().iter().map(|a| a.xs));
+    // pocket 未指定 かつ 共有あり → 共有スコアラを再利用。さもなくばローカル構築（pocket 指定の例外）。
+    let local;
+    let scorer: &Scorer = match shared {
+        Some(s) if cluster.pocket.is_none() => s,
+        _ => {
+            local = build_local(receptor, center, size, params, cluster);
+            &local
         }
-        Scorer::new_grid(receptor, center, size, &types)
-    } else {
-        Scorer::new(receptor, center, size)
     };
     let mut sp = params.search.clone();
     sp.center = center;
@@ -128,7 +173,7 @@ fn process_cluster(
     let seed_lig = LigandModel::new(&cluster.seed.molecule);
     let seed_core: std::collections::HashSet<usize> =
         cluster.seed.core_atoms.iter().copied().collect();
-    let seed_res = phase1::dock_seed(&seed_lig, &scorer, &sp, &seed_core, params.prune_threshold);
+    let seed_res = phase1::dock_seed(&seed_lig, scorer, &sp, &seed_core, params.prune_threshold);
 
     let outcome = ClusterOutcome {
         cluster_id: cluster.id.clone(),
@@ -164,7 +209,7 @@ fn process_cluster(
     let child_entries: Vec<ScoredEntry> = cluster
         .children
         .par_iter()
-        .map(|child| score_child(&scorer, child, &cluster.id, &seed_core_world, params))
+        .map(|child| score_child(scorer, child, &cluster.id, &seed_core_world, params))
         .collect();
     entries.extend(child_entries);
 
@@ -223,4 +268,82 @@ pub fn ranking_tsv(report: &ScreenReport) -> String {
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::SearchParams;
+    use isct_core::atom_types::XsType;
+    use isct_io::library::{Cluster, MolEntry, Pocket};
+    use isct_io::pdbqt;
+
+    const LIG: &str = "\
+ROOT
+ATOM      1  C   LIG A   1       0.000   0.000   0.000  0.00  0.00    +0.000 C
+ATOM      2  C   LIG A   1       1.500   0.000   0.000  0.00  0.00    +0.000 C
+ATOM      3  O   LIG A   1       0.000   1.500   0.000  0.00  0.00    -0.300 OA
+ENDROOT
+TORSDOF 0
+";
+
+    fn receptor() -> Vec<ScoredAtom> {
+        vec![
+            ScoredAtom { pos: Vec3::new(2.0, 0.0, 0.0), xs: XsType::OxygenA },
+            ScoredAtom { pos: Vec3::new(0.0, 2.0, 0.0), xs: XsType::CarbonH },
+            ScoredAtom { pos: Vec3::new(0.0, 0.0, 2.0), xs: XsType::NitrogenD },
+        ]
+    }
+
+    fn entry(id: &str) -> MolEntry {
+        MolEntry {
+            compound_id: id.to_string(),
+            molecule: pdbqt::parse_str(LIG).unwrap(),
+            core_atoms: vec![],
+            source_text: LIG.to_string(),
+        }
+    }
+
+    fn library(pocket: Option<Pocket>, n: usize) -> Library {
+        Library {
+            clusters: (0..n)
+                .map(|i| Cluster {
+                    id: format!("c{i}"),
+                    pocket: pocket.clone(),
+                    seed: entry(&format!("cpd{i}")),
+                    children: vec![],
+                })
+                .collect(),
+        }
+    }
+
+    fn params() -> ScreenParams {
+        let search = SearchParams { n_runs: 2, n_steps: 20, ..SearchParams::default() };
+        ScreenParams {
+            center: Vec3::zeros(),
+            size: Vec3::new(12.0, 12.0, 12.0),
+            search,
+            prune_threshold: 1e9, // 棄却しない（seed を必ずランキング）
+            local_iters: 20,
+            use_grid: true,
+        }
+    }
+
+    #[test]
+    fn shared_grid_matches_per_cluster() {
+        let r = receptor();
+        let p = params();
+        // pocket=None → 共有スコアラ経由。pocket=Some(既定ボックス) → per-cluster ローカル構築。
+        let shared = screen(&r, &library(None, 4), &p);
+        let pocket = Some(Pocket { center: [0.0, 0.0, 0.0], size: [12.0, 12.0, 12.0] });
+        let local = screen(&r, &library(pocket, 4), &p);
+        assert_eq!(shared.entries.len(), local.entries.len());
+        assert!(!shared.entries.is_empty());
+        // 共有 grid と per-cluster grid は同一マップ → スコアはビット一致。
+        for (a, b) in shared.entries.iter().zip(&local.entries) {
+            assert_eq!(a.compound_id, b.compound_id);
+            assert_eq!(a.total_score.to_bits(), b.total_score.to_bits(), "score差: {a:?} vs {b:?}");
+            assert_eq!(a.e_inter.to_bits(), b.e_inter.to_bits());
+        }
+    }
 }

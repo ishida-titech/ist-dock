@@ -133,7 +133,7 @@ impl AdType {
 }
 
 /// Vina XS 原子型。スコアリングの半径・疎水性・H 結合性を担う。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum XsType {
     /// 疎水性炭素（異種原子に未結合）。
     CarbonH,
