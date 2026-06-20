@@ -44,6 +44,8 @@ fn main() {
         prune_threshold: 1e9, // 棄却しない（全 seed をドッキング）
         local_iters: 50,
         use_grid: true,
+        seed_poses: 1,
+        keep_poses: false,
     };
 
     println!("receptor {} scored atoms, ligand {} atoms, N={} clusters",

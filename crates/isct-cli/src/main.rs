@@ -65,6 +65,12 @@ enum Command {
         /// 出力ランキング TSV（既定: <library と同じディレクトリ>/ranking.tsv）。
         #[arg(short, long)]
         out: Option<PathBuf>,
+        /// 上位ポーズをマルチモデル PDBQT で書き出す先（省略時はポーズ出力なし）。
+        #[arg(long)]
+        poses_out: Option<PathBuf>,
+        /// `--poses-out` で書き出す上位ランク数（既定 100）。
+        #[arg(long, default_value_t = 100)]
+        top: usize,
     },
 }
 
@@ -86,7 +92,9 @@ fn main() -> Result<()> {
             library,
             config,
             out,
-        } => cmd_screen(&receptor, &library, &config, out.as_deref()),
+            poses_out,
+            top,
+        } => cmd_screen(&receptor, &library, &config, out.as_deref(), poses_out.as_deref(), top),
     }
 }
 
@@ -96,6 +104,8 @@ fn cmd_screen(
     library_path: &PathBuf,
     config_path: &PathBuf,
     out: Option<&std::path::Path>,
+    poses_out: Option<&std::path::Path>,
+    top: usize,
 ) -> Result<()> {
     let rec = pdbqt::parse_file(receptor)
         .with_context(|| format!("failed to parse receptor: {}", receptor.display()))?;
@@ -133,6 +143,8 @@ fn cmd_screen(
         prune_threshold: cfg.screen.prune_threshold,
         local_iters: cfg.screen.local_iters,
         use_grid,
+        seed_poses: cfg.screen.seed_poses,
+        keep_poses: poses_out.is_some(), // ポーズ出力要求時のみ座標を保持
     };
 
     eprintln!(
@@ -153,12 +165,21 @@ fn cmd_screen(
     });
     std::fs::write(&out_path, ranking_tsv(&report))?;
 
+    // 上位ポーズのマルチモデル PDBQT 出力（--poses-out 指定時）。
+    if let Some(poses_path) = poses_out {
+        let poses = isct_dock::screen::poses_pdbqt(&report, &lib, top)?;
+        std::fs::write(poses_path, poses)?;
+    }
+
     println!("# isct-dock screen (ISCT-Dock Phase 1-3, M3)");
     println!("clusters total       : {}", report.n_clusters());
     println!("clusters pruned       : {}", report.n_pruned_clusters());
     println!("children skipped(prune): {}", report.n_skipped_children());
     println!("molecules scored      : {}", report.entries.len());
     println!("ranking TSV           : {}", out_path.display());
+    if let Some(p) = poses_out {
+        println!("poses PDBQT (top {top}) : {}", p.display());
+    }
     Ok(())
 }
 

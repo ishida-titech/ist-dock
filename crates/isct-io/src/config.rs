@@ -43,6 +43,10 @@ pub struct ScreenOpts {
     /// 子分子の R 基 torsion 局所最適化の最大反復。
     #[serde(default = "default_child_local_iters")]
     pub local_iters: usize,
+    /// 子配置に使う seed の保持ポーズ数（RMSD クラスタ済み上位 N）。1=最良のみ（従来）、>1 で各子を
+    /// 複数 seed ポーズへ配置し最良を採用＝剛体コア固定の拘束劣化を緩和（子コストは N 倍）。
+    #[serde(default = "default_seed_poses")]
+    pub seed_poses: usize,
 }
 
 impl Default for ScreenOpts {
@@ -50,6 +54,7 @@ impl Default for ScreenOpts {
         ScreenOpts {
             prune_threshold: default_prune_threshold(),
             local_iters: default_child_local_iters(),
+            seed_poses: default_seed_poses(),
         }
     }
 }
@@ -60,6 +65,9 @@ fn default_prune_threshold() -> f64 {
 }
 fn default_child_local_iters() -> usize {
     120
+}
+fn default_seed_poses() -> usize {
+    1
 }
 
 #[derive(Debug, Clone, Deserialize)]

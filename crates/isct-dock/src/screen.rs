@@ -7,6 +7,7 @@
 use isct_core::geometry::Vec3;
 use isct_core::scoring::{apply_torsion_correction, ScoredAtom};
 use isct_io::library::{Cluster, Library, MolEntry};
+use isct_io::{pdbqt, IoError};
 use rayon::prelude::*;
 
 use crate::energy::Scorer;
@@ -29,6 +30,11 @@ pub struct ScreenParams {
     pub local_iters: usize,
     /// グリッドバックエンドを使うか（クラスタごとに seed+子の型でマップ生成）。
     pub use_grid: bool,
+    /// 子配置に使う seed の保持ポーズ数（RMSD クラスタ済み上位 N）。1 で従来＝最良のみ。
+    /// >1 で各子を複数 seed ポーズへ配置し最良を採用＝剛体コア固定の拘束劣化を緩和。
+    pub seed_poses: usize,
+    /// ベストポーズ座標を保持するか（ポーズ出力用。メモリ節約のため出力要求時のみ true）。
+    pub keep_poses: bool,
 }
 
 /// 1 分子のスコア行。
@@ -42,6 +48,8 @@ pub struct ScoredEntry {
     pub e_inter: f64,
     /// 役割（"seed" または "child"）。
     pub role: &'static str,
+    /// ベストポーズの全原子 world 座標（`keep_poses` 有効時のみ。ポーズ出力に使う）。
+    pub pose: Option<Vec<Vec3>>,
 }
 
 /// クラスタ単位の処理結果。
@@ -169,15 +177,17 @@ fn process_cluster(
     sp.center = center;
     sp.size = size;
 
-    // Phase 1: seed ドッキング＋一括棄却（コアを剛体に保つ）。
+    // Phase 1: seed ドッキング＋一括棄却（コアを剛体に保つ）。上位 seed_poses モードを保持。
     let seed_lig = LigandModel::new(&cluster.seed.molecule);
     let seed_core: std::collections::HashSet<usize> =
         cluster.seed.core_atoms.iter().copied().collect();
-    let seed_res = phase1::dock_seed(&seed_lig, scorer, &sp, &seed_core, params.prune_threshold);
+    let seed_res =
+        phase1::dock_seed(&seed_lig, scorer, &sp, &seed_core, params.prune_threshold, params.seed_poses);
+    let best = seed_res.best();
 
     let outcome = ClusterOutcome {
         cluster_id: cluster.id.clone(),
-        seed_energy: seed_res.energy,
+        seed_energy: best.energy,
         pruned: seed_res.pruned,
         n_children: cluster.children.len(),
     };
@@ -189,8 +199,8 @@ fn process_cluster(
 
     let mut entries = Vec::with_capacity(1 + cluster.children.len());
 
-    // 生存クラスタ: seed もランキングに含める。
-    let seed_atoms = seed_lig.scored_atoms(&seed_res.conf);
+    // 生存クラスタ: seed もランキングに含める（ベストポーズで採点）。
+    let seed_atoms = seed_lig.scored_atoms(&best.conf);
     let seed_inter = scorer.intermolecular(&seed_atoms);
     entries.push(ScoredEntry {
         compound_id: cluster.seed.compound_id.clone(),
@@ -198,18 +208,24 @@ fn process_cluster(
         total_score: apply_torsion_correction(seed_inter, cluster.seed.molecule.torsdof),
         e_inter: seed_inter,
         role: "seed",
+        pose: params.keep_poses.then(|| seed_lig.world_coords(&best.conf)),
     });
 
-    // docked seed のコア world 座標（Phase 2 の重ね合わせ目標）。
-    let seed_world = seed_lig.world_coords(&seed_res.conf);
-    let seed_core_world: Vec<Vec3> =
-        cluster.seed.core_atoms.iter().map(|&i| seed_world[i]).collect();
+    // 各 seed モードの docked コア world 座標（Phase 2 の重ね合わせ目標。子は各モードへ配置し最良を採用）。
+    let seed_cores: Vec<Vec<Vec3>> = seed_res
+        .modes
+        .iter()
+        .map(|m| {
+            let world = seed_lig.world_coords(&m.conf);
+            cluster.seed.core_atoms.iter().map(|&i| world[i]).collect()
+        })
+        .collect();
 
     // 子分子も独立 → 並列。
     let child_entries: Vec<ScoredEntry> = cluster
         .children
         .par_iter()
-        .map(|child| score_child(scorer, child, &cluster.id, &seed_core_world, params))
+        .map(|child| score_child(scorer, child, &cluster.id, &seed_cores, params))
         .collect();
     entries.extend(child_entries);
 
@@ -217,11 +233,13 @@ fn process_cluster(
 }
 
 /// 1 子分子を Phase 2 + Phase 3 で配置・最適化してスコア行を作る。
+/// `seed_cores` は各 seed モードの docked コア world 座標。各モードへ配置・最適化し、**最良 e_inter** を採用
+/// （複数 seed ポーズ保持＝剛体コア固定の拘束劣化を緩和）。
 fn score_child(
     scorer: &Scorer,
     child: &MolEntry,
     cluster_id: &str,
-    seed_core_world: &[Vec3],
+    seed_cores: &[Vec<Vec3>],
     params: &ScreenParams,
 ) -> ScoredEntry {
     let child_lig = LigandModel::new(&child.molecule);
@@ -229,20 +247,25 @@ fn score_child(
     // 子の MCS コア参照 world 座標（seed.core_atoms と同順対応）。
     let child_core_ref: Vec<Vec3> =
         child.core_atoms.iter().map(|&i| child_lig.ref_coords()[i]).collect();
-
-    // Phase 2: コアを docked seed コアへ重ねて核固定配置。
-    let start = phase2::place_child(&child_lig, &child_core_ref, seed_core_world);
-
-    // Phase 3: R 基 torsion 最適化＋Δエネルギー（コア＝全原子 idx 集合）。
     let core_set: std::collections::HashSet<usize> = child.core_atoms.iter().copied().collect();
-    let result = phase3::optimize_child(&child_lig, scorer, start, &core_set, params.local_iters);
+
+    // 各 seed モードへ核固定配置 → R 基最適化。最良 e_inter のポーズを採る。
+    let best = seed_cores
+        .iter()
+        .map(|seed_core_world| {
+            let start = phase2::place_child(&child_lig, &child_core_ref, seed_core_world);
+            phase3::optimize_child(&child_lig, scorer, start, &core_set, params.local_iters)
+        })
+        .min_by(|a, b| a.e_inter.partial_cmp(&b.e_inter).unwrap_or(std::cmp::Ordering::Equal))
+        .expect("at least one seed pose");
 
     ScoredEntry {
         compound_id: child.compound_id.clone(),
         cluster_id: cluster_id.to_string(),
-        total_score: apply_torsion_correction(result.e_inter, child.molecule.torsdof),
-        e_inter: result.e_inter,
+        total_score: apply_torsion_correction(best.e_inter, child.molecule.torsdof),
+        e_inter: best.e_inter,
         role: "child",
+        pose: params.keep_poses.then(|| child_lig.world_coords(&best.conf)),
     }
 }
 
@@ -268,6 +291,38 @@ pub fn ranking_tsv(report: &ScreenReport) -> String {
         ));
     }
     out
+}
+
+/// 上位 `top_n` ランク（スコア昇順）の分子のベストポーズを **マルチモデル PDBQT** で返す。
+/// `keep_poses=true` でドッキングした場合のみポーズが入る（未保持エントリはスキップ）。各 MODEL に
+/// REMARK で Rank/Compound/Cluster/Score/Role を付す。`lib` から元 PDBQT テキスト（テンプレート）を引く。
+pub fn poses_pdbqt(report: &ScreenReport, lib: &Library, top_n: usize) -> Result<String, IoError> {
+    // (cluster_id, compound_id) → 元 PDBQT テキスト。
+    let mut src: std::collections::HashMap<(&str, &str), &str> = std::collections::HashMap::new();
+    for c in &lib.clusters {
+        src.insert((c.id.as_str(), c.seed.compound_id.as_str()), c.seed.source_text.as_str());
+        for ch in &c.children {
+            src.insert((c.id.as_str(), ch.compound_id.as_str()), ch.source_text.as_str());
+        }
+    }
+    let mut ranked: Vec<&ScoredEntry> = report.entries.iter().filter(|e| e.pose.is_some()).collect();
+    ranked.sort_by(|a, b| a.total_score.partial_cmp(&b.total_score).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut out = String::new();
+    for (i, e) in ranked.iter().take(top_n).enumerate() {
+        let coords = e.pose.as_ref().unwrap();
+        let text = src.get(&(e.cluster_id.as_str(), e.compound_id.as_str())).ok_or_else(|| {
+            IoError::Pdbqt(format!("source text not found: {}/{}", e.cluster_id, e.compound_id))
+        })?;
+        let body = pdbqt::write_pose(text, coords)?;
+        out.push_str(&format!(
+            "MODEL {}\nREMARK Rank {} Compound {} Cluster {} Score {:.4} Role {}\n",
+            i + 1, i + 1, e.compound_id, e.cluster_id, e.total_score, e.role,
+        ));
+        out.push_str(&body);
+        out.push_str("ENDMDL\n");
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -326,6 +381,8 @@ TORSDOF 0
             prune_threshold: 1e9, // 棄却しない（seed を必ずランキング）
             local_iters: 20,
             use_grid: true,
+            seed_poses: 1,
+            keep_poses: false,
         }
     }
 
@@ -345,5 +402,21 @@ TORSDOF 0
             assert_eq!(a.total_score.to_bits(), b.total_score.to_bits(), "score差: {a:?} vs {b:?}");
             assert_eq!(a.e_inter.to_bits(), b.e_inter.to_bits());
         }
+    }
+
+    #[test]
+    fn keep_poses_outputs_multimodel_pdbqt() {
+        let r = receptor();
+        let mut p = params();
+        p.keep_poses = true;
+        let lib = library(None, 2);
+        let report = screen(&r, &lib, &p);
+        // keep_poses 有効時は各エントリにポーズ座標が入る。
+        assert!(report.entries.iter().all(|e| e.pose.is_some()));
+        // マルチモデル PDBQT が生成され、REMARK 付き MODEL を含む。
+        let poses = poses_pdbqt(&report, &lib, 100).unwrap();
+        assert!(poses.contains("MODEL 1\n"));
+        assert!(poses.contains("REMARK Rank 1"));
+        assert!(poses.contains("ENDMDL"));
     }
 }

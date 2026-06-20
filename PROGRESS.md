@@ -12,7 +12,7 @@
 |---|---|---|
 | M1 Vina スコア一致 | **完了** | `score`。`vina --score_only` と差<1e-2。 |
 | M2 Vina 互換ドッキング | **完了** | `dock`。torsion 木・剛体+回転+torsion・**解析的勾配**・MC+BFGS・決定論。再ドッキング<2Å。 |
-| M3 クラスタ高速化 | **完了（中核＋効果検証）** | library/Phase1-3/delta_energy・前処理・manifest・効果検証済。軽微 2 件未対応（下記）。 |
+| M3 クラスタ高速化 | **完了** | library/Phase1-3/delta_energy・前処理・manifest・効果検証・**screen ポーズ出力**・**複数 seed ポーズ保持**。 |
 | M4 単一ノード最適化 | **大部分実装** | grid・SIMD・ゼロアロケーション・rayon 並列・解析的勾配 済。**core_affinity / memmap+バイナリ 未**。 |
 | M5 追加高速化（動的 box） | 未着手 | PCA 身の丈ボックス等。 |
 | M6 精度向上 | 未着手 | アンサンブル・Soft-core・柔軟側鎖。 |
@@ -36,9 +36,11 @@
   Δエネルギーキャッシュ `delta_energy.rs`）。RMSD ポーズクラスタリング。
 - 効果検証（`docs/results.202606172136`）: 削減率/棄却/偽陰性/Scaffold 拘束劣化/速度。結論＝ampc@0.55 は
   旨味小・拘束劣化が本質課題。
-- **未対応（軽微）**:
-  - `screen` の**上位ポーズ出力**（現状ランキング TSV のみ。PDBQT/SDF 未出力。`dock` は出力済）。
-  - **Phase 1 の複数 seed ポーズ保持・dedup**（現状 `phase1.rs` で単一 best のみ。doc に「後置」明記）。
+- **screen の上位ポーズ出力**: `screen --poses-out <file> [--top N]` でマルチモデル PDBQT（REMARK 付）。
+  `screen::poses_pdbqt`（`docs/results.202606201202`）。
+- **複数 seed ポーズ保持**: `[screen] seed_poses=N` で各子を上位 N seed モードへ配置し最良採用＝拘束劣化を
+  緩和（ampc_mini で 114 −1.93→−5.31）。既定 1＝従来。
+- **スクリーニング grid 再利用**（既定ボックス Scorer 共有, ビット一致, N=50 で 10.4×, `docs/results.202606201138`）。
 
 ### M4 — 単一ノード最適化【大部分実装】
 - 実装済: グリッド補間（`grid.rs`）、SIMD f32x8（`scoring_simd.rs`, AVX2 codegen で有効）、ゼロアロケーション
@@ -65,3 +67,5 @@
 ## 更新履歴
 - 2026-06-20: PROGRESS.md を PLAN.md から分離・新規作成。M1-M3 完了・M4 大部分実装を反映。QuickVina2・
   スクリーニング grid 再利用を追記。
+- 2026-06-20: M3 残項目（screen 上位ポーズ出力・複数 seed ポーズ保持）を実装→ **M3 完了**に更新
+  （`docs/results.202606201202`）。
