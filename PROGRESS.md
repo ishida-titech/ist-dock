@@ -4,7 +4,7 @@
 （`docs/results.*`・`docs/findings.*` は一度作成したら更新しない時系列ログ。**本ファイルは現状を反映して
 上書き・追記する**。新機能・検証を入れたらこの表と詳細・更新履歴を更新すること。）
 
-最終更新: 2026-06-20
+最終更新: 2026-06-21
 
 ## マイルストーン状態
 
@@ -67,7 +67,23 @@
   高速化 N=50 で 10.4×, `docs/results.202606201138`）。
 - 知見ドキュメント: `SIMD_OPTIMIZE.md`（SIMD は不規則 gather/精度感受性で割に合わず撤回）、`MANUAL.md`（利用法）。
 
+## 大規模スクリーニング評価（外部ツール比較）
+
+- 設計: [EVALUATION.SCREENING.md](EVALUATION.SCREENING.md)。ハーネス: `bench/{prep_dude_ligands,screen_eval,
+  screen_metrics}.py`。比較手法: ISCT-dock / Vina / Smina（GWOVina・ISCT-screen は後続）。
+- **第1弾 DUD-E kif11（6966 リガンド）完了**（`docs/results.202606211249`）。40 物理コアを全手法へ公平配分:
+  - **速度: isct-dock 2.02 lig/s（57分）＝ vina/smina（0.61/0.62, 3.1–3.2h）の約 3.3 倍速**。
+    vina≈smina は同エンジン（Vina 1.1.2 系）で公平性を裏付け（smina はシャード並列化が必須）。
+  - **探索品質は 3 手法同等**（共通 vina 再採点で active −9.2〜−9.4、AUC isct 0.829≈vina 0.827>smina 0.794）。
+  - **改善対象は探索でなく isct-dock の native ランキングスコア**（native AUC 0.776 が共通再採点で 0.829 へ）。
+- 評価過程でハーネスの採点バグ（マルチMODEL／smina meeko 変換失敗による native フォールバック）を発見・是正
+  （`docs/findings.202606211249`）。isct-io の `CG0/G0`（マクロ環グルー原子型）未対応で 257/6964 除外＝要対応。
+- 残: ISCT-screen 全カバー版ライブラリ（singleton 含む全 6964）実装→追補、CG0 対応＋再ドッキング、
+  共通 6707 集合での交差再計算、akt1/hivrt 拡大、GWOVina、10M 本番。
+
 ## 更新履歴
+- 2026-06-21: 大規模スクリーニング評価 第1弾（DUD-E kif11, ISCT-dock vs Vina vs Smina）を実施・記録
+  （`docs/results.202606211249`, `docs/findings.{202606202120,202606211249}`）。ハーネス採点バグ是正。
 - 2026-06-20: PROGRESS.md を PLAN.md から分離・新規作成。M1-M3 完了・M4 大部分実装を反映。QuickVina2・
   スクリーニング grid 再利用を追記。
 - 2026-06-20: M3 残項目（screen 上位ポーズ出力・複数 seed ポーズ保持）を実装→ **M3 完了**に更新
