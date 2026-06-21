@@ -84,6 +84,20 @@ pub enum AdType {
     NonpolarH,
     /// 金属（Mg/Zn/Ca/Mn/Fe/…）。Vina では Met_D（ドナー）。
     Metal,
+    /// マクロ環グルーダミー（meeko の `G0`..`G9`）。切断した環の閉環を表す擬似原子で
+    /// 相手の実炭素位置に重なる。Vina 同様**スコアからは除外**（相互作用ゼロ）。
+    /// 元素は炭素扱い（重なる炭素を誤って極性炭素に分類させないため）。
+    Glue,
+}
+
+/// `CG0`..`CG9`（meeko マクロ環の実炭素＝グルー炭素ラベル）か。脂肪族炭素として採点する。
+fn is_glue_carbon(s: &str) -> bool {
+    s.len() > 2 && s.starts_with("CG") && s[2..].bytes().all(|b| b.is_ascii_digit())
+}
+
+/// `G0`..`G9`（meeko マクロ環の閉環ダミー）か。スコア除外する。
+fn is_glue_dummy(s: &str) -> bool {
+    s.len() > 1 && s.starts_with('G') && s[1..].bytes().all(|b| b.is_ascii_digit())
 }
 
 impl AdType {
@@ -107,6 +121,8 @@ impl AdType {
             "Mg" | "MG" | "Mn" | "MN" | "Zn" | "ZN" | "Ca" | "CA" | "Fe" | "FE" | "Cu"
             | "CU" | "Na" | "NA " | "K" | "Hg" | "HG" | "Ni" | "NI" | "Co" | "CO" | "Cd"
             | "CD" => AdType::Metal,
+            _ if is_glue_carbon(s) => AdType::C,
+            _ if is_glue_dummy(s) => AdType::Glue,
             other => return Err(CoreError::UnknownAtomType(other.to_string())),
         })
     }
@@ -125,6 +141,8 @@ impl AdType {
             AdType::I => Element::I,
             AdType::PolarH | AdType::NonpolarH => Element::H,
             AdType::Metal => Element::Metal,
+            // グルーダミーは重なる実炭素を誤って極性炭素化させないため炭素扱い。
+            AdType::Glue => Element::C,
         }
     }
 
@@ -255,7 +273,8 @@ pub fn assign_xs_type(ad: AdType, bonded_to_hetero: bool, has_polar_h: bool) -> 
         AdType::Br => Bromine,
         AdType::I => Iodine,
         AdType::Metal => MetalD,
-        AdType::PolarH | AdType::NonpolarH => return None,
+        // 水素・グルーダミーはスコアから除外（幾何には残るが相互作用しない）。
+        AdType::PolarH | AdType::NonpolarH | AdType::Glue => return None,
     })
 }
 
@@ -283,6 +302,22 @@ mod tests {
     fn hydrogens_excluded() {
         assert_eq!(assign_xs_type(AdType::PolarH, false, false), None);
         assert_eq!(assign_xs_type(AdType::NonpolarH, false, false), None);
+    }
+
+    #[test]
+    fn macrocycle_glue_atoms() {
+        // CG0..CG9 は脂肪族炭素として採点。G0..G9 はスコア除外（None）。
+        assert_eq!(AdType::parse("CG0").unwrap(), AdType::C);
+        assert_eq!(AdType::parse("CG1").unwrap(), AdType::C);
+        assert_eq!(AdType::parse("G0").unwrap(), AdType::Glue);
+        assert_eq!(AdType::parse("G9").unwrap(), AdType::Glue);
+        assert_eq!(AdType::Glue.element(), Element::C); // 重なる炭素を極性化しない
+        assert_eq!(assign_xs_type(AdType::Glue, false, false), None);
+        assert_eq!(assign_xs_type(AdType::C, false, false), Some(XsType::CarbonH));
+        // 紛らわしい既存型は誤分類しない。
+        assert_eq!(AdType::parse("C").unwrap(), AdType::C);
+        assert!(AdType::parse("GG").is_err());
+        assert!(AdType::parse("CGx").is_err());
     }
 
     #[test]
