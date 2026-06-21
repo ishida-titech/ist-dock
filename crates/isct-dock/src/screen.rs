@@ -224,6 +224,11 @@ fn process_cluster(
 
     // Phase 1: seed ドッキング＋一括棄却（コアを剛体に保つ）。上位 seed_poses モードを保持。
     let seed_lig = LigandModel::new(&cluster.seed.molecule);
+    // n_steps=0（未指定）は seed のサイズ・torsion 数から自動決定する（dock CLI と同様）。
+    // これを怠ると steps=0 で seed が探索されず、ポーズ品質が著しく劣化する。
+    if sp.n_steps == 0 {
+        sp.n_steps = crate::search::auto_n_steps(seed_lig.n_scored(), seed_lig.n_torsions());
+    }
     let seed_core: std::collections::HashSet<usize> =
         cluster.seed.core_atoms.iter().copied().collect();
     let seed_res =

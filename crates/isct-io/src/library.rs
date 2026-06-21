@@ -123,6 +123,15 @@ pub fn load(path: impl AsRef<Path>) -> Result<Library, IoError> {
         let seed = resolve_mol(base, rc.seed, &rc.id, "seed")?;
         let n_core = seed.core_atoms.len();
 
+        // 子を持つクラスタは seed コアが非空でなければならない（子がそこへ重なるため）。
+        // 子のいない seed のみクラスタは空コア＝全自由度ドッキングで正常。
+        if !rc.children.is_empty() && n_core == 0 {
+            return Err(IoError::Library(format!(
+                "cluster {} seed {}: 子があるのに core_atoms が空",
+                rc.id, seed.compound_id
+            )));
+        }
+
         let mut children = Vec::with_capacity(rc.children.len());
         for raw_child in rc.children {
             let child = resolve_mol(base, raw_child, &rc.id, "child")?;
@@ -170,12 +179,7 @@ fn resolve_mol(base: &Path, raw: RawMol, cluster_id: &str, role: &str) -> Result
             )));
         }
     }
-    if raw.core_atoms.is_empty() {
-        return Err(IoError::Library(format!(
-            "cluster {cluster_id} {role} {}: core_atoms が空",
-            raw.compound_id
-        )));
-    }
+    // 空コアの可否は呼び出し側で判定する（子のいない seed のみクラスタ＝全自由度ドッキングでは空が正）。
 
     Ok(MolEntry {
         compound_id: raw.compound_id,
