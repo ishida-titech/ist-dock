@@ -77,11 +77,31 @@
   - **探索品質は 3 手法同等**（共通 vina 再採点で active −9.2〜−9.4、AUC isct 0.829≈vina 0.827>smina 0.794）。
   - **改善対象は探索でなく isct-dock の native ランキングスコア**（native AUC 0.776 が共通再採点で 0.829 へ）。
 - 評価過程でハーネスの採点バグ（マルチMODEL／smina meeko 変換失敗による native フォールバック）を発見・是正
-  （`docs/findings.202606211249`）。isct-io の `CG0/G0`（マクロ環グルー原子型）未対応で 257/6964 除外＝要対応。
-- 残: ISCT-screen 全カバー版ライブラリ（singleton 含む全 6964）実装→追補、CG0 対応＋再ドッキング、
-  共通 6707 集合での交差再計算、akt1/hivrt 拡大、GWOVina、10M 本番。
+  （`docs/findings.202606211249`）。
+- **CG0/G0（meeko マクロ環グルー原子）対応を実装**（isct-core, commit 27f6819）→ 従来除外の 257 件を解消し
+  **isct-dock 全 6964 で再評価＝完全カバー版**（`docs/results.202606212151`）:
+  - 共通スケール **AUC isct 0.827 ＝ vina 0.827 > smina 0.794**、EF@1%/BEDROC は isct 最良。速度 **約 3.1 倍**
+    （1.93 lig/s, 60分）。結論は部分カバー版と不変（除外バイアスは小）。
+  - マクロ環リガンドは閉環拘束未実装で ~30s/件と遅い（将来の最適化余地）。
+- **ISCT-screen（scaffold 再利用）を kif11 で評価**（`docs/results.202606220300`）。全カバー版ライブラリ
+  （`build_library.py --full-coverage`, 6966 全収録, 構築 4:33）で `isct-dock screen` を実行:
+  - **再利用は 8%（565 children）のみ**＝DUD-E 多様性でコア≥55% の congeneric 子が少なく、92% は全自由度
+    ドッキング。速度は isct-dock 比 **+10%（2.12 lig/s）**、濃縮はむしろ低下（共通 AUC 0.763 < isct-dock 0.827）。
+  - → **ISCT-screen は congeneric ライブラリ向け**。多様な VS 集合では per-ligand の isct-dock が優位。用途で使い分け。
+  - 実装修正: `library.rs`空コア許可 / `screen.rs` seed の n_steps 自動化（従来 steps=0 で不正） /
+    `build_library.py --full-coverage`・in-process meeko・拘束 embed 上限化・コア割合フィルタ 0.55。
+- 評価方針: **全ランキングパターン×全指標（AUC/EF@0.5/1/2/5%/BEDROC）を毎回そろえ複数標的で判断**
+  （`screen_metrics.full_metrics`）。AUC 単独で優劣を決めない。
+- 残: congeneric ライブラリでの ISCT-screen 評価、共通交差集合での再計算、マクロ環閉環拘束、akt1/hivrt 拡大、
+  GWOVina、10M 本番、isct-dock の native ランキングスコア改良（torsion 補正の露出）。
 
 ## 更新履歴
+- 2026-06-22: ISCT-screen（scaffold 再利用）を kif11 で評価（`docs/results.202606220300`）。全カバー版
+  ライブラリ実装（`build_library.py --full-coverage`）＋ engine 修正（`library.rs` 空コア・`screen.rs`
+  auto-steps）。DUD-E 多様性で再利用 8% のみ＝利得限定の知見。全パターン×全指標の評価方針を確立。
+- 2026-06-21: isct-dock の native 濃縮が低い原因＝ランキングに生 intermolecular を使い torsion 補正を露出
+  していない報告上の問題と特定（`docs/findings.202606212224`）。CG0 対応で全 6964 完全カバー版を記録
+  （`docs/results.202606212151`）。
 - 2026-06-21: 大規模スクリーニング評価 第1弾（DUD-E kif11, ISCT-dock vs Vina vs Smina）を実施・記録
   （`docs/results.202606211249`, `docs/findings.{202606202120,202606211249}`）。ハーネス採点バグ是正。
 - 2026-06-20: PROGRESS.md を PLAN.md から分離・新規作成。M1-M3 完了・M4 大部分実装を反映。QuickVina2・

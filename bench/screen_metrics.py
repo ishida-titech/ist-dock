@@ -54,6 +54,18 @@ def bedroc(scores, labels, alpha=20.0):
     return bedroc
 
 
+def full_metrics(scores, labels):
+    """全指標を一括算出（AUC・EF@0.5/1/2/5%・BEDROC20）。lower=active-like。"""
+    return {
+        "AUC": roc_auc(scores, labels),
+        "EF0.5": enrichment_factor(scores, labels, 0.005),
+        "EF1": enrichment_factor(scores, labels, 0.01),
+        "EF2": enrichment_factor(scores, labels, 0.02),
+        "EF5": enrichment_factor(scores, labels, 0.05),
+        "BEDROC20": bedroc(scores, labels, 20.0),
+    }
+
+
 if __name__ == "__main__":
     # 自己検証: 完全分離(active が全て最良)→AUC=1,BEDROC≈1。ランダム→AUC≈0.5。
     import random
