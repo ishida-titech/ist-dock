@@ -322,6 +322,9 @@ fn cmd_dock(
     let final_atoms = lig.scored_atoms(&best.conf);
     let e_inter = scorer.intermolecular(&final_atoms);
     let e_intra = lig.intramolecular(&final_atoms);
+    // Vina 互換の最終スコア（affinity）= 分子間項に torsion 補正を掛けたもの。
+    // 順位付け・スクリーニングはこの値を使う（生 intermolecular はサイズ依存で識別力が落ちる）。
+    let affinity = scoring::apply_torsion_correction(e_inter, lig_mol.torsdof);
     let reference = lig.reference_scored_positions();
     let rmsd = geometry::rmsd(&lig.scored_positions(&best.conf), &reference);
 
@@ -340,6 +343,7 @@ fn cmd_dock(
     std::fs::write(&out_path, out_text)?;
 
     println!("# isct-dock dock (Vina 互換, RMSD クラスタリング)");
+    println!("affinity (Vina, kcal/mol)  : {affinity:.4}");
     println!("intermolecular energy      : {e_inter:.4} kcal/mol");
     println!("intramolecular energy      : {e_intra:.4} kcal/mol");
     println!("total (objective)          : {:.4} kcal/mol", best.energy);
@@ -347,8 +351,15 @@ fn cmd_dock(
     println!("modes (RMSD-clustered)     : {}", modes.len());
     for (i, m) in modes.iter().enumerate() {
         let inter = scorer.intermolecular(&lig.scored_atoms(&m.conf));
+        let aff = scoring::apply_torsion_correction(inter, lig_mol.torsdof);
         let rm = geometry::rmsd(&lig.scored_positions(&m.conf), &reference);
-        println!("  mode {:2}  inter={:8.4}  rmsd_vs_crystal={:6.3} Å", i + 1, inter, rm);
+        println!(
+            "  mode {:2}  affinity={:8.4}  inter={:8.4}  rmsd_vs_crystal={:6.3} Å",
+            i + 1,
+            aff,
+            inter,
+            rm
+        );
     }
     println!("output poses               : {}", out_path.display());
     Ok(())

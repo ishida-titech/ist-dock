@@ -32,6 +32,7 @@ BIN = ROOT / "target" / "release" / "isct-dock"
 VINA = "vina"
 SMINA = str(Path.home() / "miniconda3" / "envs" / "smina" / "bin" / "smina")
 
+RE_ISCT_AFF = re.compile(r"affinity \(Vina[^:]*:\s*([-\d.]+)")  # torsion 補正後 Vina 互換スコア
 RE_ISCT_INTER = re.compile(r"intermolecular energy\s*:\s*([-\d.]+)")
 RE_VINA_AFF = re.compile(r"^\s+1\s+([-\d.]+)", re.M)
 RE_SCORE_ONLY = re.compile(r"Estimated Free Energy of Binding\s*[:=]\s*([-\d.]+)")
@@ -57,7 +58,8 @@ def _isct_dock_one(a):
     r = subprocess.run([str(BIN), "dock", rec, lig, "--config", cfg, "--out", pose],
                        capture_output=True, text=True, env={**os.environ, **env})
     dt = time.perf_counter() - t0
-    m = RE_ISCT_INTER.search(r.stdout)
+    # native ランキングは affinity（torsion 補正後 Vina 互換）を使う。無ければ intermolecular。
+    m = RE_ISCT_AFF.search(r.stdout) or RE_ISCT_INTER.search(r.stdout)
     return (lid, float(m.group(1)) if m else None, dt, pose)
 
 
