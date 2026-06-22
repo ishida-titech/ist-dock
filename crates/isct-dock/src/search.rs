@@ -450,6 +450,7 @@ fn single_run(
         params.size,
         free_torsions,
         params.uniform_start,
+        cap,
     );
     let mut cur = minimize_free(start, &value, &value_grad, step_iters, free_dofs);
 
@@ -532,8 +533,10 @@ fn single_run(
     (reps, evals)
 }
 
-/// 受容体と好ましく接触する初期配置を棄却サンプリングで得る。
-/// 浮遊（エネルギー≈0, 勾配≈0 で局所最適化が無効）や激突を避け、productive な開始に絞る。
+/// 受容体と好ましく接触する初期配置を**複数試行から best を選ぶ**（Vina の randomize 流＝各 run に
+/// productive な launch を与える）。位置・配向・torsion は random_in_box で完全ランダム化済み。
+/// 選択エネルギーは hunt_cap 付き search_score（激突を上限化して過剰な棄却を避ける）。
+/// 浮遊（E≈0, 勾配≈0 で局所最適化が無効）や激突開始を避け、深い基へ届きやすくする。
 #[allow(clippy::too_many_arguments)]
 fn contact_start<R: Rng>(
     lig: &LigandModel,
@@ -543,6 +546,7 @@ fn contact_start<R: Rng>(
     size: Vec3,
     free_torsions: &[usize],
     uniform: bool,
+    cap: f64,
 ) -> Conformation {
     // 固定 torsion を 0（参照＝コア剛体）に戻した初期配置を作る。
     let sample = |rng: &mut R| -> Conformation {
@@ -550,15 +554,13 @@ fn contact_start<R: Rng>(
         lock_torsions(&mut c, free_torsions);
         c
     };
-    // grid 時は一様ランダム（接触棄却なし）。勾配場が滑らかなため最適化が引き込む。
-    if uniform {
-        return sample(rng);
-    }
-    let energy = |c: &Conformation| scorer.intermolecular(&lig.scored_atoms(c));
+    // grid は勾配場が滑らかなため少なめの試行で十分。direct は接触棄却が要るので多め。
+    let n_tries = if uniform { 20 } else { 60 };
+    let energy = |c: &Conformation| scorer.search_score(&lig.scored_atoms(c), cap);
     let mut best_c = sample(rng);
     let mut best_e = energy(&best_c);
-    for _ in 0..60 {
-        // 好ましい接触（負エネルギー）かつ激突なし（過大正値でない）なら採用。
+    for _ in 1..n_tries {
+        // 好ましい接触（負エネルギー）に達したら早期終了（決定論・RNG 消費は seed 依存で再現）。
         if best_e < -1.0 {
             break;
         }
