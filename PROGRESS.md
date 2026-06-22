@@ -96,6 +96,10 @@
   GWOVina、10M 本番、isct-dock の native ランキングスコア改良（torsion 補正の露出）。
 
 ## 更新履歴
+- 2026-06-22: **hunt_cap（Vina curl：探索中の激突エネルギー上限）実装**（`docs/findings.202606222004`）。
+  `SearchParams.hunt_cap`（既定 10.0、config `run.hunt_cap`）。探索 grid に per-atom 適用・polish は cap 無し。
+  効果: vina-mode +0.14・drift 中立・速度不変・決定論維持。ただし実 Vina との残差 ~0.33 は未解消
+  （初期ランダム化・intra curl・ステップ予算 等が候補）。vina-mode の変異振幅/温度も Vina 一致済（commit 325ee5d）。
 - 2026-06-22: **速度差の切り分け実測**（`docs/results.202606221625`）。kif11 16 リガンド・8 コア:
   drift と vina-mode が同品質(−9.8)に到達するが drift は wall 2.05×・評価回数 3.0× 効率的＝**アルゴリズム差**。
   Rust vina-mode vs C++ Vina は wall 1.23×（品質を揃えれば ~1.0×）＝**実装差は小**。
