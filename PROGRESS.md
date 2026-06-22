@@ -96,6 +96,10 @@
   GWOVina、10M 本番、isct-dock の native ランキングスコア改良（torsion 補正の露出）。
 
 ## 更新履歴
+- 2026-06-22: **速度差の切り分け実測**（`docs/results.202606221625`）。kif11 16 リガンド・8 コア:
+  drift と vina-mode が同品質(−9.8)に到達するが drift は wall 2.05×・評価回数 3.0× 効率的＝**アルゴリズム差**。
+  Rust vina-mode vs C++ Vina は wall 1.23×（品質を揃えれば ~1.0×）＝**実装差は小**。
+  → **Vina に対する ~2.5× 高速化はほぼアルゴリズム（ドリフト鎖）由来**と確定。DIFF.md に反映。
 - 2026-06-22: **Vina 忠実 MC 探索モード追加**（実装レベル差の切り分け用）。`SearchMode::Vina`／実行時
   `--search <standard|vina|qvina2>`（dock・screen 両対応）。vina-mode は各ステップ収束まで BFGS（drift は浅い
   chain_iters）。エネルギー評価回数カウンタを追加し dock 出力に表示（drift 870steps/143evals毎step vs
