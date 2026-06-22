@@ -96,6 +96,9 @@
   GWOVina、10M 本番、isct-dock の native ランキングスコア改良（torsion 補正の露出）。
 
 ## 更新履歴
+- 2026-06-22: 初期配置を **複数試行 best-start 選択**へ改良＋**残差の正体を診断特定**（`docs/findings.202606222119`）。
+  Vina ポーズを `isct-dock score` でほぼ同値再採点でき＝**残差は scoring でなく ligand 依存の探索差**（小）。
+  先頭 8 件（相関 subset）で isct 2/vina 6 が深い。全 kif11 では isct≈vina。残差追跡は多様セットで行うべき。
 - 2026-06-22: hunt_cap を **intra（分子内ペア）にも適用**（Vina v[1] 相当, `docs/findings.202606222059`）。
   inter+intra 両対応で Vina 忠実化。ただし本セットでは追加効果ほぼ無し（埋め込み済みリガンドは intra 激突が稀）。
   実 Vina 残差 ~0.33 は依然＝次候補は初期ランダム化の多試行化。
