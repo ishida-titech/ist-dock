@@ -4,7 +4,7 @@
 （`docs/results.*`・`docs/findings.*` は一度作成したら更新しない時系列ログ。**本ファイルは現状を反映して
 上書き・追記する**。新機能・検証を入れたらこの表と詳細・更新履歴を更新すること。）
 
-最終更新: 2026-06-21
+最終更新: 2026-06-22
 
 ## マイルストーン状態
 
@@ -96,6 +96,11 @@
   GWOVina、10M 本番、isct-dock の native ランキングスコア改良（torsion 補正の露出）。
 
 ## 更新履歴
+- 2026-06-22: **Vina 忠実 MC 探索モード追加**（実装レベル差の切り分け用）。`SearchMode::Vina`／実行時
+  `--search <standard|vina|qvina2>`（dock・screen 両対応）。vina-mode は各ステップ収束まで BFGS（drift は浅い
+  chain_iters）。エネルギー評価回数カウンタを追加し dock 出力に表示（drift 870steps/143evals毎step vs
+  vina 50steps/542evals毎step を確認）。決定論維持。clippy/test green。較正（実 Vina と品質を揃えた速度比＝
+  実装差、vina-mode vs drift＝アルゴリズム差）は後続実験。
 - 2026-06-22: ISCT-screen（scaffold 再利用）を kif11 で評価（`docs/results.202606220300`）。全カバー版
   ライブラリ実装（`build_library.py --full-coverage`）＋ engine 修正（`library.rs` 空コア・`screen.rs`
   auto-steps）。DUD-E 多様性で再利用 8% のみ＝利得限定の知見。全パターン×全指標の評価方針を確立。

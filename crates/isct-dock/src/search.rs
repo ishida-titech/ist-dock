@@ -32,6 +32,9 @@ struct EvalScratch {
     grad: Vec<f64>,
     /// 直近に評価した conformation の scored 原子 world 座標（RMSD クラスタリングの再計算回避用）。
     scored_pos: Vec<Vec3>,
+    /// このバッファで行ったエネルギー評価回数（value/value_grad 呼び出し数）。探索アルゴリズムの
+    /// 仕事量を計測し drift/vina モードを比較するための診断カウンタ。
+    evals: u64,
 }
 
 /// 値（直線探索用）= 分子間 + ボックス罰則 + 分子内。バッファ再利用でアロケーションしない。
@@ -44,6 +47,7 @@ fn eval_value(
     c: &Conformation,
     exact: bool,
 ) -> f64 {
+    s.evals += 1;
     lig.world_coords_into(c, &mut s.pos);
     lig.scored_atoms_into(&s.pos, &mut s.atoms);
     let inter_box = if exact {
@@ -63,6 +67,7 @@ fn eval_value_grad(
     c: &Conformation,
     exact: bool,
 ) -> (f64, Vec<f64>) {
+    s.evals += 1;
     lig.world_coords_frames_into(
         c, &mut s.pos, &mut s.ref_axis, &mut s.ref_pivot, &mut s.world_axis, &mut s.world_pivot,
     );
@@ -111,8 +116,8 @@ pub struct SearchParams {
     pub temp_final: f64,
     /// 初期配置を一様ランダムにする（接触棄却を省く）。グリッドで勾配場が滑らかなとき有効。
     pub uniform_start: bool,
-    /// QuickVina2 相当の局所探索スキップを有効化（opt-in 高速化・決定論維持）。
-    pub qvina2: bool,
+    /// 探索アルゴリズムの種類（既定 Drift＝ドリフト鎖／Qvina2＝局所探索スキップ／Vina＝忠実 MC）。
+    pub kind: SearchKind,
     /// QuickVina2 の勾配方向一致閾値（cos）。近傍の勾配と cos>これで局所探索をスキップ。
     /// 高いほど保守的（スキップ少・速度↓精度↑）、低いほど攻める（スキップ多・速度↑精度↓）。既定 0.90。
     pub qvina_cos: f64,
@@ -144,7 +149,7 @@ impl Default for SearchParams {
             temp_init: 1.0,
             temp_final: 1.0,
             uniform_start: false,
-            qvina2: false,
+            kind: SearchKind::Drift,
             qvina_cos: 0.90,
         }
     }
@@ -167,9 +172,32 @@ pub fn auto_n_steps(n_scored_atoms: usize, n_torsions: usize) -> usize {
     (30 * eff).max(300)
 }
 
+/// vina-mode（毎ステップ収束 BFGS）の per-run ステップ数。Vina は「少数・高コスト」ステップなので
+/// drift の `auto_n_steps` より大幅に少ない。較正用に `n_steps` を明示すれば上書きされる。
+pub fn auto_n_steps_vina(n_scored_atoms: usize, n_torsions: usize) -> usize {
+    let eff = n_scored_atoms.min(8 + 5 * n_torsions);
+    eff.max(50)
+}
+
+/// vina-mode の各ステップで使う BFGS 反復上限。`minimize_free` は `grad<1e-4` で早期収束するため、
+/// 大きめの上限で「収束まで BFGS」を実現する（Vina の quasi-Newton 相当）。
+const VINA_BFGS_MAX: usize = 100;
+
+/// 探索アルゴリズムの種類。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchKind {
+    /// ドリフト鎖 ILS（既定）: 各ステップ浅い局所最適化（`chain_iters`）で広く探索。
+    #[default]
+    Drift,
+    /// QuickVina2 相当の局所探索スキップ（opt-in 高速化・決定論維持）。
+    Qvina2,
+    /// Vina 忠実 MC: 各ステップ**収束まで BFGS**（実装レベル差の切り分け用）。
+    Vina,
+}
+
 /// リガンドを受容体ボックスへドッキングし、**RMSD クラスタリングした上位モード**を
-/// エネルギー昇順で返す（[0]=最良。全 torsion 自由）。
-pub fn dock(lig: &LigandModel, scorer: &Scorer, params: &SearchParams) -> Vec<DockResult> {
+/// エネルギー昇順で返す（[0]=最良。全 torsion 自由）。返り値は `(モード, 総エネルギー評価回数)`。
+pub fn dock(lig: &LigandModel, scorer: &Scorer, params: &SearchParams) -> (Vec<DockResult>, u64) {
     let free: Vec<usize> = (0..lig.n_torsions()).collect();
     dock_constrained(lig, scorer, params, &free)
 }
@@ -177,20 +205,24 @@ pub fn dock(lig: &LigandModel, scorer: &Scorer, params: &SearchParams) -> Vec<Do
 /// Scaffold 固定ドッキング: `free_torsions` の torsion と剛体自由度のみを動かし、その他の
 /// torsion（コアを動かすもの）は参照値 0 に固定したまま探索する。Phase 1 で seed のコアを
 /// 剛体のまま位置・配向・R 基だけ大域探索するのに使う。
+/// 返り値は `(上位モード, 総エネルギー評価回数)`。評価回数は探索の仕事量を比較する診断用。
 pub fn dock_constrained(
     lig: &LigandModel,
     scorer: &Scorer,
     params: &SearchParams,
     free_torsions: &[usize],
-) -> Vec<DockResult> {
+) -> (Vec<DockResult>, u64) {
     // 各 run の seed を親 rng から順に生成する（実行順非依存・再現可能）。これにより run を
     // rayon で並列化しても結果が決定的になる。
     let mut seed_rng = ChaCha8Rng::seed_from_u64(params.seed);
     let run_seeds: Vec<u64> = (0..params.n_runs).map(|_| seed_rng.next_u64()).collect();
 
-    // per-run ステップ数: n_steps==0 なら自動スケール（原子数を torsion 上限で頭打ち）。
+    // per-run ステップ数: n_steps==0 なら自動スケール。vina-mode は「少数・高コスト」ステップ。
     let n_steps = if params.n_steps == 0 {
-        auto_n_steps(lig.n_scored(), free_torsions.len())
+        match params.kind {
+            SearchKind::Vina => auto_n_steps_vina(lig.n_scored(), free_torsions.len()),
+            _ => auto_n_steps(lig.n_scored(), free_torsions.len()),
+        }
     } else {
         params.n_steps
     };
@@ -200,14 +232,15 @@ pub fn dock_constrained(
 
     // 独立 run を並列実行。各 run は RMSD クラスタした代表ポーズ群を返す。collect で run 順保持＝決定的。
     // 評価バッファは single_run 内で run ごとに確保（スレッドごとに独立）。
-    let per_run: Vec<Vec<(Conformation, f64)>> = run_seeds
+    let per_run: Vec<(Vec<(Conformation, f64)>, u64)> = run_seeds
         .par_iter()
         .map(|&seed| single_run(lig, scorer, params, n_steps, free_torsions, &free_dofs, seed))
         .collect();
 
     // 全 run の代表を集約し、大域 RMSD クラスタリングで上位 polish_modes（≥ n_modes）モードへ絞る。
     // 出力数(n_modes)より広く残すことで、粗極小の near-native 代表を精密化の候補として取りこぼさない。
-    let all: Vec<(Conformation, f64)> = per_run.into_iter().flatten().collect();
+    let mut total_evals: u64 = per_run.iter().map(|(_, e)| e).sum();
+    let all: Vec<(Conformation, f64)> = per_run.into_iter().flat_map(|(r, _)| r).collect();
     let polish_cap = params.polish_modes.max(params.n_modes);
     let reps = cluster_poses(lig, all, params.cluster_rmsd, polish_cap);
 
@@ -224,12 +257,14 @@ pub fn dock_constrained(
             (r.conf, r.energy)
         })
         .collect();
+    total_evals += polish_scratch.borrow().evals;
 
     // 精密化でポーズが寄りうるので再クラスタ・再ソート → 上位モード（昇順, [0]=最良）。
-    cluster_poses(lig, polished, params.cluster_rmsd, params.n_modes)
+    let modes = cluster_poses(lig, polished, params.cluster_rmsd, params.n_modes)
         .into_iter()
         .map(|(conf, energy)| DockResult { conf, energy })
-        .collect()
+        .collect();
+    (modes, total_evals)
 }
 
 /// エネルギー昇順の greedy RMSD クラスタリング。候補をエネルギー昇順で処理し、既存代表と
@@ -295,7 +330,13 @@ fn single_run(
     free_torsions: &[usize],
     free_dofs: &[usize],
     seed: u64,
-) -> Vec<(Conformation, f64)> {
+) -> (Vec<(Conformation, f64)>, u64) {
+    // 各ステップの局所最適化反復: drift/qvina2 は浅い `chain_iters`、vina は収束まで（VINA_BFGS_MAX）。
+    let step_iters = if params.kind == SearchKind::Vina {
+        VINA_BFGS_MAX
+    } else {
+        params.chain_iters
+    };
     // この run 専用の評価バッファ（スレッドローカル）。直線探索と勾配で**別バッファ**にすることで、
     // `minimize_free` 返却後に `scratch_g.scored_pos` が **返却 conf の scored 座標**を保持する（直線探索の
     // value 呼び出しに上書きされない）。`minimize_free` の最後の value_grad は常に返却 conf 上で呼ばれるため、
@@ -316,7 +357,7 @@ fn single_run(
         free_torsions,
         params.uniform_start,
     );
-    let mut cur = minimize_free(start, &value, &value_grad, params.chain_iters, free_dofs);
+    let mut cur = minimize_free(start, &value, &value_grad, step_iters, free_dofs);
 
     // 訪れた局所最小をクラスタ保持（受理/非受理を問わず）＝探索の幅を保持。出力数(n_modes)より広く
     // 残し、ドリフトで稀に訪れた near-native モードを大域 polish 候補へ確実に渡す。
@@ -334,8 +375,7 @@ fn single_run(
     let mut stale = 0usize;
 
     // QuickVina2: 変異後の試行点が「新しい井戸」でなければ局所探索をスキップ（per-run 履歴＝決定論）。
-    let mut history = params
-        .qvina2
+    let mut history = (params.kind == SearchKind::Qvina2)
         .then(|| HistoryBuffer::new(QVinaParams::for_dofs(free_dofs.len(), params.qvina_cos)));
 
     // 反復局所探索（ILS）＋焼きなまし: 毎ステップ 1 自由度変異 → 浅い局所最適化 → Metropolis 受理。
@@ -355,7 +395,7 @@ fn single_run(
             }
         }
 
-        let res = minimize_free(trial, &value, &value_grad, params.chain_iters, free_dofs);
+        let res = minimize_free(trial, &value, &value_grad, step_iters, free_dofs);
         let res_pos = scratch_g.borrow().scored_pos.clone();
         cluster_insert(&mut pool, res.conf.clone(), res.energy, res_pos, params.cluster_rmsd, pool_cap);
         if patience > 0 {
@@ -385,7 +425,8 @@ fn single_run(
 
     let mut reps: Vec<(Conformation, f64)> = pool.into_iter().map(|(c, e, _)| (c, e)).collect();
     reps.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-    reps
+    let evals = scratch_v.borrow().evals + scratch_g.borrow().evals;
+    (reps, evals)
 }
 
 /// 受容体と好ましく接触する初期配置を棄却サンプリングで得る。

@@ -50,6 +50,7 @@ pub fn dock_seed(
     let free = seed.rgroup_torsions(core_atoms);
     // RMSD クラスタ済み多モード（昇順）。上位 seed_poses を保持。
     let modes: Vec<SeedPose> = dock_constrained(seed, scorer, params, &free)
+        .0
         .into_iter()
         .take(seed_poses.max(1))
         .map(|m| SeedPose { conf: m.conf, energy: m.energy })

@@ -14,7 +14,7 @@ use isct_core::scoring::{self, intermolecular_terms};
 use isct_dock::energy::Scorer;
 use isct_dock::ligand::LigandModel;
 use isct_dock::screen::{ranking_tsv, screen, ScreenParams};
-use isct_dock::search::{auto_n_steps, dock, SearchParams};
+use isct_dock::search::{auto_n_steps, auto_n_steps_vina, dock, SearchKind, SearchParams};
 use isct_io::{config, library, pdbqt};
 
 #[derive(Parser)]
@@ -52,6 +52,9 @@ enum Command {
         /// 低い=攻める(速度↑精度↓)。省略時は config の qvina_cos（既定 0.90）。
         #[arg(long)]
         qvina_cos: Option<f64>,
+        /// 探索アルゴリズムを上書き（standard=ドリフト鎖 / vina=Vina 忠実 MC / qvina2）。省略時は config の search。
+        #[arg(long, value_parser = parse_search_mode)]
+        search: Option<config::SearchMode>,
     },
     /// クラスタライブラリをスクリーニングする（M3）。
     Screen {
@@ -74,6 +77,9 @@ enum Command {
         /// ワーカスレッドを物理コアにピン留め（Linux。他 OS は no-op）。
         #[arg(long)]
         pin_threads: bool,
+        /// 探索アルゴリズムを上書き（standard=ドリフト鎖 / vina=Vina 忠実 MC / qvina2）。省略時は config の search。
+        #[arg(long, value_parser = parse_search_mode)]
+        search: Option<config::SearchMode>,
     },
     /// TOML マニフェスト＋PDBQT のクラスタライブラリを memmap 用バイナリへ変換する（M4）。
     Pack {
@@ -96,7 +102,8 @@ fn main() -> Result<()> {
             out,
             local_only,
             qvina_cos,
-        } => cmd_dock(&receptor, &ligand, &config, out.as_deref(), local_only, qvina_cos),
+            search,
+        } => cmd_dock(&receptor, &ligand, &config, out.as_deref(), local_only, qvina_cos, search),
         Command::Screen {
             receptor,
             library,
@@ -105,8 +112,28 @@ fn main() -> Result<()> {
             poses_out,
             top,
             pin_threads,
-        } => cmd_screen(&receptor, &library, &config, out.as_deref(), poses_out.as_deref(), top, pin_threads),
+            search,
+        } => cmd_screen(&receptor, &library, &config, out.as_deref(), poses_out.as_deref(), top, pin_threads, search),
         Command::Pack { manifest, out } => cmd_pack(&manifest, &out),
+    }
+}
+
+/// `--search` の値をパースする（standard|drift|vina|qvina2）。`drift` は `standard` の別名。
+fn parse_search_mode(s: &str) -> Result<config::SearchMode, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "standard" | "drift" => Ok(config::SearchMode::Standard),
+        "qvina2" => Ok(config::SearchMode::Qvina2),
+        "vina" => Ok(config::SearchMode::Vina),
+        other => Err(format!("unknown search mode '{other}' (standard|drift|vina|qvina2)")),
+    }
+}
+
+/// config の探索モード → 探索エンジンの `SearchKind`。
+fn search_kind(m: config::SearchMode) -> SearchKind {
+    match m {
+        config::SearchMode::Standard => SearchKind::Drift,
+        config::SearchMode::Qvina2 => SearchKind::Qvina2,
+        config::SearchMode::Vina => SearchKind::Vina,
     }
 }
 
@@ -140,6 +167,7 @@ fn cmd_pack(manifest: &PathBuf, out: &PathBuf) -> Result<()> {
 
 /// クラスタライブラリをスクリーニングする（M3/M4）。ライブラリは TOML マニフェスト（小・デバッグ）か
 /// `pack` 済みバイナリ（拡張子 .bin。大規模・memmap streaming）。
+#[allow(clippy::too_many_arguments)]
 fn cmd_screen(
     receptor: &PathBuf,
     library_path: &PathBuf,
@@ -148,6 +176,7 @@ fn cmd_screen(
     poses_out: Option<&std::path::Path>,
     top: usize,
     pin_threads: bool,
+    search: Option<config::SearchMode>,
 ) -> Result<()> {
     setup_thread_pinning(pin_threads);
     let rec = pdbqt::parse_file(receptor)
@@ -159,6 +188,7 @@ fn cmd_screen(
     let size = Vec3::new(cfg.r#box.size[0], cfg.r#box.size[1], cfg.r#box.size[2]);
     let rec_scored = rec.scored_atoms();
 
+    let mode = search.unwrap_or(cfg.run.search);
     let use_grid = cfg.run.scoring == config::Scoring::Grid;
     let params = ScreenParams {
         center,
@@ -178,7 +208,7 @@ fn cmd_screen(
             polish_modes: cfg.run.polish_modes,
             early_stop_patience: cfg.run.early_stop_patience,
             uniform_start: use_grid,
-            qvina2: cfg.run.search == config::SearchMode::Qvina2,
+            kind: search_kind(mode),
             qvina_cos: cfg.run.qvina_cos,
         },
         prune_threshold: cfg.screen.prune_threshold,
@@ -190,13 +220,14 @@ fn cmd_screen(
 
     let is_binary = library_path.extension().is_some_and(|e| e == "bin");
     eprintln!(
-        "screen: receptor(scored)={} atoms, library={} ({}), seed={}, runs={}, steps={}, prune>{}, pin={}",
+        "screen: receptor(scored)={} atoms, library={} ({}), seed={}, runs={}, steps={}, mode={:?}, prune>{}, pin={}",
         rec_scored.len(),
         library_path.display(),
         if is_binary { "binary/memmap" } else { "toml" },
         params.search.seed,
         params.search.n_runs,
         params.search.n_steps,
+        params.search.kind,
         params.prune_threshold,
         pin_threads,
     );
@@ -242,6 +273,7 @@ fn cmd_dock(
     out: Option<&std::path::Path>,
     local_only: bool,
     qvina_cos: Option<f64>,
+    search: Option<config::SearchMode>,
 ) -> Result<()> {
     let rec = pdbqt::parse_file(receptor)
         .with_context(|| format!("failed to parse receptor: {}", receptor.display()))?;
@@ -250,6 +282,7 @@ fn cmd_dock(
     let lig_mol = pdbqt::parse_str(&lig_text)?;
     let cfg = config::load(config_path)
         .with_context(|| format!("failed to load config: {}", config_path.display()))?;
+    let mode = search.unwrap_or(cfg.run.search);
 
     let center = Vec3::new(cfg.r#box.center[0], cfg.r#box.center[1], cfg.r#box.center[2]);
     let size = Vec3::new(cfg.r#box.size[0], cfg.r#box.size[1], cfg.r#box.size[2]);
@@ -281,27 +314,31 @@ fn cmd_dock(
         polish_modes: cfg.run.polish_modes,
         early_stop_patience: cfg.run.early_stop_patience,
         uniform_start: use_grid,
-        qvina2: cfg.run.search == config::SearchMode::Qvina2,
+        kind: search_kind(mode),
         qvina_cos: qvina_cos.unwrap_or(cfg.run.qvina_cos),
     };
 
     let eff_steps = if params.n_steps == 0 {
-        auto_n_steps(lig.n_scored(), lig.n_torsions())
+        match params.kind {
+            SearchKind::Vina => auto_n_steps_vina(lig.n_scored(), lig.n_torsions()),
+            _ => auto_n_steps(lig.n_scored(), lig.n_torsions()),
+        }
     } else {
         params.n_steps
     };
     eprintln!(
-        "docking: receptor(pruned)={} atoms, ligand={} heavy atoms, torsions={}, runs={}, steps={} ({}), scoring={:?}",
+        "docking: receptor(pruned)={} atoms, ligand={} heavy atoms, torsions={}, runs={}, steps={} ({}), mode={:?}, scoring={:?}",
         scorer.receptor_atoms(),
         lig.n_scored(),
         lig.n_torsions(),
         params.n_runs,
         eff_steps,
         if params.n_steps == 0 { "auto" } else { "fixed" },
+        params.kind,
         cfg.run.scoring,
     );
 
-    let modes = if local_only {
+    let (modes, evals) = if local_only {
         // 診断: 結晶（恒等）ポーズから局所最適化のみ。
         let objective = |c: &isct_dock::ligand::Conformation| {
             scorer.intermolecular(&lig.scored_atoms(c))
@@ -309,10 +346,7 @@ fn cmd_dock(
         let start = isct_dock::ligand::Conformation::identity(lig.n_torsions());
         let free = isct_dock::optimizer::all_dofs(start.dim());
         let r = isct_dock::optimizer::minimize_free_fd(start, &objective, 200, &free);
-        vec![isct_dock::search::DockResult {
-            conf: r.conf,
-            energy: r.energy,
-        }]
+        (vec![isct_dock::search::DockResult { conf: r.conf, energy: r.energy }], 0u64)
     } else {
         dock(&lig, &scorer, &params)
     };
@@ -348,6 +382,12 @@ fn cmd_dock(
     println!("intramolecular energy      : {e_intra:.4} kcal/mol");
     println!("total (objective)          : {:.4} kcal/mol", best.energy);
     println!("RMSD vs input(crystal) pose: {rmsd:.3} Å");
+    println!("search mode                : {:?}", params.kind);
+    println!(
+        "energy evals               : {} ({} /run)",
+        evals,
+        evals / params.n_runs.max(1) as u64
+    );
     println!("modes (RMSD-clustered)     : {}", modes.len());
     for (i, m) in modes.iter().enumerate() {
         let inter = scorer.intermolecular(&lig.scored_atoms(&m.conf));

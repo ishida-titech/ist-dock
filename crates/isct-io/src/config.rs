@@ -91,14 +91,16 @@ pub enum Scoring {
     Grid,
 }
 
-/// 探索モード。`standard`=毎ステップ局所探索（既定・決定論）/ `qvina2`=QuickVina2 相当の局所探索スキップ
-/// （opt-in 高速化・決定論維持）。`qvinaw`（QuickVina-W: 協調 blind docking・非決定論）は後続フェーズ。
+/// 探索モード。`standard`=ドリフト鎖 ILS（既定・決定論）/ `qvina2`=QuickVina2 相当の局所探索スキップ
+/// （opt-in 高速化・決定論維持）/ `vina`=Vina 忠実 MC（毎ステップ収束まで BFGS。実装レベル差の切り分け用）。
+/// `qvinaw`（QuickVina-W: 協調 blind docking・非決定論）は後続フェーズ。
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchMode {
     #[default]
     Standard,
     Qvina2,
+    Vina,
 }
 
 /// 実行パラメータ（既定値あり）。
