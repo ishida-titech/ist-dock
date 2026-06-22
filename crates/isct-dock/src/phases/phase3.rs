@@ -62,7 +62,7 @@ pub fn optimize_child(
             .zip(&core_mask)
             .filter_map(|(a, &m)| (!m).then_some(*a))
             .collect();
-        delta.intermolecular(&rgroup, receptor) + scorer.box_penalty(&atoms) + child.intramolecular(&atoms)
+        delta.intermolecular(&rgroup, receptor) + scorer.box_penalty(&atoms) + child.intramolecular(&atoms, f64::INFINITY)
     };
 
     // R 基 torsion（コアを動かさない torsion）のみ最適化（Δ目的関数は有限差分勾配）。
@@ -72,7 +72,7 @@ pub fn optimize_child(
     // 報告用に最終ポーズで分子間・分子内をフル計算する。
     let final_atoms = child.scored_atoms(&res.conf);
     let e_inter = scorer.intermolecular(&final_atoms);
-    let e_intra = child.intramolecular(&final_atoms);
+    let e_intra = child.intramolecular(&final_atoms, f64::INFINITY);
     ChildScore {
         conf: res.conf,
         e_inter,

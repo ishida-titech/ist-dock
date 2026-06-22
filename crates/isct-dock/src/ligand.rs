@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 use isct_core::atom_types::XsType;
 use isct_core::geometry::{distance, Vec3};
-use isct_core::scoring::{eval_pair, pair_energy_grad, ScoredAtom, CUTOFF};
+use isct_core::scoring::{curl, eval_pair, pair_energy_grad, ScoredAtom, CUTOFF};
 use isct_io::pdbqt::Molecule;
 use nalgebra::{Unit, UnitQuaternion};
 use rand::Rng;
@@ -182,28 +182,32 @@ impl LigandModel {
     }
 
     /// 分子内エネルギー（フラグメント間の非結合重原子ペアの Vina スコア和）。
-    pub fn intramolecular(&self, atoms: &[ScoredAtom]) -> f64 {
+    /// `cap`（hunt_cap）で各ペアの正エネルギー（激突）を上限化する（探索用。無効化は `f64::INFINITY`）。
+    pub fn intramolecular(&self, atoms: &[ScoredAtom], cap: f64) -> f64 {
         let mut e = 0.0;
         for &(a, b) in &self.intra_pairs {
             let r = distance(&atoms[a].pos, &atoms[b].pos);
             if r < CUTOFF {
-                e += eval_pair(atoms[a].xs, atoms[b].xs, r).weighted_sum();
+                let pe = eval_pair(atoms[a].xs, atoms[b].xs, r).weighted_sum();
+                e += curl(pe, cap).0;
             }
         }
         e
     }
 
     /// 分子内エネルギーと、各 scored 原子に働く力（`force[k] -= dE/dpos_k`）を加算する。
-    pub fn intramolecular_value_grad(&self, atoms: &[ScoredAtom], force: &mut [Vec3]) -> f64 {
+    /// `cap`（hunt_cap）で各ペアの正エネルギーを上限化し、勾配も curl のスケールを掛ける。
+    pub fn intramolecular_value_grad(&self, atoms: &[ScoredAtom], force: &mut [Vec3], cap: f64) -> f64 {
         let mut e = 0.0;
         for &(a, b) in &self.intra_pairs {
             let diff = atoms[a].pos - atoms[b].pos;
             let r = diff.norm();
             if r < CUTOFF && r > 1e-8 {
                 let (v, dvdr) = pair_energy_grad(atoms[a].xs, atoms[b].xs, r);
-                e += v;
-                // dE/dpos_a = dvdr*diff/r, dE/dpos_b = -それ。force = -dE/dpos。
-                let f = diff * (dvdr / r);
+                let (cv, scale) = curl(v, cap);
+                e += cv;
+                // dE/dpos_a = dvdr*diff/r, dE/dpos_b = -それ。force = -dE/dpos。curl の勾配スケール込み。
+                let f = diff * (dvdr / r * scale);
                 force[a] -= f;
                 force[b] += f;
             }
@@ -529,7 +533,7 @@ TORSDOF 1
         let lig = LigandModel::new(&mol);
         assert_eq!(lig.n_intra_pairs(), 1);
         // 評価が有限値を返す（panic しない）。
-        let e = lig.intramolecular(&lig.scored_atoms(&Conformation::identity(lig.n_torsions())));
+        let e = lig.intramolecular(&lig.scored_atoms(&Conformation::identity(lig.n_torsions())), f64::INFINITY);
         assert!(e.is_finite());
     }
 
@@ -585,14 +589,14 @@ TORSDOF 1
         // 値（罰則なし: 分子間＋分子内）。
         let value = |c: &Conformation| {
             let a = lig.scored_atoms(c);
-            intermolecular_terms(&a, &receptor).weighted_sum() + lig.intramolecular(&a)
+            intermolecular_terms(&a, &receptor).weighted_sum() + lig.intramolecular(&a, f64::INFINITY)
         };
 
         let (wp, wa, wpv) = lig.world_coords_frames(&conf);
         let atoms = lig.scored_atoms_at(&wp);
         let mut force = vec![Vec3::zeros(); atoms.len()];
         let mut e = intermolecular_value_grad(&atoms, &receptor, &mut force);
-        e += lig.intramolecular_value_grad(&atoms, &mut force);
+        e += lig.intramolecular_value_grad(&atoms, &mut force, f64::INFINITY);
         let grad = lig.dof_gradient(&conf, &wp, &wa, &wpv, &force);
 
         assert!((e - value(&conf)).abs() < 1e-9, "value mismatch {e}");

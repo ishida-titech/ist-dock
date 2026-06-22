@@ -357,7 +357,7 @@ fn cmd_dock(
     // 内訳・RMSD は最良モードで。
     let final_atoms = lig.scored_atoms(&best.conf);
     let e_inter = scorer.intermolecular(&final_atoms);
-    let e_intra = lig.intramolecular(&final_atoms);
+    let e_intra = lig.intramolecular(&final_atoms, f64::INFINITY);
     // Vina 互換の最終スコア（affinity）= 分子間項に torsion 補正を掛けたもの。
     // 順位付け・スクリーニングはこの値を使う（生 intermolecular はサイズ依存で識別力が落ちる）。
     let affinity = scoring::apply_torsion_correction(e_inter, lig_mol.torsdof);

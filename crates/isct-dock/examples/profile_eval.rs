@@ -66,7 +66,7 @@ fn main() {
         Box::new(move || {
             let atoms = lig.scored_atoms(&conf);
             let mut force = vec![Vec3::zeros(); atoms.len()];
-            std::hint::black_box(lig.intramolecular_value_grad(&atoms, &mut force));
+            std::hint::black_box(lig.intramolecular_value_grad(&atoms, &mut force, f64::INFINITY));
         })
     });
     bench("dof_gradient", {
