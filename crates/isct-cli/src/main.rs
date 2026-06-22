@@ -210,6 +210,7 @@ fn cmd_screen(
             uniform_start: use_grid,
             kind: search_kind(mode),
             qvina_cos: cfg.run.qvina_cos,
+            hunt_cap: cfg.run.hunt_cap,
         },
         prune_threshold: cfg.screen.prune_threshold,
         local_iters: cfg.screen.local_iters,
@@ -316,6 +317,7 @@ fn cmd_dock(
         uniform_start: use_grid,
         kind: search_kind(mode),
         qvina_cos: qvina_cos.unwrap_or(cfg.run.qvina_cos),
+        hunt_cap: cfg.run.hunt_cap,
     };
 
     let eff_steps = if params.n_steps == 0 {

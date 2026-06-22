@@ -46,6 +46,7 @@ fn eval_value(
     s: &mut EvalScratch,
     c: &Conformation,
     exact: bool,
+    cap: f64,
 ) -> f64 {
     s.evals += 1;
     lig.world_coords_into(c, &mut s.pos);
@@ -53,7 +54,7 @@ fn eval_value(
     let inter_box = if exact {
         scorer.score(&s.atoms)
     } else {
-        scorer.search_score(&s.atoms)
+        scorer.search_score(&s.atoms, cap)
     };
     inter_box + lig.intramolecular(&s.atoms)
 }
@@ -66,6 +67,7 @@ fn eval_value_grad(
     s: &mut EvalScratch,
     c: &Conformation,
     exact: bool,
+    cap: f64,
 ) -> (f64, Vec<f64>) {
     s.evals += 1;
     lig.world_coords_frames_into(
@@ -80,7 +82,7 @@ fn eval_value_grad(
     let mut e = if exact {
         scorer.exact_value_and_force(&s.atoms, &mut s.force)
     } else {
-        scorer.value_and_force(&s.atoms, &mut s.force)
+        scorer.value_and_force(&s.atoms, &mut s.force, cap)
     };
     e += lig.intramolecular_value_grad(&s.atoms, &mut s.force);
     lig.dof_gradient_into(c, &s.pos, &s.world_axis, &s.world_pivot, &s.force, &mut s.grad);
@@ -121,6 +123,9 @@ pub struct SearchParams {
     /// QuickVina2 の勾配方向一致閾値（cos）。近傍の勾配と cos>これで局所探索をスキップ。
     /// 高いほど保守的（スキップ少・速度↓精度↑）、低いほど攻める（スキップ多・速度↑精度↓）。既定 0.90。
     pub qvina_cos: f64,
+    /// 探索中の正エネルギー上限（Vina hunt_cap, 既定 10.0）。激突の暴走を抑え深い極小へ抜けやすくする。
+    /// polish は常に cap 無し（authentic）。`f64::INFINITY` で無効化。
+    pub hunt_cap: f64,
 }
 
 impl Default for SearchParams {
@@ -151,6 +156,7 @@ impl Default for SearchParams {
             uniform_start: false,
             kind: SearchKind::Drift,
             qvina_cos: 0.90,
+            hunt_cap: 10.0,
         }
     }
 }
@@ -326,9 +332,10 @@ pub fn dock_constrained(
     // 各代表を **厳密 f64 表面**で厚く精密化（grid/f32 の平滑化ズレを補正）。直線探索値は grid（探索と
     // 同一表面）、勾配は厳密 f64。polish ループ専用の再利用バッファを 1 つ確保。
     let polish_scratch = RefCell::new(EvalScratch::default());
-    let value = |c: &Conformation| eval_value(lig, scorer, &mut polish_scratch.borrow_mut(), c, true);
+    // polish は厳密 f64・cap 無し（authentic）。
+    let value = |c: &Conformation| eval_value(lig, scorer, &mut polish_scratch.borrow_mut(), c, true, f64::INFINITY);
     let exact_value_grad =
-        |c: &Conformation| eval_value_grad(lig, scorer, &mut polish_scratch.borrow_mut(), c, true);
+        |c: &Conformation| eval_value_grad(lig, scorer, &mut polish_scratch.borrow_mut(), c, true, f64::INFINITY);
     let polished: Vec<(Conformation, f64)> = reps
         .into_iter()
         .map(|(conf, _)| {
@@ -425,8 +432,10 @@ fn single_run(
     // cluster_insert はこの座標を再利用でき world_coords 再計算を避けられる。
     let scratch_v = RefCell::new(EvalScratch::default());
     let scratch_g = RefCell::new(EvalScratch::default());
-    let value = |c: &Conformation| eval_value(lig, scorer, &mut scratch_v.borrow_mut(), c, false);
-    let value_grad = |c: &Conformation| eval_value_grad(lig, scorer, &mut scratch_g.borrow_mut(), c, false);
+    // 探索は hunt_cap で激突エネルギーを上限化（params.hunt_cap、無効化は INFINITY）。
+    let cap = params.hunt_cap;
+    let value = |c: &Conformation| eval_value(lig, scorer, &mut scratch_v.borrow_mut(), c, false, cap);
+    let value_grad = |c: &Conformation| eval_value_grad(lig, scorer, &mut scratch_g.borrow_mut(), c, false, cap);
 
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     // 初期配置（grid 時は一様、direct 時は接触棄却）。固定 torsion は 0 に保つ。

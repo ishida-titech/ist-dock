@@ -125,20 +125,22 @@ impl Scorer {
     /// **探索バックエンドに整合した**目的関数値 = 分子間（Grid なら補間, Direct なら直接）+ ボックス罰則。
     /// 探索の直線探索（値のみ評価, 1 BFGS 反復あたり最大 ~40 回）で使う。Grid 時は受容体全原子の直接和
     /// （O(n_lig×n_rec)）を避け補間（O(n_lig)）で大幅に高速化し、勾配（value_and_force）と同一表面に揃える。
-    pub fn search_score(&self, ligand: &[ScoredAtom]) -> f64 {
+    /// `cap`（hunt_cap）= 探索中の正エネルギー上限。無効化は `f64::INFINITY`。Direct は未適用（既定外）。
+    pub fn search_score(&self, ligand: &[ScoredAtom], cap: f64) -> f64 {
         let inter = match &self.backend {
             Backend::Direct(_) => self.intermolecular(ligand),
-            Backend::Grid(grid) => grid.value(ligand),
+            Backend::Grid(grid) => grid.value(ligand, cap),
         };
         inter + self.box_penalty(ligand)
     }
 
     /// 目的関数値（分子間＋ボックス罰則）と各リガンド原子に働く力 `force[i] = -dE/dpos_i` を
     /// 加算して返す。`force` は呼び出し側で 0 初期化（長さ = ligand.len()）。
-    pub fn value_and_force(&self, ligand: &[ScoredAtom], force: &mut [Vec3]) -> f64 {
+    /// `cap`（hunt_cap）= 探索中の正エネルギー上限。無効化は `f64::INFINITY`。Direct は未適用（既定外）。
+    pub fn value_and_force(&self, ligand: &[ScoredAtom], force: &mut [Vec3], cap: f64) -> f64 {
         let e = match &self.backend {
             Backend::Direct(rec) => intermolecular_value_grad_simd(ligand, rec, force),
-            Backend::Grid(grid) => grid.value_and_force(ligand, force),
+            Backend::Grid(grid) => grid.value_and_force(ligand, force, cap),
         };
         e + self.add_box_penalty_force(ligand, force)
     }

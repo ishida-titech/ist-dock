@@ -41,7 +41,7 @@ fn main() {
         let lig = &lig; let scorer = &scorer; let conf = conf.clone();
         Box::new(move || {
             let atoms = lig.scored_atoms(&conf);
-            std::hint::black_box(scorer.search_score(&atoms));
+            std::hint::black_box(scorer.search_score(&atoms, f64::INFINITY));
         })
     });
     // 勾配パス
@@ -50,7 +50,7 @@ fn main() {
         Box::new(move || {
             let atoms = lig.scored_atoms(&conf);
             let mut force = vec![Vec3::zeros(); atoms.len()];
-            std::hint::black_box(scorer.value_and_force(&atoms, &mut force));
+            std::hint::black_box(scorer.value_and_force(&atoms, &mut force, f64::INFINITY));
         })
     });
     bench("world_coords_frames", {

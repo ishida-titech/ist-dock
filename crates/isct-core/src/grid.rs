@@ -284,20 +284,26 @@ impl VinaGrid {
     }
 
     /// リガンド原子群の分子間エネルギーと各原子に働く力 `force[i] = -∇E_i`（補間）。
-    /// `force` は呼び出し側で 0 初期化（長さ = ligand.len()）。
-    pub fn value_and_force(&self, ligand: &[ScoredAtom], force: &mut [Vec3]) -> f64 {
+    /// `force` は呼び出し側で 0 初期化（長さ = ligand.len()）。`cap`（hunt_cap）で各原子の正エネルギーを
+    /// 上限化する（探索用。無効化は `f64::INFINITY`）。
+    pub fn value_and_force(&self, ligand: &[ScoredAtom], force: &mut [Vec3], cap: f64) -> f64 {
         let mut e = 0.0;
         for (i, a) in ligand.iter().enumerate() {
             let (v, g) = self.map(a.xs).interpolate_value_grad(a.pos);
-            e += v;
-            force[i] -= g; // force = -∇value
+            let (ce, scale) = crate::scoring::curl(v, cap);
+            e += ce;
+            force[i] -= g * scale; // force = -∇value（curl の勾配スケール込み）
         }
         e
     }
 
     /// リガンド原子群の分子間エネルギーのみ（勾配なし）。直線探索（値のみ評価）の高速版。
-    pub fn value(&self, ligand: &[ScoredAtom]) -> f64 {
-        ligand.iter().map(|a| self.map(a.xs).interpolate_value(a.pos)).sum()
+    /// `cap`（hunt_cap）で各原子の正エネルギーを上限化（無効化は `f64::INFINITY`）。
+    pub fn value(&self, ligand: &[ScoredAtom], cap: f64) -> f64 {
+        ligand
+            .iter()
+            .map(|a| crate::scoring::curl(self.map(a.xs).interpolate_value(a.pos), cap).0)
+            .sum()
     }
 }
 
@@ -334,7 +340,7 @@ mod tests {
         ] {
             let lig = vec![atom(x, y, z, xs)];
             let mut f = vec![Vec3::zeros(); 1];
-            let e_grid = grid.value_and_force(&lig, &mut f);
+            let e_grid = grid.value_and_force(&lig, &mut f, f64::INFINITY);
             let e_direct = intermolecular_terms(&lig, &rec).weighted_sum();
             assert!(
                 (e_grid - e_direct).abs() < 0.3,
@@ -371,7 +377,7 @@ mod tests {
             let mut g = VinaGrid::new(&rec, Vec3::zeros(), Vec3::new(12.0, 12.0, 12.0), sp, 2.0);
             g.ensure(&[XsType::CarbonH]);
             let mut f = vec![Vec3::zeros(); 1];
-            (g.value_and_force(&lig, &mut f) - direct).abs()
+            (g.value_and_force(&lig, &mut f, f64::INFINITY) - direct).abs()
         };
         assert!(err(0.1) <= err(0.5) + 1e-9, "finer spacing should not be worse");
     }

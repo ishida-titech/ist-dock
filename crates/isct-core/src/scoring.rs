@@ -150,6 +150,20 @@ pub fn apply_torsion_correction(e_inter: f64, n_rot: u32) -> f64 {
     e_inter / (1.0 + W_ROT * n_rot as f64)
 }
 
+/// Vina の `curl`（hunt_cap）: 探索中に**正のエネルギー（激突）を上限 `v` で滑らかに抑える**。
+/// `e>0` のとき `e·v/(v+e)`（e→∞ で v に漸近）を返し、勾配は `(v/(v+e))²` 倍にスケールする。
+/// 激突ポーズの巨大エネルギー・勾配が探索を支配・トラップするのを防ぎ、深い極小へ抜けやすくする。
+/// 返り値 `(上限化エネルギー, 勾配スケール)`。`e<=0` や `v` 非有限なら素通り（スケール 1）。
+#[inline]
+pub fn curl(e: f64, v: f64) -> (f64, f64) {
+    if e > 0.0 && v.is_finite() {
+        let tmp = if v < 1e-12 { 0.0 } else { v / (v + e) };
+        (e * tmp, tmp * tmp)
+    } else {
+        (e, 1.0)
+    }
+}
+
 // --- 解析的勾配（M4 高速化） ---
 //
 // 各項の値とその d/dd（d=表面間距離、dd/dr=1 なので d/dr と等しい）を返す。`eval_pair` と
