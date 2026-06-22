@@ -96,6 +96,9 @@
   GWOVina、10M 本番、isct-dock の native ランキングスコア改良（torsion 補正の露出）。
 
 ## 更新履歴
+- 2026-06-22: hunt_cap を **intra（分子内ペア）にも適用**（Vina v[1] 相当, `docs/findings.202606222059`）。
+  inter+intra 両対応で Vina 忠実化。ただし本セットでは追加効果ほぼ無し（埋め込み済みリガンドは intra 激突が稀）。
+  実 Vina 残差 ~0.33 は依然＝次候補は初期ランダム化の多試行化。
 - 2026-06-22: **hunt_cap（Vina curl：探索中の激突エネルギー上限）実装**（`docs/findings.202606222004`）。
   `SearchParams.hunt_cap`（既定 10.0、config `run.hunt_cap`）。探索 grid に per-atom 適用・polish は cap 無し。
   効果: vina-mode +0.14・drift 中立・速度不変・決定論維持。ただし実 Vina との残差 ~0.33 は未解消
