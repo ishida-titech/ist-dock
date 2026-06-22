@@ -183,6 +183,85 @@ pub fn auto_n_steps_vina(n_scored_atoms: usize, n_torsions: usize) -> usize {
 /// 大きめの上限で「収束まで BFGS」を実現する（Vina の quasi-Newton 相当）。
 const VINA_BFGS_MAX: usize = 100;
 
+/// vina-mode の Metropolis 温度（AutoDock Vina の `monte_carlo::temperature`）。
+const VINA_TEMP: f64 = 1.2;
+/// vina-mode の変異振幅（AutoDock Vina の `monte_carlo::mutation_amplitude`, Å）。
+const VINA_AMPLITUDE: f64 = 2.0;
+
+/// 単位球内の一様乱点（棄却サンプリング）。Vina の `random_inside_sphere` 相当。
+fn random_in_unit_sphere<R: Rng>(rng: &mut R) -> (f64, f64, f64) {
+    loop {
+        let x = rng.gen_range(-1.0..1.0);
+        let y = rng.gen_range(-1.0..1.0);
+        let z = rng.gen_range(-1.0..1.0);
+        if x * x + y * y + z * z <= 1.0 {
+            return (x, y, z);
+        }
+    }
+}
+
+/// scored 原子の重心まわり慣性半径（gyration radius）。Vina は配向変異をこれで割って
+/// 「大きい分子ほど回転を小さく」スケールする。参照配座から 1 度だけ計算する。
+fn gyration_radius(ref_pos: &[Vec3]) -> f64 {
+    if ref_pos.is_empty() {
+        return 1.0;
+    }
+    let n = ref_pos.len() as f64;
+    let mut cx = 0.0;
+    let mut cy = 0.0;
+    let mut cz = 0.0;
+    for p in ref_pos {
+        cx += p.x;
+        cy += p.y;
+        cz += p.z;
+    }
+    let (cx, cy, cz) = (cx / n, cy / n, cz / n);
+    let mut s = 0.0;
+    for p in ref_pos {
+        s += (p.x - cx).powi(2) + (p.y - cy).powi(2) + (p.z - cz).powi(2);
+    }
+    (s / n).sqrt()
+}
+
+/// Vina 流の変異: 1 自由度（並進/配向/torsion のいずれか）を選び、Vina と同じ振幅で摂動する。
+/// 並進＝`amplitude·球内乱点`、配向＝`(amplitude/gyration)·球内乱点`（回転ベクトル）、torsion＝一様 ±π。
+fn mutate_vina<R: Rng>(
+    conf: &mut Conformation,
+    rng: &mut R,
+    free_torsions: &[usize],
+    gyration: f64,
+) {
+    use std::f64::consts::PI;
+    let k = rng.gen_range(0..(2 + free_torsions.len()));
+    let mut d = vec![0.0; conf.dim()];
+    match k {
+        0 => {
+            // 並進: amplitude · 単位球内乱点（Vina）。
+            let (x, y, z) = random_in_unit_sphere(rng);
+            d[0] = VINA_AMPLITUDE * x;
+            d[1] = VINA_AMPLITUDE * y;
+            d[2] = VINA_AMPLITUDE * z;
+        }
+        1 => {
+            // 配向: (amplitude/gyration) · 単位球内乱点 を回転ベクトルとして適用（Vina）。
+            let s = if gyration > 1e-6 {
+                VINA_AMPLITUDE / gyration
+            } else {
+                VINA_AMPLITUDE
+            };
+            let (x, y, z) = random_in_unit_sphere(rng);
+            d[3] = s * x;
+            d[4] = s * y;
+            d[5] = s * z;
+        }
+        _ => {
+            let t = free_torsions[k - 2];
+            d[6 + t] = rng.gen_range(-PI..PI);
+        }
+    }
+    conf.apply_delta(&d);
+}
+
 /// 探索アルゴリズムの種類。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SearchKind {
@@ -332,10 +411,13 @@ fn single_run(
     seed: u64,
 ) -> (Vec<(Conformation, f64)>, u64) {
     // 各ステップの局所最適化反復: drift/qvina2 は浅い `chain_iters`、vina は収束まで（VINA_BFGS_MAX）。
-    let step_iters = if params.kind == SearchKind::Vina {
-        VINA_BFGS_MAX
+    let is_vina = params.kind == SearchKind::Vina;
+    let step_iters = if is_vina { VINA_BFGS_MAX } else { params.chain_iters };
+    // vina-mode は配向変異を gyration でスケールするため参照配座から 1 度だけ計算（Vina 流）。
+    let gyration = if is_vina {
+        gyration_radius(&lig.reference_scored_positions())
     } else {
-        params.chain_iters
+        0.0
     };
     // この run 専用の評価バッファ（スレッドローカル）。直線探索と勾配で**別バッファ**にすることで、
     // `minimize_free` 返却後に `scratch_g.scored_pos` が **返却 conf の scored 座標**を保持する（直線探索の
@@ -381,7 +463,11 @@ fn single_run(
     // 反復局所探索（ILS）＋焼きなまし: 毎ステップ 1 自由度変異 → 浅い局所最適化 → Metropolis 受理。
     for k in 0..n_steps {
         let mut trial = cur.conf.clone();
-        mutate(&mut trial, &mut rng, free_torsions);
+        if is_vina {
+            mutate_vina(&mut trial, &mut rng, free_torsions, gyration);
+        } else {
+            mutate(&mut trial, &mut rng, free_torsions);
+        }
 
         // QuickVina2 スキップ判定: 安価な勾配 1 回で「既知の斜面」と判定したら local 探索を省く。
         if let Some(hist) = history.as_mut() {
@@ -410,12 +496,17 @@ fn single_run(
             }
         }
 
-        let frac = if n_steps > 1 {
-            k as f64 / (n_steps - 1) as f64
+        // vina-mode は Vina と同じ固定温度（VINA_TEMP）。drift は params の焼きなまし（既定 1.0 一定）。
+        let temp = if is_vina {
+            VINA_TEMP
         } else {
-            1.0
+            let frac = if n_steps > 1 {
+                k as f64 / (n_steps - 1) as f64
+            } else {
+                1.0
+            };
+            params.temp_init * (params.temp_final / params.temp_init).powf(frac)
         };
-        let temp = params.temp_init * (params.temp_final / params.temp_init).powf(frac);
         let accept = res.energy < cur.energy
             || rng.r#gen::<f64>() < (-(res.energy - cur.energy) / temp).exp();
         if accept {
