@@ -13,8 +13,10 @@ ISCT-Dock は、機械学習を使わず幾何・物理化学計算で行う高�
 | `score`  | M1 | 固定ポーズの Vina 互換スコア評価 | 動作（`vina --score_only` と <1e-2 一致） |
 | `dock`   | M2 | 単一リガンドのドッキング（剛体6＋torsion 大域探索） | 動作 |
 | `screen` | M3 | クラスタライブラリの一括スクリーニング（scaffold 再利用） | 動作（基本機能） |
+| `pack`   | M4 | クラスタライブラリ（TOML マニフェスト）を memmap 用バイナリ `.bin` へ変換 | 動作 |
 
 - **決定論的**: 同一入力＋同一 `seed` で出力はビット一致（マルチスレッドでも）。
+- **探索モード**: `--search standard`（ドリフト鎖, 既定）/ `vina`（Vina 忠実 MC）/ `qvina2`。詳細は [DIFF.md](DIFF.md)。
 - **性能（多様 74 標的, grid, 8 run）**: 成功率 **63%（RMSD<2Å）/ 平均 2.05s**。AutoDock Vina（64% / 7.6s）比
   **約 3.7× 高速・精度ほぼ同等**（[docs/results.202606191907.md](docs/results.202606191907.md)）。
 
@@ -69,7 +71,7 @@ Estimated Free Energy of Binding         : -7.45678 kcal/mol
 ### 3.2 `dock` — 単一リガンドのドッキング（M2）
 
 ```sh
-./target/release/isct-dock dock <receptor.pdbqt> <ligand.pdbqt> --config <run.toml> [--out OUT.pdbqt] [--local-only]
+./target/release/isct-dock dock <receptor.pdbqt> <ligand.pdbqt> --config <run.toml> [--out OUT.pdbqt] [--local-only] [--search MODE]
 ```
 
 | 引数 | 説明 |
@@ -79,38 +81,51 @@ Estimated Free Energy of Binding         : -7.45678 kcal/mol
 | `-c, --config` | TOML 設定（§4）。探索ボックス必須。 |
 | `-o, --out` | 出力ポーズ PDBQT（既定: `<ligand>_isct_out.pdbqt`）。 |
 | `--local-only` | 診断用。大域探索せず入力ポーズから局所最適化のみ。 |
+| `--search <standard\|vina\|qvina2>` | 探索アルゴリズムを上書き（config `search` より優先）。`standard`(=`drift`)=ドリフト鎖 / `vina`=Vina 忠実 MC（毎ステップ収束 BFGS）/ `qvina2`。 |
 | `--qvina-cos <f64>` | `search="qvina2"` 時の勾配方向一致閾値（cos）を上書き。高い=保守的(速度↓精度↑)、低い=攻める(速度↑精度↓)。省略時は config `qvina_cos`（既定 0.90）。 |
 
 出力（stdout）例:
 
 ```
 # isct-dock dock (Vina 互換, RMSD クラスタリング)
+affinity (Vina, kcal/mol)  : -9.1701
 intermolecular energy      : -9.4821 kcal/mol
 intramolecular energy      :  0.3120 kcal/mol
 total (objective)          : -9.1701 kcal/mol
 RMSD vs input(crystal) pose:  0.913 Å
+search mode                : Drift
+energy evals               : 993429 (124178 /run)
 modes (RMSD-clustered)     : 9
-  mode  1  inter= -9.4821  rmsd_vs_crystal= 0.913 Å
-  mode  2  inter= -8.7700  rmsd_vs_crystal= 3.210 Å
+  mode  1  affinity= -9.1701  inter= -9.4821  rmsd_vs_crystal= 0.913 Å
   ...
 output poses               : ligand_isct_out.pdbqt
 ```
 
-- 出力 PDBQT は **マルチモデル**（`MODEL n` / `ENDMDL`、Vina 流）。mode 1 が最良（エネルギー最小）。
-- `RMSD vs input` は最良モードの重原子 RMSD vs 入力ポーズ（再ドッキング検証に使う。対称性補正なし）。
+- **`affinity (Vina)`** = torsion 補正後の Vina 互換最終スコア（`inter/(1+0.05846·N_rot)`）。**順位付け・
+  スクリーニングはこの値を使う**（生 intermolecular はサイズ依存で識別力が落ちる）。
+- `energy evals` = 探索のエネルギー評価回数（drift/vina モードの仕事量を比較する診断値）。
+- 出力 PDBQT は **マルチモデル**（`MODEL n` / `ENDMDL`、Vina 流）。mode 1 が最良。
+- `RMSD vs input` は最良モードの重原子 RMSD vs 入力ポーズ（再ドッキング検証用。対称性補正なし）。
 
 ### 3.3 `screen` — クラスタライブラリのスクリーニング（M3）
 
 ```sh
-./target/release/isct-dock screen <receptor.pdbqt> <library.toml> --config <run.toml> [--out ranking.tsv]
+./target/release/isct-dock screen <receptor.pdbqt> <library.toml|library.bin> --config <run.toml> \
+    [--out ranking.tsv] [--poses-out poses.pdbqt --top N] [--pin-threads] [--search MODE]
 ```
+
+ライブラリは TOML マニフェスト（小・デバッグ）か `pack` 済みバイナリ（`.bin`、大規模・memmap streaming）。
+`--search`（dock と同じ。seed 探索に適用）・`--poses-out`（上位 N をマルチモデル PDBQT 出力）・
+`--pin-threads`（ワーカを物理コアへピン留め、Linux）。
 
 クラスタ（代表 seed ＋ MCS コアを共有する子分子群）単位で処理する:
 - **Phase 1**: seed をドッキングし、結合が悪い（目的関数 > `prune_threshold`）クラスタは**子を全スキップ**（一括棄却）。
 - **Phase 2/3**: 生存クラスタの各子を、seed の docked コアへ剛体重ね合わせ→R 基 torsion を局所最適化。
 
 出力: ランキング TSV（既定 `<library と同ディレクトリ>/ranking.tsv`）。列:
-`compound_id, cluster_id, total_score, e_inter, role`（role = `seed` / `child`）。`total_score` は torsion 補正済み。
+`Rank, Compound_ID, Cluster_ID, Total_Score, VdW_Energy, Electrostatic_Energy, Target_Protein_State_ID`。
+`Total_Score` は torsion 補正後 affinity（Vina 互換）で昇順ランク。`--poses-out` 指定時は上位 `--top` 件を
+マルチモデル PDBQT（各 MODEL に `REMARK Rank/Compound/Cluster/Score/Role`）で出力。
 
 stdout にサマリ（クラスタ数・棄却数・スキップした子数・採点分子数）。
 
@@ -118,7 +133,8 @@ stdout にサマリ（クラスタ数・棄却数・スキップした子数・�
 
 ## 4. 設定ファイル（TOML）
 
-`dock`/`screen` 共通。最小例:
+注釈付きの雛形は **`configs/dock.example.toml` / `configs/screen.example.toml`**（`[box]` の center/size を
+ターゲット値に置き換えて使う）。`dock`/`screen` 共通の最小例:
 
 ```toml
 [box]
@@ -139,8 +155,9 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
 | `n_runs` | 60 | 独立 run 数（網羅性）。スクリーニングでは 8 程度で十分高精度。 |
 | `n_steps` | 0 | per-run の MC ステップ数。**0=自動**（可動原子数×torsion 上限で算出）。 |
 | `scoring` | `"direct"` | 探索の分子間評価。`"grid"`=Vina グリッド補間（高速・推奨）/ `"direct"`=直接原子間(SIMD)。 |
-| `search` | `"standard"` | 探索モード。`"standard"`=毎ステップ局所探索（決定論）/ `"qvina2"`=QuickVina2 相当の局所探索スキップ（opt-in 高速化・決定論維持・精度トレードオフ）。 |
+| `search` | `"standard"` | 探索モード。`"standard"`=ドリフト鎖 ILS（既定・決定論・高速）/ `"vina"`=Vina 忠実 MC（毎ステップ収束 BFGS。アルゴリズム/実装差の切り分け用, [DIFF.md](DIFF.md)）/ `"qvina2"`=QuickVina2 相当の局所探索スキップ（opt-in 高速化）。`--search` で上書き可。 |
 | `qvina_cos` | 0.90 | `qvina2` の勾配方向一致閾値（cos）。低いほどスキップ多＝速度↑精度↓。`--qvina-cos` で上書き可。 |
+| `hunt_cap` | 10.0 | 探索中の正エネルギー上限（Vina curl）。激突ポーズの暴走を抑え深い極小へ抜けやすくする。`1e9` で無効化。polish は常に無効（authentic）。 |
 | `chain_iters` | 30 | ILS 各ステップの局所最適化反復（浅く保ち基底間をドリフト）。 |
 | `polish_iters` | 20 | 代表ポーズの最終厳密 f64 精密化反復。 |
 | `polish_modes` | 9 | 最終精密化にかける代表モード数。 |
@@ -185,7 +202,8 @@ core_atoms = [0, 1, 2]       # 子側コア（seed.core_atoms と 1:1 同順・�
 ## 5. 入出力フォーマット
 
 - **入力**: AutoDock **PDBQT**（受容体・リガンド）。RDKit/Meeko で生成（`mk_prepare_receptor`/`mk_prepare_ligand`）。
-  - 大環状の**柔軟マクロ環（CG0/G0 グルー擬原子）は未対応** → `mk_prepare_ligand --rigid_macrocycles` で剛体化して入力。
+  - 柔軟マクロ環（meeko の `CG0/G0` グルー擬原子）は **対応済み**（`CG0`→脂肪族炭素として採点、`G0`→
+    非採点ダミー）。剛体化（`--rigid_macrocycles`）入力も可。
   - 受容体に欠損原子がある実 PDB は `-a --default_altloc A` 等で前処理（[bench/prepare_pdb.py] 参照）。
 - **出力**: マルチモデル PDBQT（`dock`）/ ランキング TSV（`screen`）。
 - 並列度: 環境変数 **`RAYON_NUM_THREADS`** でスレッド数を制御（既定は論理コア数）。決定論は保たれる。
@@ -202,6 +220,8 @@ core_atoms = [0, 1, 2]       # 子側コア（seed.core_atoms と 1:1 同順・�
 | `bench/guard_redock.py` | isct 単独の易標的ガード（grid, n_steps 自動）。 |
 | `bench/make_diverse_set.py` | RCSB 自動取得→Meeko で多様データセット生成。 |
 | `bench/make_screening.py` / `get_dude.py` / `analyze_dude_clusters.py` | スクリーニング/DUD-E データ生成・解析。 |
+| `bench/prep_dude_ligands.py` / `screen_eval.py` / `screen_metrics.py` | DUD-E スクリーニング評価（ISCT vs Vina/Smina、AUC/EF/BEDROC・energy・速度）。設計は [EVALUATION.SCREENING.md](EVALUATION.SCREENING.md)。 |
+| `tools/preprocess/build_library.py [--full-coverage]` | クラスタライブラリ生成（MCS クラスタ＋コア拘束 embed）。`--full-coverage` で全リガンドを 1 件も欠かさず収録（singleton は全自由度 seed）。→ `isct-dock pack` でバイナリ化。 |
 
 評価方法とデータは [EVALUATION.md](EVALUATION.md)、評価結果のログは `docs/results.YYYYMMDDHHMM.md` に記録される。
 
@@ -213,9 +233,10 @@ core_atoms = [0, 1, 2]       # 子側コア（seed.core_atoms と 1:1 同順・�
 crates/isct-core   原子型・Vina スコア・幾何・grid・SIMD カーネル … 純計算
 crates/isct-io     PDBQT パーサ・TOML config・クラスタライブラリ I/O
 crates/isct-dock   ligand(torsion木)・optimizer(BFGS)・search(MC)・energy・screen・phases
-crates/isct-cli    バイナリ `isct-dock`（score / dock / screen）
+crates/isct-cli    バイナリ `isct-dock`（score / dock / screen / pack）
 bench/             検証スクリプト（Python）と data/
-tools/preprocess/  前処理スクリプト置き場
+tools/preprocess/  前処理スクリプト置き場（build_library.py 等）
+configs/           注釈付きサンプル設定（dock.example.toml / screen.example.toml）
 docs/              評価結果(results.*) と知見(findings.*) のログ（追記のみ・更新しない）
 ```
 
@@ -226,20 +247,22 @@ RMSD ポーズクラスタリング / scaffold 固定ドッキング（Kabsch �
 
 ## 8. 既知の制限
 
-- **柔軟マクロ環は未対応**（剛体化して入力すれば可。剛体大環状は両エンジン良好）。
-- 一部の**中〜高柔軟リガンド・高 torsion 標的**で Vina にわずかに劣る。残差の多くは**スコア関数の識別力**
-  （decoy を native と同等以下にランク）に起因し、Vina も同標的の多くを外す
-  （[docs/findings.202606191632.md](docs/findings.202606191632.md)）。
+- 一部の**中〜高柔軟リガンド・高 torsion 標的**で Vina にわずかに劣る。kif11 の少数 subset では ligand 依存の
+  探索差（scoring バグではない＝Vina ポーズをほぼ同値で再採点可能, [docs/findings.202606222119.md](docs/findings.202606222119.md)）。
+  多様な全 DUD-E では isct ≈ vina。複数標的での確認が継続課題。
 - RMSD は対称性補正なし（両エンジン同条件）。
-- スクリーニングの grid は現状クラスタ毎に再構築（10M 規模では grid 再利用が今後の高速化点）。
+- ISCT-screen（scaffold 再利用）は congeneric ライブラリ向け。多様な VS 集合（DUD-E）では再利用率が低く、
+  per-ligand `dock` が速度・濃縮とも優位（[docs/results.202606220300.md](docs/results.202606220300.md)）。
 
 ---
 
 ## 9. 関連ドキュメント
 
 - [isct-dock.md](isct-dock.md) — 設計仕様。
+- [DIFF.md](DIFF.md) — AutoDock Vina との差（アルゴリズム/実装）と速度差の切り分け（`--search vina` で検証）。
 - [PLAN.md](PLAN.md) / `PLAN.*.md` — 開発計画・各機能の設計。
-- [EVALUATION.md](EVALUATION.md) — 評価方法・データ。
+- [EVALUATION.md](EVALUATION.md) / [EVALUATION.SCREENING.md](EVALUATION.SCREENING.md) — 評価方法・データ。
+- `configs/dock.example.toml` / `configs/screen.example.toml` — 注釈付きサンプル設定（§4）。
 - [PORTING.md](PORTING.md) — 環境移行（Mac→Linux）手順・OS 差分。
 - [SIMD_OPTIMIZE.md](SIMD_OPTIMIZE.md) — SIMD 最適化の知見（律速・トレードオフ）。
 - [CLAUDE.md](CLAUDE.md) — リポジトリ運用ルール（ログ記録規約等）。

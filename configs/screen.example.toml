@@ -1,0 +1,25 @@
+# screen.example.toml — `isct-dock screen` 用サンプル設定（注釈付き）
+#
+# 使い方:
+#   ./target/release/isct-dock screen <receptor.pdbqt> <library.toml|library.bin> \
+#       --config configs/screen.example.toml --out ranking.tsv [--poses-out poses.pdbqt --top 100000]
+# ライブラリは TOML マニフェスト（小・デバッグ）か pack 済みバイナリ（.bin。大規模・memmap streaming）。
+# 並列度は RAYON_NUM_THREADS（リガンド/クラスタ単位で並列）。大規模時は物理コア数を指定し --pin-threads も検討。
+
+[box]
+# 既定の探索ボックス（クラスタが pocket を指定しない場合に使う）。ターゲットごとに設定。
+center = [0.0, 0.0, 0.0]
+size = [22.5, 22.5, 22.5]
+
+[run]
+seed = 42            # 乱数シード（決定論）
+n_runs = 8           # seed ドッキングの独立 run 数（screen はリガンド数が多いので dock より少なめが実用的）
+n_steps = 0          # 0 = サイズ/torsion 数から自動（モード別。--search vina なら vina ステップ数）
+scoring = "grid"     # "grid" 推奨（既定ボックスの Scorer をクラスタ間で共有・再利用）
+search = "standard"  # "standard"（既定）/ "vina" / "qvina2"。seed 探索に適用
+hunt_cap = 10.0      # 探索中の正エネルギー上限（1e9 で無効化）
+
+[screen]
+prune_threshold = 0.0   # seed の目的関数値がこれを上回るクラスタは子を全スキップ（0.0=非結合クラスタを棄却）
+local_iters = 120       # 子分子の R 基 torsion 局所最適化の最大反復
+seed_poses = 1          # 子配置に使う seed 保持ポーズ数。1=最良のみ（従来）。>1 で拘束劣化を緩和（子コスト N 倍）

@@ -1,0 +1,32 @@
+# dock.example.toml — `isct-dock dock` 用サンプル設定（注釈付き）
+#
+# 使い方:
+#   ./target/release/isct-dock dock <receptor.pdbqt> <ligand.pdbqt> --config configs/dock.example.toml
+# CLI フラグ（--search / --qvina-cos / --out / --local-only）は config の対応値を上書きする。
+# 並列度は環境変数 RAYON_NUM_THREADS で制御（run 単位で並列。既定=全コア）。決定論: 同一 seed で結果ビット一致。
+
+[box]
+# 探索ボックス（受容体結合部位）。center は結晶リガンド重心など、size は 20.0–22.5 Å 立方が目安。
+# 値はターゲットごとに必ず設定すること（下記はプレースホルダ）。
+center = [0.0, 0.0, 0.0]
+size = [22.5, 22.5, 22.5]
+
+[run]
+seed = 42            # 乱数シード（決定論。run ごとに seed から決定的に分岐）
+n_runs = 60          # 独立 run 数（探索の網羅性。多いほど安定だが線形に遅い）
+n_steps = 0          # 各 run の MC ステップ数。0 = サイズ/torsion 数から自動（モード別）
+scoring = "grid"     # "grid"（受容体を前計算グリッドで補間, 高速・推奨）/ "direct"（直接和）
+search = "standard"  # "standard"=ドリフト鎖 ILS（既定・高速）/ "vina"=Vina 忠実 MC（毎ステップ収束 BFGS）
+                     #  / "qvina2"=QuickVina2 相当の局所探索スキップ（opt-in 高速化）
+hunt_cap = 10.0      # 探索中の正エネルギー上限（Vina curl, 激突の暴走抑制）。1e9 で無効化。polish は常に無効
+# qvina_cos = 0.90   # search="qvina2" 時の勾配方向一致閾値（高=保守的/低=攻める）
+
+# --- 以下は既定で十分。必要時のみ調整 ---
+# chain_iters = 30          # drift の各ステップ局所最適化反復（浅く保ち広く探索）
+# polish_iters = 20         # 代表ポーズの最終精密化反復（厳密 f64）
+# polish_modes = 9          # 精密化にかける代表モード数（≥ n_modes）
+# n_modes = 9               # 出力する最大モード数
+# cluster_rmsd = 2.0        # ポーズ RMSD クラスタリング閾値（Å）
+# temp_init = 1.0           # Metropolis 温度（temp_init>temp_final で焼きなまし＝opt-in）
+# temp_final = 1.0
+# early_stop_patience = 0   # 0=無効。>0 で best 無改善が続けば run 打ち切り（易標的の短縮用）
