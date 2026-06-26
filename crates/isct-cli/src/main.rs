@@ -14,7 +14,7 @@ use isct_core::scoring::{self, intermolecular_terms};
 use isct_dock::energy::Scorer;
 use isct_dock::ligand::LigandModel;
 use isct_dock::screen::{ranking_tsv, screen, ScreenParams};
-use isct_dock::search::{auto_n_steps, auto_n_steps_vina, dock, SearchKind, SearchParams};
+use isct_dock::search::{auto_n_steps_for, dock, SearchKind, SearchParams};
 use isct_io::{config, library, pdbqt};
 
 #[derive(Parser)]
@@ -137,6 +137,37 @@ fn search_kind(m: config::SearchMode) -> SearchKind {
     }
 }
 
+/// `[run]` config から `SearchParams` を構築する（dock・screen 共通）。`qvina_cos_override` は
+/// CLI `--qvina-cos`（dock のみ。screen は `None`）。`uniform_start` は grid バックエンドで true。
+fn build_search_params(
+    run: &config::RunOpts,
+    center: Vec3,
+    size: Vec3,
+    mode: config::SearchMode,
+    qvina_cos_override: Option<f64>,
+    uniform_start: bool,
+) -> SearchParams {
+    SearchParams {
+        center,
+        size,
+        seed: run.seed,
+        n_runs: run.n_runs,
+        n_steps: run.n_steps,
+        temp_init: run.temp_init,
+        temp_final: run.temp_final,
+        chain_iters: run.chain_iters,
+        polish_iters: run.polish_iters,
+        cluster_rmsd: run.cluster_rmsd,
+        n_modes: run.n_modes,
+        polish_modes: run.polish_modes,
+        early_stop_patience: run.early_stop_patience,
+        uniform_start,
+        kind: search_kind(mode),
+        qvina_cos: qvina_cos_override.unwrap_or(run.qvina_cos),
+        hunt_cap: run.hunt_cap,
+    }
+}
+
 /// `--pin-threads` 時、rayon グローバルプールのワーカを物理コアへピン留めする（Linux）。
 /// `RAYON_NUM_THREADS` を尊重。既に構築済み等で失敗しても続行（best-effort）。
 fn setup_thread_pinning(pin: bool) {
@@ -193,25 +224,7 @@ fn cmd_screen(
     let params = ScreenParams {
         center,
         size,
-        search: SearchParams {
-            center,
-            size,
-            seed: cfg.run.seed,
-            n_runs: cfg.run.n_runs,
-            n_steps: cfg.run.n_steps,
-            temp_init: cfg.run.temp_init,
-            temp_final: cfg.run.temp_final,
-            chain_iters: cfg.run.chain_iters,
-            polish_iters: cfg.run.polish_iters,
-            cluster_rmsd: cfg.run.cluster_rmsd,
-            n_modes: cfg.run.n_modes,
-            polish_modes: cfg.run.polish_modes,
-            early_stop_patience: cfg.run.early_stop_patience,
-            uniform_start: use_grid,
-            kind: search_kind(mode),
-            qvina_cos: cfg.run.qvina_cos,
-            hunt_cap: cfg.run.hunt_cap,
-        },
+        search: build_search_params(&cfg.run, center, size, mode, None, use_grid),
         prune_threshold: cfg.screen.prune_threshold,
         local_iters: cfg.screen.local_iters,
         use_grid,
@@ -300,31 +313,10 @@ fn cmd_dock(
         Scorer::new(&rec_scored, center, size)
     };
 
-    let params = SearchParams {
-        center,
-        size,
-        seed: cfg.run.seed,
-        n_runs: cfg.run.n_runs,
-        n_steps: cfg.run.n_steps,
-        temp_init: cfg.run.temp_init,
-        temp_final: cfg.run.temp_final,
-        chain_iters: cfg.run.chain_iters,
-        polish_iters: cfg.run.polish_iters,
-        cluster_rmsd: cfg.run.cluster_rmsd,
-        n_modes: cfg.run.n_modes,
-        polish_modes: cfg.run.polish_modes,
-        early_stop_patience: cfg.run.early_stop_patience,
-        uniform_start: use_grid,
-        kind: search_kind(mode),
-        qvina_cos: qvina_cos.unwrap_or(cfg.run.qvina_cos),
-        hunt_cap: cfg.run.hunt_cap,
-    };
+    let params = build_search_params(&cfg.run, center, size, mode, qvina_cos, use_grid);
 
     let eff_steps = if params.n_steps == 0 {
-        match params.kind {
-            SearchKind::Vina => auto_n_steps_vina(lig.n_scored(), lig.n_torsions()),
-            _ => auto_n_steps(lig.n_scored(), lig.n_torsions()),
-        }
+        auto_n_steps_for(params.kind, lig.n_scored(), lig.n_torsions())
     } else {
         params.n_steps
     };

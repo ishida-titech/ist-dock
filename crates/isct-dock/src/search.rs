@@ -37,6 +37,16 @@ struct EvalScratch {
     evals: u64,
 }
 
+/// 分子内項に渡す hunt_cap: polish（exact）は cap 無し＝authentic、探索（`!exact`）は `cap`。
+#[inline]
+fn intra_cap(exact: bool, cap: f64) -> f64 {
+    if exact {
+        f64::INFINITY
+    } else {
+        cap
+    }
+}
+
 /// 値（直線探索用）= 分子間 + ボックス罰則 + 分子内。バッファ再利用でアロケーションしない。
 /// `exact=false`（探索）は探索バックエンドに整合した値（Grid なら補間で高速）、`exact=true`（polish）は
 /// 厳密 direct 値。勾配側（`eval_value_grad`）と表面を揃える。
@@ -57,7 +67,7 @@ fn eval_value(
         scorer.search_score(&s.atoms, cap)
     };
     // polish（exact）は cap 無し＝authentic。探索は intra にも hunt_cap を適用（Vina の v[1] 相当）。
-    let intra_cap = if exact { f64::INFINITY } else { cap };
+    let intra_cap = intra_cap(exact, cap);
     inter_box + lig.intramolecular(&s.atoms, intra_cap)
 }
 
@@ -86,7 +96,7 @@ fn eval_value_grad(
     } else {
         scorer.value_and_force(&s.atoms, &mut s.force, cap)
     };
-    let intra_cap = if exact { f64::INFINITY } else { cap };
+    let intra_cap = intra_cap(exact, cap);
     e += lig.intramolecular_value_grad(&s.atoms, &mut s.force, intra_cap);
     lig.dof_gradient_into(c, &s.pos, &s.world_axis, &s.world_pivot, &s.force, &mut s.grad);
     (e, s.grad.clone())
@@ -188,6 +198,16 @@ pub fn auto_n_steps_vina(n_scored_atoms: usize, n_torsions: usize) -> usize {
     eff.max(50)
 }
 
+/// 探索モードに応じた per-run ステップ数（`SearchParams.n_steps == 0` のとき使う）。
+/// vina-mode は「少数・高コスト」ステップ（`auto_n_steps_vina`）、それ以外（drift/qvina2）は
+/// 通常スケール（`auto_n_steps`）。dock・screen・CLI ログで共通利用し選択ロジックを一元化する。
+pub fn auto_n_steps_for(kind: SearchKind, n_scored_atoms: usize, n_torsions: usize) -> usize {
+    match kind {
+        SearchKind::Vina => auto_n_steps_vina(n_scored_atoms, n_torsions),
+        _ => auto_n_steps(n_scored_atoms, n_torsions),
+    }
+}
+
 /// vina-mode の各ステップで使う BFGS 反復上限。`minimize_free` は `grad<1e-4` で早期収束するため、
 /// 大きめの上限で「収束まで BFGS」を実現する（Vina の quasi-Newton 相当）。
 const VINA_BFGS_MAX: usize = 100;
@@ -232,43 +252,12 @@ fn gyration_radius(ref_pos: &[Vec3]) -> f64 {
     (s / n).sqrt()
 }
 
-/// Vina 流の変異: 1 自由度（並進/配向/torsion のいずれか）を選び、Vina と同じ振幅で摂動する。
-/// 並進＝`amplitude·球内乱点`、配向＝`(amplitude/gyration)·球内乱点`（回転ベクトル）、torsion＝一様 ±π。
-fn mutate_vina<R: Rng>(
-    conf: &mut Conformation,
-    rng: &mut R,
-    free_torsions: &[usize],
-    gyration: f64,
-) {
-    use std::f64::consts::PI;
-    let k = rng.gen_range(0..(2 + free_torsions.len()));
-    let mut d = vec![0.0; conf.dim()];
-    match k {
-        0 => {
-            // 並進: amplitude · 単位球内乱点（Vina）。
-            let (x, y, z) = random_in_unit_sphere(rng);
-            d[0] = VINA_AMPLITUDE * x;
-            d[1] = VINA_AMPLITUDE * y;
-            d[2] = VINA_AMPLITUDE * z;
-        }
-        1 => {
-            // 配向: (amplitude/gyration) · 単位球内乱点 を回転ベクトルとして適用（Vina）。
-            let s = if gyration > 1e-6 {
-                VINA_AMPLITUDE / gyration
-            } else {
-                VINA_AMPLITUDE
-            };
-            let (x, y, z) = random_in_unit_sphere(rng);
-            d[3] = s * x;
-            d[4] = s * y;
-            d[5] = s * z;
-        }
-        _ => {
-            let t = free_torsions[k - 2];
-            d[6 + t] = rng.gen_range(-PI..PI);
-        }
-    }
-    conf.apply_delta(&d);
+/// 変異の振幅スタイル。`Drift`＝従来のドリフト鎖（成分ごとの立方体）、`Vina`＝Vina 一致
+/// （球内乱点・配向は gyration スケール）。entity 選択・torsion 摂動・apply は共通（[`apply_mutation`]）。
+#[derive(Debug, Clone, Copy)]
+enum MutationStyle {
+    Drift,
+    Vina { gyration: f64 },
 }
 
 /// 探索アルゴリズムの種類。
@@ -305,12 +294,9 @@ pub fn dock_constrained(
     let mut seed_rng = ChaCha8Rng::seed_from_u64(params.seed);
     let run_seeds: Vec<u64> = (0..params.n_runs).map(|_| seed_rng.next_u64()).collect();
 
-    // per-run ステップ数: n_steps==0 なら自動スケール。vina-mode は「少数・高コスト」ステップ。
+    // per-run ステップ数: n_steps==0 なら自動スケール（モード別、auto_n_steps_for に一元化）。
     let n_steps = if params.n_steps == 0 {
-        match params.kind {
-            SearchKind::Vina => auto_n_steps_vina(lig.n_scored(), free_torsions.len()),
-            _ => auto_n_steps(lig.n_scored(), free_torsions.len()),
-        }
+        auto_n_steps_for(params.kind, lig.n_scored(), free_torsions.len())
     } else {
         params.n_steps
     };
@@ -423,11 +409,11 @@ fn single_run(
     // 各ステップの局所最適化反復: drift/qvina2 は浅い `chain_iters`、vina は収束まで（VINA_BFGS_MAX）。
     let is_vina = params.kind == SearchKind::Vina;
     let step_iters = if is_vina { VINA_BFGS_MAX } else { params.chain_iters };
-    // vina-mode は配向変異を gyration でスケールするため参照配座から 1 度だけ計算（Vina 流）。
-    let gyration = if is_vina {
-        gyration_radius(&lig.reference_scored_positions())
+    // 変異スタイル。vina-mode は配向を gyration でスケールするため参照配座から 1 度だけ計算（Vina 流）。
+    let mut_style = if is_vina {
+        MutationStyle::Vina { gyration: gyration_radius(&lig.reference_scored_positions()) }
     } else {
-        0.0
+        MutationStyle::Drift
     };
     // この run 専用の評価バッファ（スレッドローカル）。直線探索と勾配で**別バッファ**にすることで、
     // `minimize_free` 返却後に `scratch_g.scored_pos` が **返却 conf の scored 座標**を保持する（直線探索の
@@ -476,11 +462,7 @@ fn single_run(
     // 反復局所探索（ILS）＋焼きなまし: 毎ステップ 1 自由度変異 → 浅い局所最適化 → Metropolis 受理。
     for k in 0..n_steps {
         let mut trial = cur.conf.clone();
-        if is_vina {
-            mutate_vina(&mut trial, &mut rng, free_torsions, gyration);
-        } else {
-            mutate(&mut trial, &mut rng, free_torsions);
-        }
+        apply_mutation(&mut trial, &mut rng, free_torsions, mut_style);
 
         // QuickVina2 スキップ判定: 安価な勾配 1 回で「既知の斜面」と判定したら local 探索を省く。
         if let Some(hist) = history.as_mut() {
@@ -584,28 +566,55 @@ fn lock_torsions(conf: &mut Conformation, free_torsions: &[usize]) {
     }
 }
 
-/// Vina 流の 1 自由度変異: 並進・配向・**自由** torsion のうち 1 つだけを動かす。
-/// 良いポーズを壊さず滑らかに探索でき、BFGS で徐々に基へ降りられる。固定 torsion は動かさない。
-fn mutate<R: Rng>(conf: &mut Conformation, rng: &mut R, free_torsions: &[usize]) {
+/// 1 自由度変異: 並進・配向・**自由** torsion のうち 1 つだけを動かす（固定 torsion は不動）。
+/// entity 選択・torsion 摂動（±π）・apply は共通で、並進/配向の**振幅のみ `style` で分岐**する。
+/// 乱数消費はスタイルごとに従来 `mutate`/`mutate_vina` と一致（決定論維持）。
+fn apply_mutation<R: Rng>(
+    conf: &mut Conformation,
+    rng: &mut R,
+    free_torsions: &[usize],
+    style: MutationStyle,
+) {
     use std::f64::consts::PI;
     // entity: 0=並進, 1=配向, 2..=自由 torsion
     let k = rng.gen_range(0..(2 + free_torsions.len()));
     let mut d = vec![0.0; conf.dim()];
     match k {
-        0 => {
-            // 並進（各成分 ±2 Å）
-            for v in d.iter_mut().take(3) {
-                *v = rng.gen_range(-2.0..2.0);
+        0 => match style {
+            // drift: 各成分 ±2 Å。vina: amplitude · 単位球内乱点。
+            MutationStyle::Drift => {
+                for v in d.iter_mut().take(3) {
+                    *v = rng.gen_range(-2.0..2.0);
+                }
             }
-        }
-        1 => {
-            // 配向（回転ベクトル各成分 ±1.0 rad）
-            for v in d.iter_mut().take(6).skip(3) {
-                *v = rng.gen_range(-1.0..1.0);
+            MutationStyle::Vina { .. } => {
+                let (x, y, z) = random_in_unit_sphere(rng);
+                d[0] = VINA_AMPLITUDE * x;
+                d[1] = VINA_AMPLITUDE * y;
+                d[2] = VINA_AMPLITUDE * z;
             }
-        }
+        },
+        1 => match style {
+            // drift: 回転ベクトル各成分 ±1.0 rad。vina: (amplitude/gyration) · 単位球内乱点。
+            MutationStyle::Drift => {
+                for v in d.iter_mut().take(6).skip(3) {
+                    *v = rng.gen_range(-1.0..1.0);
+                }
+            }
+            MutationStyle::Vina { gyration } => {
+                let s = if gyration > 1e-6 {
+                    VINA_AMPLITUDE / gyration
+                } else {
+                    VINA_AMPLITUDE
+                };
+                let (x, y, z) = random_in_unit_sphere(rng);
+                d[3] = s * x;
+                d[4] = s * y;
+                d[5] = s * z;
+            }
+        },
         _ => {
-            // 1 つの自由 torsion を再サンプリング（±π）
+            // 1 つの自由 torsion を再サンプリング（±π）。両スタイル共通。
             let t = free_torsions[k - 2];
             d[6 + t] = rng.gen_range(-PI..PI);
         }
