@@ -70,18 +70,15 @@ where
     let project = |gfull: &[f64]| -> DVector<f64> {
         DVector::from_iterator(n, free.iter().map(|&i| gfull[i]))
     };
-    let to_full = |r: &DVector<f64>| -> Vec<f64> {
-        let mut full = vec![0.0; dim];
-        for (j, &idx) in free.iter().enumerate() {
-            full[idx] = r[j];
-        }
-        full
-    };
+    // `to_full` の毎試行アロク（`vec![0.0; dim]`, 直線探索で最大 40×/反復）を避ける再利用バッファ。
+    let mut delta_full = vec![0.0; dim];
 
     let mut conf = start;
     let (mut energy, gfull) = value_grad(&conf);
     let mut grad = project(&gfull);
     let mut hinv = DMatrix::<f64>::identity(n, n);
+    // BFGS 逆ヘシアン更新の作業行列（反復毎の n×n `DMatrix` 5–7 枚確保を回避）。
+    let mut ws = BfgsWorkspace::new(n);
 
     for _ in 0..max_iter {
         if grad.norm() < 1e-4 {
@@ -91,7 +88,7 @@ where
         let mut p = -(&hinv * &grad);
         if p.dot(&grad) >= 0.0 {
             p = -grad.clone();
-            hinv = DMatrix::identity(n, n);
+            set_identity(&mut hinv);
         }
 
         // バックトラッキング直線探索（Armijo）。値のみ評価。
@@ -102,7 +99,8 @@ where
         for _ in 0..40 {
             let s = step * &p;
             let mut trial = conf.clone();
-            trial.apply_delta(&to_full(&s));
+            fill_full(&mut delta_full, &s, free);
+            trial.apply_delta(&delta_full);
             let e = value(&trial);
             if e <= energy + ARMIJO_C1 * step * g_dot_p {
                 new_conf = trial;
@@ -121,7 +119,7 @@ where
         let y = &new_grad - &grad;
         let sy = s.dot(&y);
         if sy > 1e-10 {
-            bfgs_inverse_update(&mut hinv, &s, &y, sy);
+            bfgs_inverse_update(&mut hinv, &s, &y, sy, &mut ws);
         }
         conf = new_conf;
         energy = new_energy;
@@ -129,6 +127,41 @@ where
     }
 
     LocalResult { conf, energy }
+}
+
+/// `free` DOF 部分空間のベクトル `r` を全 DOF 長（非 free は 0）へ書き戻す（再利用バッファ版 `to_full`）。
+#[inline]
+fn fill_full(full: &mut [f64], r: &DVector<f64>, free: &[usize]) {
+    full.iter_mut().for_each(|v| *v = 0.0);
+    for (j, &idx) in free.iter().enumerate() {
+        full[idx] = r[j];
+    }
+}
+
+/// 既存 n×n 行列を単位行列に上書き（`DMatrix::identity` の再確保を避ける）。
+#[inline]
+fn set_identity(m: &mut DMatrix<f64>) {
+    m.fill(0.0);
+    m.fill_diagonal(1.0);
+}
+
+/// BFGS 逆ヘシアン更新の作業行列。反復間で再利用しアロクを避ける。
+struct BfgsWorkspace {
+    left: DMatrix<f64>,
+    right: DMatrix<f64>,
+    tmp: DMatrix<f64>,
+    out: DMatrix<f64>,
+}
+
+impl BfgsWorkspace {
+    fn new(n: usize) -> Self {
+        BfgsWorkspace {
+            left: DMatrix::zeros(n, n),
+            right: DMatrix::zeros(n, n),
+            tmp: DMatrix::zeros(n, n),
+            out: DMatrix::zeros(n, n),
+        }
+    }
 }
 
 /// 解析的勾配を持たない呼び出し側向け: 値クロージャだけから有限差分勾配を作って最小化する。
@@ -165,16 +198,38 @@ fn fd_grad<V: Fn(&Conformation) -> f64>(value: &V, conf: &Conformation, free: &[
     g
 }
 
-/// BFGS 逆ヘシアン更新: Hinv += ... （Sherman-Morrison 形式）。
-fn bfgs_inverse_update(hinv: &mut DMatrix<f64>, s: &DVector<f64>, y: &DVector<f64>, sy: f64) {
+/// BFGS 逆ヘシアン更新: Hinv ← (I - ρ s yᵀ) Hinv (I - ρ y sᵀ) + ρ s sᵀ（Sherman-Morrison 形式）。
+///
+/// アロク回避のため作業行列 `ws` を再利用する。**数値はビット一致を維持する**:
+/// 外積（`s yᵀ`, `y sᵀ`, `s sᵀ`）は要素毎の単一積で手計算（累積無し＝丸め順に依存しない）、
+/// 行列積は nalgebra の `mul_to`（`*` と同一カーネル）を使い、結合順・加算順を旧実装と厳密一致させる。
+fn bfgs_inverse_update(
+    hinv: &mut DMatrix<f64>,
+    s: &DVector<f64>,
+    y: &DVector<f64>,
+    sy: f64,
+    ws: &mut BfgsWorkspace,
+) {
     let rho = 1.0 / sy;
     let n = s.len();
-    let i = DMatrix::<f64>::identity(n, n);
-    let sy_mat = s * y.transpose() * rho; // s y^T / sy
-    let left = &i - &sy_mat;
-    let right = &i - &(y * s.transpose() * rho);
-    let ss = s * s.transpose() * rho;
-    *hinv = &left * &*hinv * &right + ss;
+    // left = I - (s yᵀ)ρ, right = I - (y sᵀ)ρ（外積は単一積、旧: `(s*y^T)*rho` と同順）。
+    for i in 0..n {
+        for j in 0..n {
+            let id = if i == j { 1.0 } else { 0.0 };
+            ws.left[(i, j)] = id - (s[i] * y[j]) * rho;
+            ws.right[(i, j)] = id - (y[i] * s[j]) * rho;
+        }
+    }
+    // tmp = left * hinv;  out = tmp * right（旧: ((left*hinv)*right) と同結合順）。
+    ws.left.mul_to(hinv, &mut ws.tmp);
+    ws.tmp.mul_to(&ws.right, &mut ws.out);
+    // out += (s sᵀ)ρ（旧: `+ ss` の要素毎加算と同順）。
+    for i in 0..n {
+        for j in 0..n {
+            ws.out[(i, j)] += (s[i] * s[j]) * rho;
+        }
+    }
+    hinv.copy_from(&ws.out);
 }
 
 #[cfg(test)]

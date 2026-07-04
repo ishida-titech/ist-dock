@@ -1,0 +1,31 @@
+# .cargo/config.toml.example — opt-in 高速ビルド（native-CPU）
+#
+# 使い方: このファイルを `.cargo/config.toml` にコピー（またはリネーム）すると有効化される。
+#   cp .cargo/config.toml.example .cargo/config.toml
+#   cargo build --release      # ワークスペース全体を native codegen で再ビルド
+# 元に戻すには `.cargo/config.toml` を削除する。
+#
+# 効果は workload・CPU 依存（本機 80 コア Xeon での実測）:
+#   - 単発 dock（scoring=direct・SIMD f32 経路）: ~5%（affinity −12.4797→−12.4750 とわずかに変化）。
+#   - grid スクリーニング（既定・推奨）: 速度差ほぼ無し・出力ビット一致（grid 補間は f64 のため）。
+#   - per-op の native ゲイン（SIMD_OPTIMIZE.md §3 で ~1.3×）は多コアの run/クラスタ並列でスケジューリングに
+#     希釈される。少コア・レイテンシ律速の単発 dock ほど効きやすい。10M grid スクリーニングでは実効ゲイン乏しい。
+#
+# ★トレードオフ（必ず理解した上で有効化すること）:
+#   - 精度: direct/SIMD の f32 経路が FMA 等の丸め差に鋭敏で、borderline 標的が反転しうる（フル DUD-E 74 標的で
+#     net −7/222 を実測）。ランキングがわずかに変わる（grid 経路は本機で影響を観測せず＝ビット一致）。
+#   - 決定論/移植性: 結果が **CPU の codegen に依存**する（native は実行機の命令セットに最適化）。
+#     異なる CPU 間でビット一致しなくなる。10M スクリーニングを多様なハードで分散する場合は要注意。
+#   - 既定ビルド（このファイルを有効化しない）は従来どおり baseline x86-64・厳密 f64 で決定論的。
+#
+# 別法（ファイルを置かず 1 回だけ native ビルド）:
+#   RUSTFLAGS="-C target-cpu=native" cargo build --release
+# 特定の機能だけ有効化したい場合（例: AVX2+FMA のみ、AVX-512 を避ける）:
+#   RUSTFLAGS="-C target-feature=+avx2,+fma" cargo build --release
+
+[build]
+rustflags = ["-C", "target-cpu=native"]
+
+# 便利エイリアス（`cargo fast-build` で native ビルド。上の [build] を有効化した状態で使う）。
+[alias]
+fast-build = "build --release"

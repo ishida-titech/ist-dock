@@ -5,9 +5,11 @@
 //! 項のみ再計算する（仕様の増分=Delta 評価）。Soft-core ポテンシャルと柔軟側鎖同時最適化は
 //! M6 で追加する。
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 
 use isct_core::delta_energy::DeltaScorer;
+use isct_core::geometry::Vec3;
 use isct_core::scoring::ScoredAtom;
 
 use crate::energy::Scorer;
@@ -54,15 +56,29 @@ pub fn optimize_child(
         .collect();
     let delta = DeltaScorer::new(&core, receptor);
 
+    // 目的関数の毎評価アロケーションを避けるスクラッチ（local_iters × 有限差分勾配で多数回呼ばれる）。
+    // 各 optimize_child 呼び出しごとにローカルに持ち、内部可変性で `Fn` クロージャから再利用する。
+    let scratch_pos: RefCell<Vec<Vec3>> = RefCell::new(Vec::new());
+    let scratch_atoms: RefCell<Vec<ScoredAtom>> = RefCell::new(Vec::new());
+    let scratch_rgroup: RefCell<Vec<ScoredAtom>> = RefCell::new(Vec::new());
+
     // 目的関数 = Δ分子間（コアキャッシュ＋R基–受容体）＋ ボックス罰則 ＋ 分子内。
     let objective = |c: &Conformation| {
-        let atoms = child.scored_atoms(c);
-        let rgroup: Vec<ScoredAtom> = atoms
-            .iter()
-            .zip(&core_mask)
-            .filter_map(|(a, &m)| (!m).then_some(*a))
-            .collect();
-        delta.intermolecular(&rgroup, receptor) + scorer.box_penalty(&atoms) + child.intramolecular(&atoms, f64::INFINITY)
+        let mut pos = scratch_pos.borrow_mut();
+        let mut atoms = scratch_atoms.borrow_mut();
+        let mut rgroup = scratch_rgroup.borrow_mut();
+        child.world_coords_into(c, &mut pos);
+        child.scored_atoms_into(&pos, &mut atoms);
+        rgroup.clear();
+        rgroup.extend(
+            atoms
+                .iter()
+                .zip(&core_mask)
+                .filter_map(|(a, &m)| (!m).then_some(*a)),
+        );
+        delta.intermolecular(&rgroup, receptor)
+            + scorer.box_penalty(&atoms)
+            + child.intramolecular(&atoms, f64::INFINITY)
     };
 
     // R 基 torsion（コアを動かさない torsion）のみ最適化（Δ目的関数は有限差分勾配）。

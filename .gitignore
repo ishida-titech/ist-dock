@@ -3,6 +3,10 @@
 Cargo.lock.bak
 .DS_Store
 
+# opt-in 高速ビルド設定（有効化した個人の .cargo/config.toml は追跡しない＝既定ビルドの
+# 決定論を全員で維持。テンプレートは .cargo/config.toml.example として追跡する）。
+/.cargo/config.toml
+
 # 検証データ・生成物（bench スクリプトで再生成可能。入力・データは追跡しない）
 /bench/out/
 /bench/data/

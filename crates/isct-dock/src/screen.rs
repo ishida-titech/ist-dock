@@ -147,7 +147,9 @@ pub fn screen<S: ClusterSource>(receptor: &[ScoredAtom], src: &S, params: &Scree
     });
 
     // クラスタは独立 → 並列処理。binary は cluster() で遅延デコード→処理→破棄でメモリ有界。
-    // インデックス順 collect で出力順序を保ち決定的。
+    // インデックス順 collect で出力順序を保ち決定的。クラスタ内（子・run）も par_iter でネストするが、
+    // rayon の work-stealing がクラスタ間のサイズ不均衡（末尾の重いクラスタ）を吸収するため、内側を
+    // 逐次化するより速い（内側逐次化は実測で ~30% 遅く、末尾で遊休スレッドが増える。計測で確認済み）。
     let per_cluster: Vec<(ClusterOutcome, Vec<ScoredEntry>)> = (0..src.n_clusters())
         .into_par_iter()
         .map(|i| process_cluster(receptor, &src.cluster(i), params, shared.as_ref()))

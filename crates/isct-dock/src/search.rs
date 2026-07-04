@@ -460,9 +460,10 @@ fn single_run(
         .then(|| HistoryBuffer::new(QVinaParams::for_dofs(free_dofs.len(), params.qvina_cos)));
 
     // 反復局所探索（ILS）＋焼きなまし: 毎ステップ 1 自由度変異 → 浅い局所最適化 → Metropolis 受理。
+    let mut mut_delta: Vec<f64> = Vec::new();
     for k in 0..n_steps {
         let mut trial = cur.conf.clone();
-        apply_mutation(&mut trial, &mut rng, free_torsions, mut_style);
+        apply_mutation(&mut trial, &mut rng, free_torsions, mut_style, &mut mut_delta);
 
         // QuickVina2 スキップ判定: 安価な勾配 1 回で「既知の斜面」と判定したら local 探索を省く。
         if let Some(hist) = history.as_mut() {
@@ -557,10 +558,10 @@ fn contact_start<R: Rng>(
 }
 
 /// `free_torsions` に含まれない torsion を 0（参照）に固定する。
+/// `free_torsions` は小さいため線形 `contains` で十分（HashSet 確保を避け contact_start の毎試行アロクを除去）。
 fn lock_torsions(conf: &mut Conformation, free_torsions: &[usize]) {
-    let free: std::collections::HashSet<usize> = free_torsions.iter().copied().collect();
     for (k, t) in conf.torsions.iter_mut().enumerate() {
-        if !free.contains(&k) {
+        if !free_torsions.contains(&k) {
             *t = 0.0;
         }
     }
@@ -574,11 +575,15 @@ fn apply_mutation<R: Rng>(
     rng: &mut R,
     free_torsions: &[usize],
     style: MutationStyle,
+    delta: &mut Vec<f64>,
 ) {
     use std::f64::consts::PI;
     // entity: 0=並進, 1=配向, 2..=自由 torsion
     let k = rng.gen_range(0..(2 + free_torsions.len()));
-    let mut d = vec![0.0; conf.dim()];
+    // 再利用バッファをゼロ初期化（毎ステップの `vec![0.0; dim]` 確保を回避）。RNG 消費順は不変。
+    delta.clear();
+    delta.resize(conf.dim(), 0.0);
+    let d = delta;
     match k {
         0 => match style {
             // drift: 各成分 ±2 Å。vina: amplitude · 単位球内乱点。
@@ -619,7 +624,7 @@ fn apply_mutation<R: Rng>(
             d[6 + t] = rng.gen_range(-PI..PI);
         }
     }
-    conf.apply_delta(&d);
+    conf.apply_delta(d);
 }
 
 #[cfg(test)]

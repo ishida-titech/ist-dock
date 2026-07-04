@@ -4,7 +4,7 @@
 （`docs/results.*`・`docs/findings.*` は一度作成したら更新しない時系列ログ。**本ファイルは現状を反映して
 上書き・追記する**。新機能・検証を入れたらこの表と詳細・更新履歴を更新すること。）
 
-最終更新: 2026-06-22
+最終更新: 2026-07-03
 
 ## マイルストーン状態
 
@@ -96,6 +96,21 @@
   GWOVina、10M 本番、isct-dock の native ランキングスコア改良（torsion 補正の露出）。
 
 ## 更新履歴
+- 2026-07-03〜04: **高速化の探索＋実測**（`docs/findings.202607030101`, 速度 A/B `docs/results.202607042210`,
+  Astex 影響確認 `docs/results.202607042150`）。数値ビット不変のアロク削減を採用: Phase3 子 objective 脱アロク
+  (T1-1)・`single_run` の lock_torsions/apply_mutation 脱アロク(T1-3)・**BFGS 逆ヘシアン更新の作業行列再利用**(T1-4,
+  nalgebra `mul_to` で行列積の結合順を厳密一致→ビット一致)。**Astex Diverse 74 標的で HEAD と 74/74 ビット一致**
+  （affinity・pose RMSD 完全一致＝回帰ゼロ）。clippy/test green。
+  - **有効だった手法＝T1-4＋T1-3**: 単発 dock（Direct, 60 run × 多数 BFGS 反復）で n×n 行列 5–7 枚/反復の確保除去が
+    効き **5.22→5.06s（~3%）**（交互計測・ビット一致）。
+  - **中立＝T1-1**: 本 kif11 screen は seed 大域 docking 支配＋grid 探索/分子内 exp が計算律速でアロケータ律速でなく、
+    壁時計は 103.0→102.9s（中立・ビット一致）。子 fan-out 大のライブラリでは効く可能性（未実証）。
+  - **撤回＝T1-5（rayon 内側逐次化）**: 実測 +30%（97→127s）。ネスト par_iter の work-stealing がクラスタ間不均衡を
+    吸収するため内側逐次化は末尾で遊休増→ revert。
+  - **opt-in native ビルド**（`.cargo/config.toml.example`＋MANUAL§2.1）追加。本機 80 コアで dock(Direct)~5%
+    （精度 −7/222 変化）・grid screen ~0%＋ビット一致（多コアで per-op ゲイン希釈・grid は f64）。
+  結論: 既定 grid 探索は既に計算律速の床付近で、数値不変の安価な高速化は単発 dock の小幅（~3%）に留まる
+  （SIMD_OPTIMIZE の再確認）。本質的向上は native（精度トレードオフ）か T3-1（子 objective の grid 化＝別計算機 DUD-E 検証）。
 - 2026-06-22: 初期配置を **複数試行 best-start 選択**へ改良＋**残差の正体を診断特定**（`docs/findings.202606222119`）。
   Vina ポーズを `isct-dock score` でほぼ同値再採点でき＝**残差は scoring でなく ligand 依存の探索差**（小）。
   先頭 8 件（相関 subset）で isct 2/vina 6 が深い。全 kif11 では isct≈vina。残差追跡は多様セットで行うべき。

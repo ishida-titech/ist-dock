@@ -35,8 +35,33 @@ cargo clippy --all-targets   # lint（警告ゼロを維持）
 - Rust は stable で可（SIMD は `wide` クレートで stable のまま）。
 - 検証ハーネス（`bench/`）には別途 Python＋`vina`/`rdkit`/`meeko`/`gemmi` が必要（環境は
   [PORTING.md](PORTING.md)・メモリ参照: rust=`~/.cargo`, それらは `~/miniconda3`）。
-- 注: 既定ビルドは baseline x86-64 codegen（AVX2 無効）。`target-cpu=native` は速度が出る反面、精度・決定論・
-  移植性に影響するため**既定では使わない**（理由は [SIMD_OPTIMIZE.md](SIMD_OPTIMIZE.md)）。
+- 注: 既定ビルドは baseline x86-64 codegen（AVX2 無効）・厳密 f64 で**決定論的**（同一 seed で全 CPU ビット一致）。
+
+### 2.1 opt-in 高速ビルド（native-CPU、精度トレードオフあり）
+
+速度を優先できる場合、実行機の CPU 向けに codegen する高速ビルドを opt-in できる。
+
+```sh
+# 方法A: 1 回だけ native ビルド（設定ファイルを置かない）
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+
+# 方法B: 恒常化（テンプレートをコピーして有効化。戻すには .cargo/config.toml を削除）
+cp .cargo/config.toml.example .cargo/config.toml
+cargo build --release
+```
+
+**効果は workload・CPU 依存で、必ずしも大きくない（本機 = 80 コア Xeon での実測）**:
+- **単発 dock（scoring=direct・SIMD f32 経路）**: ~5%。affinity がわずかに変化（−12.4797→−12.4750）
+  ＝f32 FMA の丸め差で結果が変わる（accuracy トレードオフ）。
+- **grid スクリーニング（既定・推奨）**: **速度差ほぼ無し・出力ビット一致**（grid 補間は f64 で native の
+  影響を受けにくい）。→ 10M grid スクリーニングでは native は実効ゲインが乏しい。
+- 一般に per-op の native ゲイン（[SIMD_OPTIMIZE.md](SIMD_OPTIMIZE.md) §3 で ~1.3×）は、多コアで多数の run/クラスタを
+  並列実行するとスケジューリングに希釈される。**少コア・レイテンシ律速の単発 dock ほど効きやすい**。
+
+**トレードオフ**: direct/SIMD 経路では f32 codegen 依存で borderline 標的が反転しうる（フル DUD-E で net
+−7/222 を実測）。結果が CPU codegen 依存になり異機種間でビット一致しなくなる。既定ビルド（無効時）は
+従来どおり厳密 f64・決定論的。有効化した `.cargo/config.toml` は gitignore 済み。詳細は
+`.cargo/config.toml.example` のコメント参照。
 
 ---
 
