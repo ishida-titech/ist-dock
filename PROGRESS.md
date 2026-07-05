@@ -96,6 +96,16 @@
   GWOVina、10M 本番、isct-dock の native ランキングスコア改良（torsion 補正の露出）。
 
 ## 更新履歴
+- 2026-07-05: **TPE の「Parzen モデル未使用」バグ発見・修正 ＋ 高速化（①+ei実効1）**
+  （`docs/findings.202607051047`）。高速化検討中に before/after ビット一致に気付き計装した結果、**aa38048 の TPE は
+  観測が一切記録されず Parzen モデルが構築されていなかった**（実体はランダム再スタート+BFGS）。根本原因は位置
+  パラメトリゼーションの取り違え: ISCT の `Conformation.position` は `root_pivot` からの**変位**なのに TPE モデルは
+  次元 0–2 を**絶対座標**として扱い、`in_box` が常に false→obs 未記録。`conf_from_vec`/`vec_from_conf`/`in_box` に
+  `root_pivot` を通し絶対⇄変位を正しく変換して修正（obs=60・model 稼働を確認）。あわせて高速化: greater 重みが
+  0 のとき g(x)=0 で候補選択が退化するため、`sample()` に高速経路（各次元 1 点のみ・g/l と未使用候補を省略）を追加
+  （既定で常用）。**壁時計効果は ~0%（BFGS 律速, 事前分析通り）**。修正で TPE が初めて真に稼働するため品質特性は
+  再評価が必要（`results.202607051022` の数値はモデル未使用時のもので TPE 性能ではない）。決定論維持・clippy 警告
+  ゼロ・test 全 pass（TPE 単体 5 件）。**未コミット**（挙動が大きく変わるためユーザ確認待ち）。
 - 2026-07-05: **TPE 探索モード追加**（`--search tpe` / `search="tpe"`, `docs/results.202607051022`）。TPEvina-2.0
   （PSOVina 派生）の TPE（Tree-structured Parzen Estimator）を移植。新規 `crates/isct-dock/src/tpe.rs`
   （per-dim Gaussian Parzen モデル・良観測近傍サンプリング・g/l 期待改善）＋ `single_run_tpe`（`single_run` と

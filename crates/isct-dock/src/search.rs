@@ -576,11 +576,14 @@ fn single_run_tpe(
     let mut model: Option<tpe::TpeModel> = None;
     let mut since_rebuild = 0usize;
 
+    // リガンド root 重心の絶対位置 = root_pivot + conf.position（`Conformation.position` は変位）。
+    let root_pivot = lig.root_pivot();
     let half = params.size * 0.5;
-    let in_box = |pos: &Vec3| -> bool {
-        (pos.x - params.center.x).abs() <= half.x
-            && (pos.y - params.center.y).abs() <= half.y
-            && (pos.z - params.center.z).abs() <= half.z
+    let in_box = |conf: &Conformation| -> bool {
+        let abs = conf.position + root_pivot;
+        (abs.x - params.center.x).abs() <= half.x
+            && (abs.y - params.center.y).abs() <= half.y
+            && (abs.z - params.center.z).abs() <= half.z
     };
 
     for p in 0..n_steps {
@@ -600,15 +603,15 @@ fn single_run_tpe(
         };
 
         // 提案を配座へ写し BFGS 局所最適化。
-        let start = tpe::conf_from_vec(&reference, free_torsions, &v);
+        let start = tpe::conf_from_vec(&reference, free_torsions, root_pivot, &v);
         let res = minimize_free(start, &value, &value_grad, local_iters, free_dofs);
         let res_pos = scratch_g.borrow().scored_pos.clone();
         cluster_insert(&mut pool, res.conf.clone(), res.energy, res_pos, params.cluster_rmsd, pool_cap);
 
         // ボックス内なら観測へ記録（Parzen モデルの更新元）。
-        if in_box(&res.conf.position) {
+        if in_box(&res.conf) {
             obs.push(tpe::Obs {
-                v: tpe::vec_from_conf(&reference, free_torsions, &res.conf),
+                v: tpe::vec_from_conf(&reference, free_torsions, root_pivot, &res.conf),
                 score: res.energy,
             });
         }

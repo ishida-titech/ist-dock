@@ -95,11 +95,18 @@ pub fn bounds(center: Vec3, size: Vec3, n_free_torsions: usize) -> (Vec<f64>, Ve
     (l, g)
 }
 
-/// モデル空間ベクトル `v` を参照配座からの差として適用し `Conformation` を作る。
-/// `v = [pos(3, 絶対), rot(3, 参照 orientation からの scaled-axis 差), free_torsion 差(n)]`。
-pub fn conf_from_vec(reference: &Conformation, free_torsions: &[usize], v: &[f64]) -> Conformation {
+/// モデル空間ベクトル `v` を `Conformation` へ写す。
+/// `v = [pos(3, 絶対ボックス座標), rot(3, 参照 orientation からの scaled-axis 差), free_torsion 差(n)]`。
+/// ISCT の `Conformation.position` は `root_pivot` からの**変位**なので、絶対座標から `root_pivot` を引く
+/// （`random_in_box` の `target - root_pivot` と同一規約 = リガンド root 重心が絶対座標 `v[0..3]` に載る）。
+pub fn conf_from_vec(
+    reference: &Conformation,
+    free_torsions: &[usize],
+    root_pivot: Vec3,
+    v: &[f64],
+) -> Conformation {
     let mut c = reference.clone();
-    c.position = Vec3::new(v[0], v[1], v[2]);
+    c.position = Vec3::new(v[0], v[1], v[2]) - root_pivot;
     let rot = Vec3::new(v[3], v[4], v[5]);
     c.orientation = UnitQuaternion::from_scaled_axis(rot) * reference.orientation;
     for (k, &t) in free_torsions.iter().enumerate() {
@@ -108,12 +115,19 @@ pub fn conf_from_vec(reference: &Conformation, free_torsions: &[usize], v: &[f64
     c
 }
 
-/// `Conformation`（局所最適化後）を参照からの差＝モデル空間ベクトルへ写す（観測の記録用）。
-pub fn vec_from_conf(reference: &Conformation, free_torsions: &[usize], c: &Conformation) -> Vec<f64> {
+/// `Conformation`（局所最適化後）をモデル空間ベクトルへ写す（観測の記録用）。位置は絶対座標
+/// `root_pivot + position` に戻す。
+pub fn vec_from_conf(
+    reference: &Conformation,
+    free_torsions: &[usize],
+    root_pivot: Vec3,
+    c: &Conformation,
+) -> Vec<f64> {
     let mut v = Vec::with_capacity(6 + free_torsions.len());
-    v.push(c.position.x);
-    v.push(c.position.y);
-    v.push(c.position.z);
+    let abs = c.position + root_pivot;
+    v.push(abs.x);
+    v.push(abs.y);
+    v.push(abs.z);
     let diff = (c.orientation * reference.orientation.inverse()).scaled_axis();
     v.push(diff.x);
     v.push(diff.y);
@@ -156,6 +170,9 @@ struct Dim {
 /// 全次元の Parzen モデル。`build` で観測から構築し `sample` で候補を引く。
 pub struct TpeModel {
     dims: Vec<Dim>,
+    /// greater 重み > 0 か（全次元共通のスカラ）。`false` のとき g(x)=0 で候補選択が退化し、
+    /// 高速経路（各次元 1 点のみサンプル・g/l 計算省略）に切り替える。
+    greater_active: bool,
 }
 
 /// 近傍ギャップ規則の帯域 sigma（TPEvina）: 端はボックス境界まで、内側は左右ギャップの max。
@@ -173,6 +190,19 @@ fn kernel_sigma(sorted_vals: &[f64], k: usize, lo: f64, hi: f64, n_div: usize) -
     };
     let min_sigma = range / (1 + n_div) as f64;
     raw.max(min_sigma).min(range)
+}
+
+/// lower 混合から 1 点サンプル: カーネルを一様に選び、その周りで正規サンプル（範囲外は再サンプル）。
+#[inline]
+fn draw_lower<R: Rng>(rng: &mut R, lower: &[(f64, f64)], lo: f64, hi: f64) -> f64 {
+    loop {
+        let k = rng.gen_range(0..lower.len());
+        let (val, sigma) = lower[k];
+        let param = sample_normal(rng, val, sigma);
+        if param >= lo && param <= hi {
+            return param;
+        }
+    }
 }
 
 /// 1 次元の Gaussian 混合密度を `param` で評価（equal-weight または greater_weight 付き）。
@@ -243,11 +273,22 @@ impl TpeModel {
                 greater_weight: gw,
             });
         }
-        Some(TpeModel { dims })
+        Some(TpeModel {
+            dims,
+            greater_active: gw > 0.0,
+        })
     }
 
-    /// 1 候補ベクトルをサンプルする。各次元で lower 混合から `ei_candidates` 個引き、
-    /// 全次元にわたる Σ log(g/l) が最小の候補スロットを採用（tie は先頭）。
+    /// 1 候補ベクトルをサンプルする。
+    ///
+    /// **高速経路（`greater_active==false`）**: greater 重みが 0 のとき g(x)=0 で全候補が同点（Σlog(g/l)=-∞）
+    /// となり `ei_candidates` 本引いても先頭が選ばれるだけ＝候補選択も g/l 計算も無意味。よって各次元
+    /// **1 点だけ**引いて返す（g/l の exp 計算と未使用候補のサンプリングを丸ごと省く）。TPEvina 既定では
+    /// 探索初期に greater 重みが 0 化するため、通常はこの経路。
+    ///
+    /// **完全経路（`greater_active==true`）**: 各次元で lower 混合から `ei_candidates` 個引き、全次元にわたる
+    /// Σ log(g/l) が最小の候補スロットを採用（tie は先頭）。upper_groups を大きくして greater 重みを
+    /// 生かした「本来の TPE」挙動のときに使う。
     pub fn sample<R: Rng>(
         &self,
         rng: &mut R,
@@ -255,6 +296,16 @@ impl TpeModel {
         l_limit: &[f64],
         g_limit: &[f64],
     ) -> Vec<f64> {
+        // 高速経路: g(x)=0 で候補選択が退化 → 各次元 1 点のみ。
+        if !self.greater_active {
+            return self
+                .dims
+                .iter()
+                .enumerate()
+                .map(|(j, d)| draw_lower(rng, &d.lower, l_limit[j], g_limit[j]))
+                .collect();
+        }
+
         let dim = self.dims.len();
         let m = p.ei_candidates.max(1);
         // 各候補スロット s の期待改善プロキシ Σ_dim log(g/l) を累積、per-dim の param を控える。
@@ -263,16 +314,7 @@ impl TpeModel {
         for (j, d) in self.dims.iter().enumerate() {
             let (lo, hi) = (l_limit[j], g_limit[j]);
             for (s, ei) in ei_per_slot.iter_mut().enumerate() {
-                // lower カーネルを一様に選び、その周りで正規サンプル（範囲外は再サンプル）。
-                let mut param;
-                loop {
-                    let k = rng.gen_range(0..d.lower.len());
-                    let (val, sigma) = d.lower[k];
-                    param = sample_normal(rng, val, sigma);
-                    if param >= lo && param <= hi {
-                        break;
-                    }
-                }
+                let param = draw_lower(rng, &d.lower, lo, hi);
                 let lx = mixture_density(&d.lower, param, 1.0);
                 let gx = mixture_density(&d.greater, param, d.greater_weight);
                 // TPEvina は g/l を最小化（比小=良）。log で次元合成。
@@ -315,10 +357,11 @@ mod tests {
             torsions: vec![0.5, -0.3, 0.0],
         };
         let free = vec![0usize, 2];
+        let root_pivot = Vec3::new(5.0, -4.0, 1.0);
         // モデルベクトル → conf → モデルベクトル でほぼ復元。
         let v = vec![4.0, -1.0, 2.5, 0.2, 0.1, -0.15, 0.4, -0.6];
-        let c = conf_from_vec(&reference, &free, &v);
-        let v2 = vec_from_conf(&reference, &free, &c);
+        let c = conf_from_vec(&reference, &free, root_pivot, &v);
+        let v2 = vec_from_conf(&reference, &free, root_pivot, &c);
         for (a, b) in v.iter().zip(&v2) {
             assert!((a - b).abs() < 1e-9, "{a} vs {b}");
         }
@@ -344,6 +387,26 @@ mod tests {
             assert_eq!(v.len(), l.len());
             for j in 0..v.len() {
                 assert!(v[j] >= l[j] - 1e-9 && v[j] <= g[j] + 1e-9, "dim {j} out of bounds: {}", v[j]);
+            }
+        }
+    }
+
+    #[test]
+    fn fast_path_when_greater_dead() {
+        // 大きな iter で greater 重み=0 → 高速経路。各次元 1 点だけ引き範囲内を返す。
+        let (l, g) = bounds(Vec3::zeros(), Vec3::new(10.0, 10.0, 10.0), 1); // dim=7
+        let p = TpeParams::default();
+        let mut rng = ChaCha8Rng::seed_from_u64(3);
+        let obs: Vec<Obs> = (0..30)
+            .map(|i| Obs { v: warmup_sample(&mut rng, &l, &g), score: i as f64 })
+            .collect();
+        let model = TpeModel::build(&obs, &p, 100, &l, &g).unwrap(); // iter=100 → gw=0
+        assert!(!model.greater_active, "greater should be dead at large iter");
+        for _ in 0..20 {
+            let v = model.sample(&mut rng, &p, &l, &g);
+            assert_eq!(v.len(), l.len());
+            for j in 0..v.len() {
+                assert!(v[j] >= l[j] - 1e-9 && v[j] <= g[j] + 1e-9);
             }
         }
     }
