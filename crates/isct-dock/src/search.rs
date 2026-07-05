@@ -16,6 +16,7 @@ use crate::energy::Scorer;
 use crate::ligand::{Conformation, LigandModel};
 use crate::optimizer::{minimize_free, rigid_and_torsions};
 use crate::qvina::{dof_vector, project_grad, HistoryBuffer, QVinaParams};
+use crate::tpe::{self, TpeParams};
 
 /// ポーズ評価の再利用バッファ（ゼロアロケーション探索用）。run ごと（または polish ループごと）に
 /// 1 つ確保し、毎ステップ・直線探索試行で使い回す。`minimize_free` は per-run で逐次のため、
@@ -139,6 +140,8 @@ pub struct SearchParams {
     /// 探索中の正エネルギー上限（Vina hunt_cap, 既定 10.0）。激突の暴走を抑え深い極小へ抜けやすくする。
     /// polish は常に cap 無し（authentic）。`f64::INFINITY` で無効化。
     pub hunt_cap: f64,
+    /// TPE モード（`kind == Tpe`）のハイパーパラメータ。他モードでは未使用。
+    pub tpe: TpeParams,
 }
 
 impl Default for SearchParams {
@@ -170,6 +173,7 @@ impl Default for SearchParams {
             kind: SearchKind::Drift,
             qvina_cos: 0.90,
             hunt_cap: 10.0,
+            tpe: TpeParams::default(),
         }
     }
 }
@@ -198,12 +202,20 @@ pub fn auto_n_steps_vina(n_scored_atoms: usize, n_torsions: usize) -> usize {
     eff.max(50)
 }
 
+/// TPE モードの per-run 提案数。各提案が BFGS 局所最適化を伴う（vina 同様「少数・高コスト」）が、
+/// Parzen モデル構築にウォームアップ観測が要るため vina より多めの予算を確保する。
+pub fn auto_n_steps_tpe(n_scored_atoms: usize, n_torsions: usize) -> usize {
+    let eff = n_scored_atoms.min(8 + 5 * n_torsions);
+    (6 * eff).max(200)
+}
+
 /// 探索モードに応じた per-run ステップ数（`SearchParams.n_steps == 0` のとき使う）。
 /// vina-mode は「少数・高コスト」ステップ（`auto_n_steps_vina`）、それ以外（drift/qvina2）は
 /// 通常スケール（`auto_n_steps`）。dock・screen・CLI ログで共通利用し選択ロジックを一元化する。
 pub fn auto_n_steps_for(kind: SearchKind, n_scored_atoms: usize, n_torsions: usize) -> usize {
     match kind {
         SearchKind::Vina => auto_n_steps_vina(n_scored_atoms, n_torsions),
+        SearchKind::Tpe => auto_n_steps_tpe(n_scored_atoms, n_torsions),
         _ => auto_n_steps(n_scored_atoms, n_torsions),
     }
 }
@@ -270,6 +282,8 @@ pub enum SearchKind {
     Qvina2,
     /// Vina 忠実 MC: 各ステップ**収束まで BFGS**（実装レベル差の切り分け用）。
     Vina,
+    /// TPE（Tree-structured Parzen Estimator）: TPEvina 由来の Parzen サンプリング探索（opt-in）。
+    Tpe,
 }
 
 /// リガンドを受容体ボックスへドッキングし、**RMSD クラスタリングした上位モード**を
@@ -305,10 +319,16 @@ pub fn dock_constrained(
     let free_dofs = rigid_and_torsions(free_torsions);
 
     // 独立 run を並列実行。各 run は RMSD クラスタした代表ポーズ群を返す。collect で run 順保持＝決定的。
-    // 評価バッファは single_run 内で run ごとに確保（スレッドごとに独立）。
+    // 評価バッファは per-run で確保（スレッドごとに独立）。TPE モードは専用ドライバへ分岐。
     let per_run: Vec<(Vec<(Conformation, f64)>, u64)> = run_seeds
         .par_iter()
-        .map(|&seed| single_run(lig, scorer, params, n_steps, free_torsions, &free_dofs, seed))
+        .map(|&seed| {
+            if params.kind == SearchKind::Tpe {
+                single_run_tpe(lig, scorer, params, n_steps, free_torsions, &free_dofs, seed)
+            } else {
+                single_run(lig, scorer, params, n_steps, free_torsions, &free_dofs, seed)
+            }
+        })
         .collect();
 
     // 全 run の代表を集約し、大域 RMSD クラスタリングで上位 polish_modes（≥ n_modes）モードへ絞る。
@@ -507,6 +527,90 @@ fn single_run(
             || rng.r#gen::<f64>() < (-(res.energy - cur.energy) / temp).exp();
         if accept {
             cur = res;
+        }
+    }
+
+    let mut reps: Vec<(Conformation, f64)> = pool.into_iter().map(|(c, e, _)| (c, e)).collect();
+    reps.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    let evals = scratch_v.borrow().evals + scratch_g.borrow().evals;
+    (reps, evals)
+}
+
+/// TPE（Tree-structured Parzen Estimator）の 1 run。`single_run` と同型の返り値
+/// `(RMSD クラスタ済み代表群, 評価回数)` を返し、`dock_constrained` から同じ集約・polish に載る。
+///
+/// 流れ: `contact_start` で参照配座を得る → 前半 `warmup` 提案は一様ランダム、後半は良観測から
+/// 構築した Parzen モデルでサンプル → 各提案を `minimize_free`（BFGS）で局所最適化 → 観測へ記録し
+/// pool へクラスタ挿入。局所最適化・スコア・決定論（seeded `ChaCha8Rng`）は他モードと同一機構を再利用。
+#[allow(clippy::too_many_arguments)]
+fn single_run_tpe(
+    lig: &LigandModel,
+    scorer: &Scorer,
+    params: &SearchParams,
+    n_steps: usize,
+    free_torsions: &[usize],
+    free_dofs: &[usize],
+    seed: u64,
+) -> (Vec<(Conformation, f64)>, u64) {
+    let scratch_v = RefCell::new(EvalScratch::default());
+    let scratch_g = RefCell::new(EvalScratch::default());
+    let cap = params.hunt_cap;
+    let value = |c: &Conformation| eval_value(lig, scorer, &mut scratch_v.borrow_mut(), c, false, cap);
+    let value_grad = |c: &Conformation| eval_value_grad(lig, scorer, &mut scratch_g.borrow_mut(), c, false, cap);
+
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    // 参照配座（固定 torsion は 0 に保つ）。TPE のモデル空間は「この参照からの差」で定義。
+    let reference = contact_start(
+        lig, scorer, &mut rng, params.center, params.size, free_torsions, params.uniform_start, cap,
+    );
+    let (l_limit, g_limit) = tpe::bounds(params.center, params.size, free_torsions.len());
+    let tp = params.tpe;
+    let local_iters = if tp.local_iters > 0 { tp.local_iters } else { params.chain_iters };
+
+    let pool_cap = params.polish_modes.max(params.n_modes);
+    let mut pool: Vec<(Conformation, f64, Vec<Vec3>)> = Vec::new();
+    let mut obs: Vec<tpe::Obs> = Vec::new();
+
+    let warmup = (n_steps / tp.startup_frac.max(1)).max(1);
+    let freq = (n_steps.saturating_sub(warmup) / tp.density_reuse.max(1)).max(1);
+    let mut model: Option<tpe::TpeModel> = None;
+    let mut since_rebuild = 0usize;
+
+    let half = params.size * 0.5;
+    let in_box = |pos: &Vec3| -> bool {
+        (pos.x - params.center.x).abs() <= half.x
+            && (pos.y - params.center.y).abs() <= half.y
+            && (pos.z - params.center.z).abs() <= half.z
+    };
+
+    for p in 0..n_steps {
+        // 提案ベクトル: 前半ウォームアップは一様、後半は Parzen モデル（観測不足時は一様へフォールバック）。
+        let v = if p < warmup {
+            tpe::warmup_sample(&mut rng, &l_limit, &g_limit)
+        } else {
+            if model.is_none() || since_rebuild >= freq {
+                model = tpe::TpeModel::build(&obs, &tp, p, &l_limit, &g_limit);
+                since_rebuild = 0;
+            }
+            since_rebuild += 1;
+            match &model {
+                Some(m) => m.sample(&mut rng, &tp, &l_limit, &g_limit),
+                None => tpe::warmup_sample(&mut rng, &l_limit, &g_limit),
+            }
+        };
+
+        // 提案を配座へ写し BFGS 局所最適化。
+        let start = tpe::conf_from_vec(&reference, free_torsions, &v);
+        let res = minimize_free(start, &value, &value_grad, local_iters, free_dofs);
+        let res_pos = scratch_g.borrow().scored_pos.clone();
+        cluster_insert(&mut pool, res.conf.clone(), res.energy, res_pos, params.cluster_rmsd, pool_cap);
+
+        // ボックス内なら観測へ記録（Parzen モデルの更新元）。
+        if in_box(&res.conf.position) {
+            obs.push(tpe::Obs {
+                v: tpe::vec_from_conf(&reference, free_torsions, &res.conf),
+                score: res.energy,
+            });
         }
     }
 

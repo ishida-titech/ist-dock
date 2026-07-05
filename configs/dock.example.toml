@@ -16,7 +16,7 @@ seed = 42            # 乱数シード（決定論。run ごとに seed から�
 n_runs = 60          # 独立 run 数（探索の網羅性。多いほど安定だが線形に遅い）
 n_steps = 0          # 各 run の MC ステップ数。0 = サイズ/torsion 数から自動（モード別）
 scoring = "grid"     # "grid"（受容体を前計算グリッドで補間, 高速・推奨）/ "direct"（直接和）
-search = "standard"  # "standard"=ドリフト鎖 ILS（既定・高速）/ "vina"=Vina 忠実 MC（毎ステップ収束 BFGS）
+search = "standard"  # "standard"=ドリフト鎖 ILS（既定・高速）/ "vina"=Vina 忠実 MC（毎ステップ収束 BFGS）/ "tpe"=TPE
                      #  / "qvina2"=QuickVina2 相当の局所探索スキップ（opt-in 高速化）
 hunt_cap = 10.0      # 探索中の正エネルギー上限（Vina curl, 激突の暴走抑制）。1e9 で無効化。polish は常に無効
 # qvina_cos = 0.90   # search="qvina2" 時の勾配方向一致閾値（高=保守的/低=攻める）

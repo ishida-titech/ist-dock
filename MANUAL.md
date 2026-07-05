@@ -16,7 +16,7 @@ ISCT-Dock は、機械学習を使わず幾何・物理化学計算で行う高�
 | `pack`   | M4 | クラスタライブラリ（TOML マニフェスト）を memmap 用バイナリ `.bin` へ変換 | 動作 |
 
 - **決定論的**: 同一入力＋同一 `seed` で出力はビット一致（マルチスレッドでも）。
-- **探索モード**: `--search standard`（ドリフト鎖, 既定）/ `vina`（Vina 忠実 MC）/ `qvina2`。詳細は [DIFF.md](DIFF.md)。
+- **探索モード**: `--search standard`（ドリフト鎖, 既定）/ `vina`（Vina 忠実 MC）/ `qvina2` / `tpe`（TPE=Tree-structured Parzen Estimator, TPEvina 由来・opt-in）。詳細は [DIFF.md](DIFF.md)。
 - **性能（多様 74 標的, grid, 8 run）**: 成功率 **63%（RMSD<2Å）/ 平均 2.05s**。AutoDock Vina（64% / 7.6s）比
   **約 3.7× 高速・精度ほぼ同等**（[docs/results.202606191907.md](docs/results.202606191907.md)）。
 
@@ -106,7 +106,7 @@ Estimated Free Energy of Binding         : -7.45678 kcal/mol
 | `-c, --config` | TOML 設定（§4）。探索ボックス必須。 |
 | `-o, --out` | 出力ポーズ PDBQT（既定: `<ligand>_isct_out.pdbqt`）。 |
 | `--local-only` | 診断用。大域探索せず入力ポーズから局所最適化のみ。 |
-| `--search <standard\|vina\|qvina2>` | 探索アルゴリズムを上書き（config `search` より優先）。`standard`(=`drift`)=ドリフト鎖 / `vina`=Vina 忠実 MC（毎ステップ収束 BFGS）/ `qvina2`。 |
+| `--search <standard\|vina\|qvina2\|tpe>` | 探索アルゴリズムを上書き（config `search` より優先）。`standard`(=`drift`)=ドリフト鎖 / `vina`=Vina 忠実 MC（毎ステップ収束 BFGS）/ `qvina2` / `tpe`=TPE（Parzen サンプリング探索）。 |
 | `--qvina-cos <f64>` | `search="qvina2"` 時の勾配方向一致閾値（cos）を上書き。高い=保守的(速度↓精度↑)、低い=攻める(速度↑精度↓)。省略時は config `qvina_cos`（既定 0.90）。 |
 
 出力（stdout）例:
@@ -180,7 +180,7 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
 | `n_runs` | 60 | 独立 run 数（網羅性）。スクリーニングでは 8 程度で十分高精度。 |
 | `n_steps` | 0 | per-run の MC ステップ数。**0=自動**（可動原子数×torsion 上限で算出）。 |
 | `scoring` | `"direct"` | 探索の分子間評価。`"grid"`=Vina グリッド補間（高速・推奨）/ `"direct"`=直接原子間(SIMD)。 |
-| `search` | `"standard"` | 探索モード。`"standard"`=ドリフト鎖 ILS（既定・決定論・高速）/ `"vina"`=Vina 忠実 MC（毎ステップ収束 BFGS。アルゴリズム/実装差の切り分け用, [DIFF.md](DIFF.md)）/ `"qvina2"`=QuickVina2 相当の局所探索スキップ（opt-in 高速化）。`--search` で上書き可。 |
+| `search` | `"standard"` | 探索モード。`"standard"`=ドリフト鎖 ILS（既定・決定論・高速）/ `"vina"`=Vina 忠実 MC（毎ステップ収束 BFGS。アルゴリズム/実装差の切り分け用, [DIFF.md](DIFF.md)）/ `"qvina2"`=QuickVina2 相当の局所探索スキップ（opt-in 高速化）/ `"tpe"`=TPE（Tree-structured Parzen Estimator, TPEvina 由来。下記）。`--search` で上書き可。 |
 | `qvina_cos` | 0.90 | `qvina2` の勾配方向一致閾値（cos）。低いほどスキップ多＝速度↑精度↓。`--qvina-cos` で上書き可。 |
 | `hunt_cap` | 10.0 | 探索中の正エネルギー上限（Vina curl）。激突ポーズの暴走を抑え深い極小へ抜けやすくする。`1e9` で無効化。polish は常に無効（authentic）。 |
 | `chain_iters` | 30 | ILS 各ステップの局所最適化反復（浅く保ち基底間をドリフト）。 |
@@ -190,6 +190,18 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
 | `cluster_rmsd` | 2.0 | ポーズ RMSD クラスタリング閾値（Å）。 |
 | `early_stop_patience` | 0 | 早期停止（0=無効）。収束ベース停止はハード標的を退行させうるため opt-in。 |
 | `temp_init` / `temp_final` | 1.0 / 1.0 | Metropolis 温度（既定は固定温度。`init>final` で焼きなまし=opt-in）。 |
+
+#### `tpe` モード（TPE=Tree-structured Parzen Estimator）
+`--search tpe` / `search = "tpe"` で選択。TPEvina-2.0（PSOVina 派生）の TPE を移植したもの。各次元を
+独立 Gaussian Parzen 混合でモデル化し、良観測（lower）近傍から候補をサンプル→ BFGS 局所最適化→観測更新を
+繰り返す（前半はウォームアップの一様ランダム）。局所最適化・スコア・grid は他モードと共通機構を再利用。
+- **決定論**: seeded `ChaCha8Rng` で駆動し**同一 seed でビット一致**（原実装は `std::random_device` で非決定的
+  =作者の FIXME。本移植は決定的）。分布/浮動小数差のため原 TPEvina とは**ビット一致しない忠実再実装**。
+- **既定挙動**: TPEvina 既定ハイパーパラメータ（`sample_num=7` 等）を踏襲。この既定では greater 重みが
+  探索初期に 0 へ収束するため、実効的に**良ポーズ近傍の Parzen 探索（exploitation 主体）**になる（原実装通り）。
+- **ステップ予算**: `n_steps=0`（自動）で `auto_n_steps_tpe`（vina より多め＝モデル用ウォームアップ確保）。
+- ハイパーパラメータは現状コード内既定（TPEvina 準拠）で固定。config 露出は将来対応。品質は標的依存
+  （深い漏斗の標的で良好、探索性の要る標的では drift に劣ることがある）。ドリフト/vina との比較用途。
 
 ### `[screen]` パラメータ（`screen` のみ）
 

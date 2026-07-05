@@ -96,6 +96,15 @@
   GWOVina、10M 本番、isct-dock の native ランキングスコア改良（torsion 補正の露出）。
 
 ## 更新履歴
+- 2026-07-05: **TPE 探索モード追加**（`--search tpe` / `search="tpe"`, `docs/results.202607051022`）。TPEvina-2.0
+  （PSOVina 派生）の TPE（Tree-structured Parzen Estimator）を移植。新規 `crates/isct-dock/src/tpe.rs`
+  （per-dim Gaussian Parzen モデル・良観測近傍サンプリング・g/l 期待改善）＋ `single_run_tpe`（`single_run` と
+  同型, `dock_constrained` で分岐）。局所最適化=`minimize_free`(BFGS)・スコア/grid・**決定論(seeded ChaCha8Rng)**
+  を共通機構で再利用。原実装は `std::random_device` で非決定的（作者 FIXME）だが本移植は決定的＝同一 seed で
+  ビット一致（分布/FP 差のため原とはビット一致しない忠実再実装）。SearchKind/SearchMode/CLI/auto_n_steps_tpe を
+  配線、screen も同経路で対応。1iep 再ドッキング 1.178Å（drift 1.238/vina 1.242 と競合）。品質は標的依存
+  （深い漏斗で良好・探索性の要る標的で drift に劣る）。ハイパーパラメータは TPEvina 既定で固定（config 露出は将来）。
+  clippy 警告ゼロ・test 全 pass（TPE 単体 4 件）。
 - 2026-07-03〜04: **高速化の探索＋実測**（`docs/findings.202607030101`, 速度 A/B `docs/results.202607042210`,
   Astex 影響確認 `docs/results.202607042150`）。数値ビット不変のアロク削減を採用: Phase3 子 objective 脱アロク
   (T1-1)・`single_run` の lock_torsions/apply_mutation 脱アロク(T1-3)・**BFGS 逆ヘシアン更新の作業行列再利用**(T1-4,

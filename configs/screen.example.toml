@@ -16,7 +16,7 @@ seed = 42            # 乱数シード（決定論）
 n_runs = 8           # seed ドッキングの独立 run 数（screen はリガンド数が多いので dock より少なめが実用的）
 n_steps = 0          # 0 = サイズ/torsion 数から自動（モード別。--search vina なら vina ステップ数）
 scoring = "grid"     # "grid" 推奨（既定ボックスの Scorer をクラスタ間で共有・再利用）
-search = "standard"  # "standard"（既定）/ "vina" / "qvina2"。seed 探索に適用
+search = "standard"  # "standard"（既定）/ "vina" / "qvina2" / "tpe"（Parzen 探索）。seed 探索に適用
 hunt_cap = 10.0      # 探索中の正エネルギー上限（1e9 で無効化）
 
 [screen]

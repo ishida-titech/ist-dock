@@ -118,13 +118,14 @@ fn main() -> Result<()> {
     }
 }
 
-/// `--search` の値をパースする（standard|drift|vina|qvina2）。`drift` は `standard` の別名。
+/// `--search` の値をパースする（standard|drift|vina|qvina2|tpe）。`drift` は `standard` の別名。
 fn parse_search_mode(s: &str) -> Result<config::SearchMode, String> {
     match s.to_ascii_lowercase().as_str() {
         "standard" | "drift" => Ok(config::SearchMode::Standard),
         "qvina2" => Ok(config::SearchMode::Qvina2),
         "vina" => Ok(config::SearchMode::Vina),
-        other => Err(format!("unknown search mode '{other}' (standard|drift|vina|qvina2)")),
+        "tpe" => Ok(config::SearchMode::Tpe),
+        other => Err(format!("unknown search mode '{other}' (standard|drift|vina|qvina2|tpe)")),
     }
 }
 
@@ -134,6 +135,7 @@ fn search_kind(m: config::SearchMode) -> SearchKind {
         config::SearchMode::Standard => SearchKind::Drift,
         config::SearchMode::Qvina2 => SearchKind::Qvina2,
         config::SearchMode::Vina => SearchKind::Vina,
+        config::SearchMode::Tpe => SearchKind::Tpe,
     }
 }
 
@@ -165,6 +167,8 @@ fn build_search_params(
         kind: search_kind(mode),
         qvina_cos: qvina_cos_override.unwrap_or(run.qvina_cos),
         hunt_cap: run.hunt_cap,
+        // TPE ハイパーパラメータは既定（TPEvina 準拠）。config 露出は将来対応。
+        tpe: Default::default(),
     }
 }
 

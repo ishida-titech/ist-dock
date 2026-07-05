@@ -10,6 +10,7 @@ pub mod phases;
 pub mod qvina;
 pub mod screen;
 pub mod search;
+pub mod tpe;
 
 /// クレート共通のエラー型。
 #[derive(Debug, thiserror::Error)]

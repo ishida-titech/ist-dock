@@ -101,6 +101,8 @@ pub enum SearchMode {
     Standard,
     Qvina2,
     Vina,
+    /// TPE（Tree-structured Parzen Estimator, TPEvina 由来の Parzen サンプリング探索・opt-in）。
+    Tpe,
 }
 
 /// 実行パラメータ（既定値あり）。
