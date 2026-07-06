@@ -69,7 +69,13 @@ fn eval_value(
     };
     // polish（exact）は cap 無し＝authentic。探索は intra にも hunt_cap を適用（Vina の v[1] 相当）。
     let intra_cap = intra_cap(exact, cap);
-    inter_box + lig.intramolecular(&s.atoms, intra_cap)
+    // 探索（!exact）は分子内も LUT（exp 回避）、polish（exact）は厳密 exp で出力を厳密に保つ。
+    let intra = if exact {
+        lig.intramolecular(&s.atoms, intra_cap)
+    } else {
+        lig.intramolecular_fast(&s.atoms, intra_cap)
+    };
+    inter_box + intra
 }
 
 /// 値＋解析的勾配（全 DOF）。`exact=true` で厳密 f64 表面（polish 用）、false で探索バックエンド。
@@ -98,7 +104,12 @@ fn eval_value_grad(
         scorer.value_and_force(&s.atoms, &mut s.force, cap)
     };
     let intra_cap = intra_cap(exact, cap);
-    e += lig.intramolecular_value_grad(&s.atoms, &mut s.force, intra_cap);
+    // 探索（!exact）は LUT 版、polish（exact）は厳密版（出力の厳密性を保つ）。
+    e += if exact {
+        lig.intramolecular_value_grad(&s.atoms, &mut s.force, intra_cap)
+    } else {
+        lig.intramolecular_fast_value_grad(&s.atoms, &mut s.force, intra_cap)
+    };
     lig.dof_gradient_into(c, &s.pos, &s.world_axis, &s.world_pivot, &s.force, &mut s.grad);
     (e, s.grad.clone())
 }

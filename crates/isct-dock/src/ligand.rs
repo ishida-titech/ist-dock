@@ -8,6 +8,7 @@ use std::collections::HashSet;
 
 use isct_core::atom_types::XsType;
 use isct_core::geometry::{distance, Vec3};
+use isct_core::intra_lut;
 use isct_core::scoring::{curl, eval_pair, pair_energy_grad, ScoredAtom, CUTOFF};
 use isct_io::pdbqt::Molecule;
 use nalgebra::{Unit, UnitQuaternion};
@@ -211,6 +212,46 @@ impl LigandModel {
                 force[a] -= f;
                 force[b] += f;
             }
+        }
+        e
+    }
+
+    /// 分子内エネルギー（**探索用・LUT 版**）。厳密 exp の代わりに事前計算テーブル（`intra_lut`）を r² で引く。
+    /// exp/sqrt/div を回さず高速。curl は据置。polish/最終スコアは厳密版 `intramolecular` を使うこと。
+    pub fn intramolecular_fast(&self, atoms: &[ScoredAtom], cap: f64) -> f64 {
+        let t = intra_lut::table();
+        let mut e = 0.0;
+        for &(a, b) in &self.intra_pairs {
+            let r2 = (atoms[a].pos - atoms[b].pos).norm_squared();
+            let pe = t.value(atoms[a].xs, atoms[b].xs, r2); // r²≥cutoff² は 0
+            e += curl(pe, cap).0;
+        }
+        e
+    }
+
+    /// 分子内の値と力（**探索用・LUT 版**）。`intramolecular_value_grad` の LUT 版。
+    /// `d(value)/d(r²)` を引き、力は `2·dvalue_dr2·diff`（sqrt/div 不要, curl スケール込み）。
+    pub fn intramolecular_fast_value_grad(
+        &self,
+        atoms: &[ScoredAtom],
+        force: &mut [Vec3],
+        cap: f64,
+    ) -> f64 {
+        let t = intra_lut::table();
+        let mut e = 0.0;
+        for &(a, b) in &self.intra_pairs {
+            let diff = atoms[a].pos - atoms[b].pos;
+            let r2 = diff.norm_squared();
+            let (v, dvdr2) = t.value_grad_r2(atoms[a].xs, atoms[b].xs, r2);
+            if v == 0.0 && dvdr2 == 0.0 {
+                continue; // カットオフ外
+            }
+            let (cv, scale) = curl(v, cap);
+            e += cv;
+            // dE/dpos_a = dvdr2·d(r²)/dpos_a = dvdr2·2·diff。force=-dE/dpos。curl スケール込み。
+            let f = diff * (2.0 * dvdr2 * scale);
+            force[a] -= f;
+            force[b] += f;
         }
         e
     }

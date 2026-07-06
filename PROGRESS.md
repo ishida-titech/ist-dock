@@ -96,6 +96,16 @@
   GWOVina、10M 本番、isct-dock の native ランキングスコア改良（torsion 補正の露出）。
 
 ## 更新履歴
+- 2026-07-06: **分子内ポテンシャルの LUT スプライン化で探索を高速化**（`docs/results.202607061402`）。
+  per-eval 律速だった分子内ペアの exp 実計算（gauss1/gauss2）を、AutoDock Vina `precalculate` 相当の
+  事前計算テーブル（新規 `crates/isct-core/src/intra_lut.rs`: XS 型対×r² → (値, d値/d(r²)) 線形補間、
+  `OnceLock` で 1 度構築・受容体/リガンド非依存・全スレッド共有、FACTOR=32/~9.5MB）に置換。**探索評価
+  （`exact=false`）のみ LUT**、polish/最終スコア（`exact=true`）は厳密 exp を維持＝`score` はビット不変で
+  `vina --score_only` 一致ゲート不変。r² 添字で sqrt 回避・力は `2·dvdr2·diff` で `/r` 回避。ligand.rs に
+  `intramolecular_fast`/`intramolecular_fast_value_grad`、search.rs の eval で `!exact` 分岐。検証: **drift
+  1.41×（74標的 152→108s）・vina モード 1.70×（1kzk 90.6→53.3s）**、精度中立（drift 成功率 60.8→63.5%・
+  中央 1.35→1.32Å＝探索摂動ノイズ範囲）、決定論維持、clippy 警告ゼロ・test 全 pass（intra_lut 単体3件）。
+  誤差 0.0012 kcal/pair（探索専用近似）。**未コミット**。
 - 2026-07-06: **vina モードの既定を AutoDock Vina 相当に較正**（`docs/results.202606182210` の比較で
   vina モードが不当に低評価だった件への対応）。従来 `auto_n_steps_vina = eff.max(50)`（過少）＋
   per-step BFGS 上限 100（収束寄り）だったのを、**AutoDock Vina 1.x の探索予算に一致**させた:

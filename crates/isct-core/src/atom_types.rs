@@ -181,6 +181,27 @@ impl XsType {
     /// XS 型の総数（グリッドの「型→マップ」配列サイズ）。`index()` は 0..COUNT を返す。
     pub const COUNT: usize = 17;
 
+    /// 全 XS 型（`index()` 昇順）。テーブル構築などで型を走査するのに使う。
+    pub const ALL: [XsType; Self::COUNT] = [
+        XsType::CarbonH,
+        XsType::CarbonP,
+        XsType::NitrogenP,
+        XsType::NitrogenD,
+        XsType::NitrogenA,
+        XsType::NitrogenDA,
+        XsType::OxygenP,
+        XsType::OxygenD,
+        XsType::OxygenA,
+        XsType::OxygenDA,
+        XsType::Sulfur,
+        XsType::Phosphorus,
+        XsType::Fluorine,
+        XsType::Chlorine,
+        XsType::Bromine,
+        XsType::Iodine,
+        XsType::MetalD,
+    ];
+
     /// 0..COUNT の連続インデックス（グリッドマップの添字）。
     pub fn index(self) -> usize {
         self as usize

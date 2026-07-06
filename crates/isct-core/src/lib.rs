@@ -7,6 +7,7 @@ pub mod atom_types;
 pub mod delta_energy;
 pub mod geometry;
 pub mod grid;
+pub mod intra_lut;
 pub mod scoring;
 pub mod scoring_simd;
 
