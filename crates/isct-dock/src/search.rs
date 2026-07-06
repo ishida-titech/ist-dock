@@ -195,11 +195,19 @@ pub fn auto_n_steps(n_scored_atoms: usize, n_torsions: usize) -> usize {
     (30 * eff).max(300)
 }
 
-/// vina-mode（毎ステップ収束 BFGS）の per-run ステップ数。Vina は「少数・高コスト」ステップなので
-/// drift の `auto_n_steps` より大幅に少ない。較正用に `n_steps` を明示すれば上書きされる。
+/// vina-mode（毎ステップ収束 BFGS）の per-run ステップ数。**AutoDock Vina 1.x の per-run MC
+/// ステップ数ヒューリスティック（`main.cpp`）に一致**させる（vina-mode を AutoDock Vina 相当の
+/// 探索予算にする）:
+///   `dof = num_torsions + 6`（単一リガンド: 3 平行移動 + 3 回転 + torsion; Vina `conf_size::num_degrees_of_freedom`）
+///   `heuristic = num_movable_atoms + 10 * dof`
+///   `num_steps = 70*3*(50 + heuristic)/2 = 105*(50 + heuristic)`
+/// `num_movable_atoms` は重原子数（`n_scored_atoms`）で近似（Vina は極性 H も数えるが本エンジンは
+/// 重原子スコア）。exhaustiveness は `n_runs` に対応（Vina 既定 8 = 既定 config の n_runs=8）。
+/// 較正用に `n_steps` を明示すれば上書きされる。
 pub fn auto_n_steps_vina(n_scored_atoms: usize, n_torsions: usize) -> usize {
-    let eff = n_scored_atoms.min(8 + 5 * n_torsions);
-    eff.max(50)
+    let dof = n_torsions + 6;
+    let heuristic = n_scored_atoms + 10 * dof;
+    105 * (50 + heuristic)
 }
 
 /// TPE モードの per-run 提案数。各提案が BFGS 局所最適化を伴う（vina 同様「少数・高コスト」）が、
@@ -219,10 +227,6 @@ pub fn auto_n_steps_for(kind: SearchKind, n_scored_atoms: usize, n_torsions: usi
         _ => auto_n_steps(n_scored_atoms, n_torsions),
     }
 }
-
-/// vina-mode の各ステップで使う BFGS 反復上限。`minimize_free` は `grad<1e-4` で早期収束するため、
-/// 大きめの上限で「収束まで BFGS」を実現する（Vina の quasi-Newton 相当）。
-const VINA_BFGS_MAX: usize = 100;
 
 /// vina-mode の Metropolis 温度（AutoDock Vina の `monte_carlo::temperature`）。
 const VINA_TEMP: f64 = 1.2;
@@ -426,9 +430,16 @@ fn single_run(
     free_dofs: &[usize],
     seed: u64,
 ) -> (Vec<(Conformation, f64)>, u64) {
-    // 各ステップの局所最適化反復: drift/qvina2 は浅い `chain_iters`、vina は収束まで（VINA_BFGS_MAX）。
+    // 各ステップの局所最適化反復: drift/qvina2 は浅い `chain_iters`、vina は **AutoDock Vina の
+    // per-step 局所探索上限**に一致させる（`max_steps = ssd_par.evals = (25 + num_movable_atoms)/3`,
+    // main.cpp）。num_movable_atoms は重原子数で近似。Vina は収束させず浅くキャップするので、
+    // これで per-step コストも Vina 相当になる（多ステップ×浅局所＝Vina の探索形）。
     let is_vina = params.kind == SearchKind::Vina;
-    let step_iters = if is_vina { VINA_BFGS_MAX } else { params.chain_iters };
+    let step_iters = if is_vina {
+        ((25 + lig.n_scored()) / 3).max(1)
+    } else {
+        params.chain_iters
+    };
     // 変異スタイル。vina-mode は配向を gyration でスケールするため参照配座から 1 度だけ計算（Vina 流）。
     let mut_style = if is_vina {
         MutationStyle::Vina { gyration: gyration_radius(&lig.reference_scored_positions()) }

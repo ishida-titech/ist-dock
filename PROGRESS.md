@@ -96,6 +96,16 @@
   GWOVina、10M 本番、isct-dock の native ランキングスコア改良（torsion 補正の露出）。
 
 ## 更新履歴
+- 2026-07-06: **vina モードの既定を AutoDock Vina 相当に較正**（`docs/results.202606182210` の比較で
+  vina モードが不当に低評価だった件への対応）。従来 `auto_n_steps_vina = eff.max(50)`（過少）＋
+  per-step BFGS 上限 100（収束寄り）だったのを、**AutoDock Vina 1.x の探索予算に一致**させた:
+  per-run ステップ数 `105*(50 + num_movable_atoms + 10*(num_torsions+6))`（main.cpp のヒューリスティック）、
+  per-step 局所探索上限 `(25 + num_movable_atoms)/3`（`ssd_par.evals`）。num_movable_atoms は重原子数で近似、
+  exhaustiveness は n_runs に対応。温度1.2・変異振幅2.0・gyration 配向変異は既存。検証: 1kzk rmsd 0.825Å
+  （AutoDock Vina 0.82 と一致, 旧既定は崩壊）・1gkc 0.795（旧 2.05）・1lrh 0.634。**ただし isct の per-eval
+  分子内 exp が律速で real Vina より遅い**（1kzk 90s vs Vina 23s）＝探索は忠実だが速度は別（vina モードの
+  時間で Vina 速度を代表させない。速度は real Vina 値を使う: [[isct-dock-vina-mode-vs-autodock-vina]]）。
+  clippy 警告ゼロ・test 全 pass。**未コミット**。
 - 2026-07-05: **TPE の「Parzen モデル未使用」バグ発見・修正 ＋ 高速化（①+ei実効1）**
   （`docs/findings.202607051047`）。高速化検討中に before/after ビット一致に気付き計装した結果、**aa38048 の TPE は
   観測が一切記録されず Parzen モデルが構築されていなかった**（実体はランダム再スタート+BFGS）。根本原因は位置
