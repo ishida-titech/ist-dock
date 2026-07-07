@@ -242,7 +242,8 @@ fn process_cluster(
 
     let outcome = ClusterOutcome {
         cluster_id: cluster.id.clone(),
-        seed_energy: best.energy,
+        seed_energy: best.energy, // inter（=affinity 基準）
+
         pruned: seed_res.pruned,
         n_children: cluster.children.len(),
     };

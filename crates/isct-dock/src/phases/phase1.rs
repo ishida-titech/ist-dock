@@ -15,15 +15,15 @@ use crate::search::{dock_constrained, SearchParams};
 /// seed の 1 ポーズ（モード）。
 pub struct SeedPose {
     pub conf: Conformation,
-    /// 目的関数値（分子間＋分子内＋ボックス罰則）。
+    /// 順位キー = **exact intermolecular（= Vina affinity 基準, kcal/mol）**（DockResult.energy 由来）。
     pub energy: f64,
 }
 
 /// seed ドッキングの結果と棄却判定。
 pub struct SeedResult {
-    /// RMSD クラスタリングで区別される上位ポーズ群（エネルギー昇順, [0]=最良, 最大 `seed_poses` 個）。
+    /// RMSD クラスタリングで区別される上位ポーズ群（inter 昇順=affinity 良い順, [0]=最良, 最大 `seed_poses` 個）。
     pub modes: Vec<SeedPose>,
-    /// 一括棄却対象か（ベスト `energy > prune_threshold`）。
+    /// 一括棄却対象か（ベスト inter `energy > prune_threshold`＝分子間フィットが閾値より悪い）。
     pub pruned: bool,
 }
 

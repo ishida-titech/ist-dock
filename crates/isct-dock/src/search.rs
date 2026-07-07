@@ -33,6 +33,10 @@ struct EvalScratch {
     grad: Vec<f64>,
     /// 直近に評価した conformation の scored 原子 world 座標（RMSD クラスタリングの再計算回避用）。
     scored_pos: Vec<Vec3>,
+    /// 直近に評価した conformation の**分子間項（inter, box 込み）**。ポーズの保持・順位付けを
+    /// Vina 流 affinity（inter 基準）で行うためのランクキー。箱内では box=0 なので純 inter に一致。
+    /// MC 受理・BFGS は full objective（inter+intra）を使い続ける（力学は不変）。
+    inter: f64,
     /// このバッファで行ったエネルギー評価回数（value/value_grad 呼び出し数）。探索アルゴリズムの
     /// 仕事量を計測し drift/vina モードを比較するための診断カウンタ。
     evals: u64,
@@ -67,6 +71,7 @@ fn eval_value(
     } else {
         scorer.search_score(&s.atoms, cap)
     };
+    s.inter = inter_box; // 順位付け用に分子間項を控える（箱内 box=0）。
     // polish（exact）は cap 無し＝authentic。探索は intra にも hunt_cap を適用（Vina の v[1] 相当）。
     let intra_cap = intra_cap(exact, cap);
     // 探索（!exact）は分子内も LUT（exp 回避）、polish（exact）は厳密 exp で出力を厳密に保つ。
@@ -103,6 +108,7 @@ fn eval_value_grad(
     } else {
         scorer.value_and_force(&s.atoms, &mut s.force, cap)
     };
+    s.inter = e; // 順位付け用に分子間項を控える（intra 加算前。箱内 box=0）。
     let intra_cap = intra_cap(exact, cap);
     // 探索（!exact）は LUT 版、polish（exact）は厳密版（出力の厳密性を保つ）。
     e += if exact {
@@ -193,6 +199,8 @@ impl Default for SearchParams {
 /// ドッキング結果。
 pub struct DockResult {
     pub conf: Conformation,
+    /// 順位キー = **exact intermolecular energy（= Vina affinity 基準, kcal/mol）**。モードは昇順（[0]=最良）。
+    /// full objective(inter+intra) ではない（大リガンドで intra 歪みが affinity 良好な near-native を捨てないため）。
     pub energy: f64,
 }
 
@@ -349,14 +357,15 @@ pub fn dock_constrained(
         .collect();
 
     // 全 run の代表を集約し、大域 RMSD クラスタリングで上位 polish_modes（≥ n_modes）モードへ絞る。
-    // 出力数(n_modes)より広く残すことで、粗極小の near-native 代表を精密化の候補として取りこぼさない。
+    // 代表のキーは inter（=affinity 基準）＝affinity の良い near-native を精密化候補へ確実に残す。
     let mut total_evals: u64 = per_run.iter().map(|(_, e)| e).sum();
     let all: Vec<(Conformation, f64)> = per_run.into_iter().flat_map(|(r, _)| r).collect();
     let polish_cap = params.polish_modes.max(params.n_modes);
     let reps = cluster_poses(lig, all, params.cluster_rmsd, polish_cap);
 
-    // 各代表を **厳密 f64 表面**で厚く精密化（grid/f32 の平滑化ズレを補正）。直線探索値は grid（探索と
-    // 同一表面）、勾配は厳密 f64。polish ループ専用の再利用バッファを 1 つ確保。
+    // 各代表を **厳密 f64 表面**で厚く精密化（grid/f32 の平滑化ズレを補正）。**最適化目標は full objective
+    // (inter+intra)**（ポーズを物理的に妥当に保つ, Vina と同一）。ただし精密化後の**順位付けは exact inter
+    // (=Vina affinity 基準)** で行う: intra 歪みの大きい near-native を低歪み decoy に負けて捨てないため。
     let polish_scratch = RefCell::new(EvalScratch::default());
     // polish は厳密 f64・cap 無し（authentic）。
     let value = |c: &Conformation| eval_value(lig, scorer, &mut polish_scratch.borrow_mut(), c, true, f64::INFINITY);
@@ -366,22 +375,26 @@ pub fn dock_constrained(
         .into_iter()
         .map(|(conf, _)| {
             let r = minimize_free(conf, &value, &exact_value_grad, params.polish_iters, &free_dofs);
-            (r.conf, r.energy)
+            // 順位キー = 精密化後ポーズの exact intermolecular（cmd_dock 報告 affinity と同一定義, 少数で安価）。
+            let inter = scorer.intermolecular(&lig.scored_atoms(&r.conf));
+            (r.conf, inter)
         })
         .collect();
     total_evals += polish_scratch.borrow().evals;
 
-    // 精密化でポーズが寄りうるので再クラスタ・再ソート → 上位モード（昇順, [0]=最良）。
+    // 精密化でポーズが寄りうるので再クラスタ・再ソート → 上位モード（inter 昇順, [0]=affinity 最良）。
+    // DockResult.energy は順位キー＝inter（分子間項）。cmd_dock は per-mode で affinity/intra を別途再計算する。
     let modes = cluster_poses(lig, polished, params.cluster_rmsd, params.n_modes)
         .into_iter()
-        .map(|(conf, energy)| DockResult { conf, energy })
+        .map(|(conf, inter)| DockResult { conf, energy: inter })
         .collect();
     (modes, total_evals)
 }
 
-/// エネルギー昇順の greedy RMSD クラスタリング。候補をエネルギー昇順で処理し、既存代表と
-/// RMSD<threshold なら同一モード（低エネルギー側＝先に来る方が代表）、無ければ新代表。
-/// 代表＝区別される最低エネルギーポーズ群（最大 cap 個）。決定論的（安定ソート＋入力順）。
+/// ランクキー昇順の greedy RMSD クラスタリング。候補をキー昇順で処理し、既存代表と RMSD<threshold なら
+/// 同一モード（キーの低い方＝先に来る方が代表）、無ければ新代表。代表＝区別される最低キーのポーズ群
+/// （最大 cap 個）。決定論的（安定ソート＋入力順）。**キーは inter（=Vina affinity 基準）**（呼び出し側が
+/// そう渡す）＝affinity の良い near-native を低歪み decoy に負けて捨てない。
 fn cluster_poses(
     lig: &LigandModel,
     mut cands: Vec<(Conformation, f64)>,
@@ -403,27 +416,29 @@ fn cluster_poses(
     reps.into_iter().map(|(c, e, _)| (c, e)).collect()
 }
 
-/// 局所最小を per-run プールへクラスタ挿入（近傍代表より低ければ置換、無ければ追加、cap 超過で最悪退避）。
-/// `pos` は `conf` の scored 原子 world 座標（呼び出し側が評価時に算出済みのものを渡す＝再計算回避）。
+/// 局所最小を per-run プールへクラスタ挿入（近傍代表より `rank` が低ければ置換、無ければ追加、cap 超過で
+/// 最悪退避）。`rank` は **inter（分子間項＝Vina affinity 基準）**＝保持キー（objective ではない。affinity の
+/// 良い near-native を低歪み decoy に負けて捨てないため）。`pos` は `conf` の scored 原子 world 座標
+/// （呼び出し側が評価時に算出済みのものを渡す＝再計算回避）。
 fn cluster_insert(
     pool: &mut Vec<(Conformation, f64, Vec<Vec3>)>,
     conf: Conformation,
-    energy: f64,
+    rank: f64,
     pos: Vec<Vec3>,
     threshold: f64,
     cap: usize,
 ) {
     for rep in pool.iter_mut() {
         if rmsd(&pos, &rep.2) < threshold {
-            if energy < rep.1 {
-                *rep = (conf, energy, pos);
+            if rank < rep.1 {
+                *rep = (conf, rank, pos);
             }
             return;
         }
     }
-    pool.push((conf, energy, pos));
+    pool.push((conf, rank, pos));
     if pool.len() > cap {
-        // 最大エネルギーの代表を退避（タイは最初）。
+        // 最大 rank（=最悪 affinity）の代表を退避（タイは最初）。
         let worst = (0..pool.len())
             .max_by(|&i, &j| pool[i].1.partial_cmp(&pool[j].1).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap();
@@ -487,9 +502,13 @@ fn single_run(
     // 訪れた局所最小をクラスタ保持（受理/非受理を問わず）＝探索の幅を保持。出力数(n_modes)より広く
     // 残し、ドリフトで稀に訪れた near-native モードを大域 polish 候補へ確実に渡す。
     let pool_cap = params.polish_modes.max(params.n_modes);
+    // pool の第2要素は **inter（分子間項＝Vina affinity 基準）**＝保持・順位のキー。MC 力学とは分離。
     let mut pool: Vec<(Conformation, f64, Vec<Vec3>)> = Vec::new();
-    let cur_pos = scratch_g.borrow().scored_pos.clone();
-    cluster_insert(&mut pool, cur.conf.clone(), cur.energy, cur_pos, params.cluster_rmsd, pool_cap);
+    let (cur_pos, cur_inter) = {
+        let g = scratch_g.borrow();
+        (g.scored_pos.clone(), g.inter)
+    };
+    cluster_insert(&mut pool, cur.conf.clone(), cur_inter, cur_pos, params.cluster_rmsd, pool_cap);
 
     // 早期停止（任意・既定 OFF）: best エネルギーが patience ステップ改善しなければ打ち切る。
     // 注意: ドリフト鎖のハード標的（1iep/1y6b 等）は **decoy 基で best が長く停滞してから終盤に native へ
@@ -522,8 +541,11 @@ fn single_run(
         }
 
         let res = minimize_free(trial, &value, &value_grad, step_iters, free_dofs);
-        let res_pos = scratch_g.borrow().scored_pos.clone();
-        cluster_insert(&mut pool, res.conf.clone(), res.energy, res_pos, params.cluster_rmsd, pool_cap);
+        let (res_pos, res_inter) = {
+            let g = scratch_g.borrow();
+            (g.scored_pos.clone(), g.inter)
+        };
+        cluster_insert(&mut pool, res.conf.clone(), res_inter, res_pos, params.cluster_rmsd, pool_cap);
         if patience > 0 {
             if res.energy < best_e - 1e-3 {
                 best_e = res.energy;
@@ -629,8 +651,12 @@ fn single_run_tpe(
         // 提案を配座へ写し BFGS 局所最適化。
         let start = tpe::conf_from_vec(&reference, free_torsions, root_pivot, &v);
         let res = minimize_free(start, &value, &value_grad, local_iters, free_dofs);
-        let res_pos = scratch_g.borrow().scored_pos.clone();
-        cluster_insert(&mut pool, res.conf.clone(), res.energy, res_pos, params.cluster_rmsd, pool_cap);
+        // pool 保持は inter キー、TPE 観測（下）は objective（探索地形の学習元）＝分離。
+        let (res_pos, res_inter) = {
+            let g = scratch_g.borrow();
+            (g.scored_pos.clone(), g.inter)
+        };
+        cluster_insert(&mut pool, res.conf.clone(), res_inter, res_pos, params.cluster_rmsd, pool_cap);
 
         // ボックス内なら観測へ記録（Parzen モデルの更新元）。
         if in_box(&res.conf) {
@@ -641,6 +667,7 @@ fn single_run_tpe(
         }
     }
 
+    // 代表は (conf, inter) で返す。inter 昇順（=affinity 良い順）。
     let mut reps: Vec<(Conformation, f64)> = pool.into_iter().map(|(c, e, _)| (c, e)).collect();
     reps.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     let evals = scratch_v.borrow().evals + scratch_g.borrow().evals;

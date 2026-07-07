@@ -398,7 +398,8 @@ fn cmd_dock(
     println!("affinity (Vina, kcal/mol)  : {affinity:.4}");
     println!("intermolecular energy      : {e_inter:.4} kcal/mol");
     println!("intramolecular energy      : {e_intra:.4} kcal/mol");
-    println!("total (objective)          : {:.4} kcal/mol", best.energy);
+    // モードの順位キーは inter（=affinity 基準）。目的関数値は inter+intra で別途表示（箱内 box=0）。
+    println!("total (objective)          : {:.4} kcal/mol", e_inter + e_intra);
     println!("RMSD vs input(crystal) pose: {rmsd:.3} Å");
     println!("search mode                : {:?}", params.kind);
     println!(
