@@ -110,8 +110,11 @@ pub enum SearchMode {
 pub struct RunOpts {
     #[serde(default = "default_seed")]
     pub seed: u64,
-    #[serde(default = "default_n_runs")]
-    pub n_runs: usize,
+    /// 独立 run 数（探索の網羅性）。**未指定なら探索モード別の既定**（`resolve_n_runs`）:
+    /// vina は n_runs=exhaustiveness に対応するため既定 8（Vina 既定）、それ以外（standard/qvina2/tpe）は
+    /// 軽い per-run を best-of-N で回すため既定 60。明示指定すればモードに依らずその値を使う。
+    #[serde(default)]
+    pub n_runs: Option<usize>,
     #[serde(default = "default_n_steps")]
     pub n_steps: usize,
     /// 探索の分子間評価方式（既定: direct）。
@@ -156,7 +159,7 @@ impl Default for RunOpts {
     fn default() -> Self {
         RunOpts {
             seed: default_seed(),
-            n_runs: default_n_runs(),
+            n_runs: None,
             n_steps: default_n_steps(),
             scoring: Scoring::default(),
             search: SearchMode::default(),
@@ -216,9 +219,27 @@ fn default_early_stop_patience() -> usize {
 fn default_seed() -> u64 {
     42
 }
-fn default_n_runs() -> usize {
-    // best-of-N が複数シードで安定して RMSD<2Å になる水準（benzamidine 検証）。
-    60
+/// vina-mode（`SearchMode::Vina`）の未指定時 n_runs 既定。AutoDock Vina の exhaustiveness に対応し、
+/// per-run が重いので Vina 既定の 8 に合わせる（`n_runs=60` のままだと Vina の 7.5 倍遅い）。
+const DEFAULT_N_RUNS_VINA: usize = 8;
+/// vina 以外（standard/qvina2/tpe）の未指定時 n_runs 既定。軽い per-run を best-of-N で回して精度を出す
+/// 水準（benzamidine 検証で複数シードが安定して RMSD<2Å）。
+const DEFAULT_N_RUNS_OTHER: usize = 60;
+
+/// 探索モード別の n_runs 既定（config で未指定のとき使う）。
+pub fn default_n_runs_for(mode: SearchMode) -> usize {
+    match mode {
+        SearchMode::Vina => DEFAULT_N_RUNS_VINA,
+        _ => DEFAULT_N_RUNS_OTHER,
+    }
+}
+
+impl RunOpts {
+    /// 実効 n_runs を解決する。config で明示されていればその値、未指定ならモード別既定
+    /// （[`default_n_runs_for`]）。`mode` は CLI `--search` 上書き後の実効モードを渡すこと。
+    pub fn resolve_n_runs(&self, mode: SearchMode) -> usize {
+        self.n_runs.unwrap_or_else(|| default_n_runs_for(mode))
+    }
 }
 fn default_n_steps() -> usize {
     // 0 = 可動原子数から自動スケール（Vina 流。search::auto_n_steps）。
@@ -253,7 +274,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cfg.run.seed, 7);
-        assert_eq!(cfg.run.n_runs, 5);
+        assert_eq!(cfg.run.n_runs, Some(5));
+        assert_eq!(cfg.run.resolve_n_runs(SearchMode::Standard), 5); // 明示値はモードに依らず優先
         assert_eq!(cfg.receptor.unwrap().pdbqt, "r.pdbqt");
+    }
+
+    #[test]
+    fn n_runs_defaults_per_mode_when_unset() {
+        // n_runs 未指定 → モード別既定（vina=8, それ以外=60）。
+        let cfg: RunConfig =
+            toml::from_str("[box]\ncenter=[0,0,0]\nsize=[20,20,20]\n").unwrap();
+        assert_eq!(cfg.run.n_runs, None);
+        assert_eq!(cfg.run.resolve_n_runs(SearchMode::Vina), 8);
+        assert_eq!(cfg.run.resolve_n_runs(SearchMode::Standard), 60);
+        assert_eq!(cfg.run.resolve_n_runs(SearchMode::Tpe), 60);
     }
 }

@@ -214,7 +214,8 @@ pub fn auto_n_steps(n_scored_atoms: usize, n_torsions: usize) -> usize {
 ///   `heuristic = num_movable_atoms + 10 * dof`
 ///   `num_steps = 70*3*(50 + heuristic)/2 = 105*(50 + heuristic)`
 /// `num_movable_atoms` は重原子数（`n_scored_atoms`）で近似（Vina は極性 H も数えるが本エンジンは
-/// 重原子スコア）。exhaustiveness は `n_runs` に対応（Vina 既定 8 = 既定 config の n_runs=8）。
+/// 重原子スコア）。exhaustiveness は `n_runs` に対応（Vina 既定 8。vina-mode は n_runs 未指定時の
+/// 既定を 8 にしてある＝`config::default_n_runs_for(Vina)`）。
 /// 較正用に `n_steps` を明示すれば上書きされる。
 pub fn auto_n_steps_vina(n_scored_atoms: usize, n_torsions: usize) -> usize {
     let dof = n_torsions + 6;

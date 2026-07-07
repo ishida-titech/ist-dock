@@ -13,7 +13,10 @@ size = [22.5, 22.5, 22.5]
 
 [run]
 seed = 42            # 乱数シード（決定論。run ごとに seed から決定的に分岐）
-n_runs = 60          # 独立 run 数（探索の網羅性。多いほど安定だが線形に遅い）
+# n_runs = 60        # 独立 run 数（探索の網羅性。多いほど安定だが線形に遅い）。
+                     # 未指定なら探索モード別の既定: standard/qvina2/tpe=60 / vina=8。
+                     # ★ search="vina" では n_runs = AutoDock Vina の exhaustiveness に対応（Vina 既定=8）。
+                     #    vina は 1 run が重いので既定を 8 にしてある。明示指定すればモードに依らずその値を使う。
 n_steps = 0          # 各 run の MC ステップ数。0 = サイズ/torsion 数から自動（モード別）
 scoring = "grid"     # "grid"（受容体を前計算グリッドで補間, 高速・推奨）/ "direct"（直接和）
 search = "standard"  # "standard"=ドリフト鎖 ILS（既定・高速）/ "vina"=Vina 忠実 MC（毎ステップ収束 BFGS）/ "tpe"=TPE

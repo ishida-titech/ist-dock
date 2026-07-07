@@ -153,7 +153,8 @@ fn build_search_params(
         center,
         size,
         seed: run.seed,
-        n_runs: run.n_runs,
+        // n_runs 未指定時はモード別既定（vina=8＝exhaustiveness 相当 / それ以外=60）。
+        n_runs: run.resolve_n_runs(mode),
         n_steps: run.n_steps,
         temp_init: run.temp_init,
         temp_final: run.temp_final,
@@ -169,6 +170,22 @@ fn build_search_params(
         hunt_cap: run.hunt_cap,
         // TPE ハイパーパラメータは既定（TPEvina 準拠）。config 露出は将来対応。
         tpe: Default::default(),
+    }
+}
+
+/// vina-mode（`--search vina`）の `n_runs` は AutoDock Vina の **exhaustiveness に対応**する量
+/// （独立 MC run 本数）。per-run ステップ数は既に Vina のヒューリスティックに一致させてあるため、
+/// n_runs を大きくすると Vina の n_runs/8 倍のコストになる。未指定なら既定 8（=exhaustiveness, Vina 既定）
+/// だが、**config で明示的に大きな n_runs を指定した**場合は Vina(exh=8) の n_runs/8 倍遅くなるため
+/// stderr で警告する（精度は run 本数で頭打ち＝別要因）。stdout・出力・決定論には一切影響しない。
+fn warn_vina_exhaustiveness(kind: SearchKind, n_runs: usize) {
+    const VINA_DEFAULT_EXHAUSTIVENESS: usize = 8;
+    if kind == SearchKind::Vina && n_runs > 2 * VINA_DEFAULT_EXHAUSTIVENESS {
+        eprintln!(
+            "warning: vina-mode は n_runs を exhaustiveness として使います（AutoDock Vina 既定=8）。\
+             n_runs={n_runs} は Vina(exh=8) の約 {:.1}倍のコストです。公平な比較には n_runs=8 を推奨。",
+            n_runs as f64 / VINA_DEFAULT_EXHAUSTIVENESS as f64,
+        );
     }
 }
 
@@ -235,6 +252,7 @@ fn cmd_screen(
         seed_poses: cfg.screen.seed_poses,
         keep_poses: poses_out.is_some(), // ポーズ出力要求時のみ座標を保持
     };
+    warn_vina_exhaustiveness(params.search.kind, params.search.n_runs);
 
     let is_binary = library_path.extension().is_some_and(|e| e == "bin");
     eprintln!(
@@ -318,6 +336,7 @@ fn cmd_dock(
     };
 
     let params = build_search_params(&cfg.run, center, size, mode, qvina_cos, use_grid);
+    warn_vina_exhaustiveness(params.kind, params.n_runs);
 
     let eff_steps = if params.n_steps == 0 {
         auto_n_steps_for(params.kind, lig.n_scored(), lig.n_torsions())
