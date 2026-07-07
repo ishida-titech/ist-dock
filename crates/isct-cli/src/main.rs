@@ -55,6 +55,9 @@ enum Command {
         /// 探索アルゴリズムを上書き（standard=ドリフト鎖 / vina=Vina 忠実 MC / qvina2）。省略時は config の search。
         #[arg(long, value_parser = parse_search_mode)]
         search: Option<config::SearchMode>,
+        /// 乱数シードを上書き（省略時は config の seed）。ベンチマークの seed 振りに使う。
+        #[arg(long)]
+        seed: Option<u64>,
     },
     /// クラスタライブラリをスクリーニングする（M3）。
     Screen {
@@ -103,7 +106,8 @@ fn main() -> Result<()> {
             local_only,
             qvina_cos,
             search,
-        } => cmd_dock(&receptor, &ligand, &config, out.as_deref(), local_only, qvina_cos, search),
+            seed,
+        } => cmd_dock(&receptor, &ligand, &config, out.as_deref(), local_only, qvina_cos, search, seed),
         Command::Screen {
             receptor,
             library,
@@ -311,14 +315,18 @@ fn cmd_dock(
     local_only: bool,
     qvina_cos: Option<f64>,
     search: Option<config::SearchMode>,
+    seed: Option<u64>,
 ) -> Result<()> {
     let rec = pdbqt::parse_file(receptor)
         .with_context(|| format!("failed to parse receptor: {}", receptor.display()))?;
     let lig_text = std::fs::read_to_string(ligand)
         .with_context(|| format!("failed to read ligand: {}", ligand.display()))?;
     let lig_mol = pdbqt::parse_str(&lig_text)?;
-    let cfg = config::load(config_path)
+    let mut cfg = config::load(config_path)
         .with_context(|| format!("failed to load config: {}", config_path.display()))?;
+    if let Some(s) = seed {
+        cfg.run.seed = s; // CLI --seed で config の seed を上書き
+    }
     let mode = search.unwrap_or(cfg.run.search);
 
     let center = Vec3::new(cfg.r#box.center[0], cfg.r#box.center[1], cfg.r#box.center[2]);

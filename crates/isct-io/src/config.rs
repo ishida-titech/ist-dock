@@ -83,11 +83,12 @@ pub struct BoxConfig {
 }
 
 /// 探索の分子間評価バックエンド。`direct`=直接原子間（SIMD）/ `grid`=Vina グリッド補間。
+/// 既定は `grid`（受容体を前計算グリッドで補間＝auto ステップ予算でも高速・省メモリ、推奨）。
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Scoring {
-    #[default]
     Direct,
+    #[default]
     Grid,
 }
 
@@ -117,7 +118,7 @@ pub struct RunOpts {
     pub n_runs: Option<usize>,
     #[serde(default = "default_n_steps")]
     pub n_steps: usize,
-    /// 探索の分子間評価方式（既定: direct）。
+    /// 探索の分子間評価方式（既定: grid）。
     #[serde(default)]
     pub scoring: Scoring,
     /// グリッド探索（scoring="grid"）のボックス余白（Å, 既定 2.0）。探索中に原子が箱外へはみ出しても
