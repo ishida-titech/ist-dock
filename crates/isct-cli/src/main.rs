@@ -249,6 +249,7 @@ fn cmd_screen(
         prune_threshold: cfg.screen.prune_threshold,
         local_iters: cfg.screen.local_iters,
         use_grid,
+        grid_margin: cfg.run.grid_margin,
         seed_poses: cfg.screen.seed_poses,
         keep_poses: poses_out.is_some(), // ポーズ出力要求時のみ座標を保持
     };
@@ -330,7 +331,7 @@ fn cmd_dock(
     let use_grid = cfg.run.scoring == config::Scoring::Grid;
     let scorer = if use_grid {
         let lig_types: Vec<_> = lig_mol.scored_atoms().iter().map(|a| a.xs).collect();
-        Scorer::new_grid(&rec_scored, center, size, &lig_types)
+        Scorer::new_grid(&rec_scored, center, size, &lig_types, cfg.run.grid_margin)
     } else {
         Scorer::new(&rec_scored, center, size)
     };

@@ -76,6 +76,8 @@ pub struct ScreenParams {
     pub local_iters: usize,
     /// グリッドバックエンドを使うか（クラスタごとに seed+子の型でマップ生成）。
     pub use_grid: bool,
+    /// グリッド探索ボックスの余白（Å。`[run].grid_margin` 由来, 既定 2.0）。
+    pub grid_margin: f64,
     /// 子配置に使う seed の保持ポーズ数（RMSD クラスタ済み上位 N）。1 で従来＝最良のみ。
     /// >1 で各子を複数 seed ポーズへ配置し最良を採用＝剛体コア固定の拘束劣化を緩和。
     pub seed_poses: usize,
@@ -140,7 +142,7 @@ pub fn screen<S: ClusterSource>(receptor: &[ScoredAtom], src: &S, params: &Scree
     // pocket 指定クラスタは process_cluster 内でローカル構築（フォールバック）。出力はビット一致・決定的。
     let shared: Option<Scorer> = src.has_default_box().then(|| {
         if params.use_grid {
-            Scorer::new_grid(receptor, params.center, params.size, &src.shared_xs_types())
+            Scorer::new_grid(receptor, params.center, params.size, &src.shared_xs_types(), params.grid_margin)
         } else {
             Scorer::new(receptor, params.center, params.size)
         }
@@ -189,7 +191,7 @@ fn build_local(receptor: &[ScoredAtom], center: Vec3, size: Vec3, params: &Scree
         for child in &cluster.children {
             types.extend(child.molecule.scored_atoms().iter().map(|a| a.xs));
         }
-        Scorer::new_grid(receptor, center, size, &types)
+        Scorer::new_grid(receptor, center, size, &types, params.grid_margin)
     } else {
         Scorer::new(receptor, center, size)
     }
@@ -427,6 +429,7 @@ TORSDOF 0
             prune_threshold: 1e9, // 棄却しない（seed を必ずランキング）
             local_iters: 20,
             use_grid: true,
+            grid_margin: 2.0,
             seed_poses: 1,
             keep_poses: false,
         }

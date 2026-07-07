@@ -16,7 +16,7 @@ fn main() {
     let rec_scored = rec.scored_atoms();
     let lig = LigandModel::new(&lig_mol);
     let types: Vec<_> = lig_mol.scored_atoms().iter().map(|x| x.xs).collect();
-    let scorer = Scorer::new_grid(&rec_scored, center, size, &types);
+    let scorer = Scorer::new_grid(&rec_scored, center, size, &types, isct_dock::energy::GRID_MARGIN);
 
     let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(7);
     use rand::SeedableRng;

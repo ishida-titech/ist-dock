@@ -172,6 +172,7 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
 | `n_runs` | モード別（下記） | 独立 run 数（網羅性）。**未指定時の既定は探索モードで変わる**: `standard`/`qvina2`/`tpe`=60、`vina`=8。**`search="vina"` では n_runs = AutoDock Vina の exhaustiveness に対応**（Vina 既定=8）で、vina は 1 run が重いため既定を 8 にしてある。明示指定すればモードに依らずその値を使う（vina で大きな値を指定すると Vina の n_runs/8 倍遅くなる）。スクリーニングでは 8 程度で十分高精度。 |
 | `n_steps` | 0 | per-run の MC ステップ数。**0=自動**（可動原子数×torsion 上限で算出）。 |
 | `scoring` | `"direct"` | 探索の分子間評価。`"grid"`=Vina グリッド補間（高速・推奨）/ `"direct"`=直接原子間(SIMD)。 |
+| `grid_margin` | 2.0 | grid 探索ボックスの余白（Å）。探索中に原子が箱外へはみ出しても正しいグリッド値を引く緩衝。小さいほど**構築が速く省メモリ**だが、境界近傍のボーダーライン標的が退行しうる（実測: 0 で一部退行、2 で全標的 RMSD<2Å 中立）。環境変数 `ISCT_GRID_MARGIN` で更に上書き可（デバッグ用）。 |
 | `search` | `"standard"` | 探索モード。`"standard"`=ドリフト鎖 ILS（既定・決定論・高速）/ `"vina"`=Vina 忠実 MC（毎ステップ収束 BFGS）/ `"qvina2"`=QuickVina2 相当の局所探索スキップ（opt-in 高速化）/ `"tpe"`=TPE（Tree-structured Parzen Estimator。下記）。`--search` で上書き可。 |
 | `qvina_cos` | 0.90 | `qvina2` の勾配方向一致閾値（cos）。低いほどスキップ多＝速度↑精度↓。`--qvina-cos` で上書き可。 |
 | `hunt_cap` | 10.0 | 探索中の正エネルギー上限（Vina curl）。激突ポーズの暴走を抑え深い極小へ抜けやすくする。`1e9` で無効化。polish は常に無効（authentic）。 |

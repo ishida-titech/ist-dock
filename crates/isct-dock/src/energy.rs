@@ -16,8 +16,25 @@ use isct_core::scoring_simd::{intermolecular_value_grad_simd, ReceptorSimd};
 const BOX_PENALTY: f64 = 2.0;
 
 /// グリッド既定の格子間隔（Å）と探索窓への余白（Å）。
+///
+/// `GRID_MARGIN` は探索中にリガンド原子が箱外へはみ出しても正しいグリッド値を引ける緩衝。
+/// margin シェルはグリッド体積の (box+2·margin)³ を占め構築費を大きく左右する（margin=4 で箱の 2.74 倍）。
+/// margin スイープ実測（3ptb/1stp/1iep＋diverse 8 標的, docs/results.202607071...）で **2.0 を採用**:
+/// margin=0 は 1lpz が 3.19Å へ退行（箱端 clamp）、margin≥1 で回復。2.0 は構築費を ~30% 削りつつ
+/// 全 11 標的で RMSD<2Å 中立・Vina 相当の単発 dock 速度（3ptb で Vina 0.92s を下回る）を確保する安全側。
 pub const GRID_SPACING: f64 = 0.375;
-pub const GRID_MARGIN: f64 = 4.0;
+pub const GRID_MARGIN: f64 = 2.0;
+
+/// 実効グリッド余白（Å）を解決する。基本は引数 `config_margin`（`[run].grid_margin` 由来, 既定 `GRID_MARGIN`）
+/// だが、環境変数 `ISCT_GRID_MARGIN` が有効な非負値ならそれを優先する（スイープ検証・チューニング用の
+/// デバッグ上書き）。探索表面のみに影響し、最終スコアは厳密 f64 polish で算出するため報告値には効かない。
+fn effective_grid_margin(config_margin: f64) -> f64 {
+    std::env::var("ISCT_GRID_MARGIN")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|m| m.is_finite() && *m >= 0.0)
+        .unwrap_or(config_margin)
+}
 
 /// 探索の分子間「値＋力」評価バックエンド。
 #[derive(Debug, Clone)]
@@ -68,15 +85,18 @@ impl Scorer {
     }
 
     /// グリッドバックエンドの Scorer を作る。`ligand_types` のマップを事前生成する
-    /// （探索の並列実行前に呼ぶこと）。`spacing`/`margin` は既定 `GRID_SPACING`/`GRID_MARGIN`。
+    /// （探索の並列実行前に呼ぶこと）。`spacing` は `GRID_SPACING`、余白は `margin`（`[run].grid_margin`
+    /// 由来。既定 `GRID_MARGIN`=2.0。環境変数 `ISCT_GRID_MARGIN` があればそれが優先）。
     pub fn new_grid(
         receptor_full: &[ScoredAtom],
         center: Vec3,
         size: Vec3,
         ligand_types: &[XsType],
+        margin: f64,
     ) -> Self {
         let (receptor, half) = Self::prune(receptor_full, center, size);
-        let mut grid = VinaGrid::new(&receptor, center, size, GRID_SPACING, GRID_MARGIN);
+        let mut grid =
+            VinaGrid::new(&receptor, center, size, GRID_SPACING, effective_grid_margin(margin));
         grid.ensure(ligand_types);
         Scorer {
             receptor,

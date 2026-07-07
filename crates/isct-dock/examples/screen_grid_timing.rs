@@ -44,6 +44,7 @@ fn main() {
         prune_threshold: 1e9, // 棄却しない（全 seed をドッキング）
         local_iters: 50,
         use_grid: true,
+        grid_margin: isct_dock::energy::GRID_MARGIN,
         seed_poses: 1,
         keep_poses: false,
     };

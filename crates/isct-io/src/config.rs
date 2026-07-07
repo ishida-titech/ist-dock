@@ -120,6 +120,11 @@ pub struct RunOpts {
     /// 探索の分子間評価方式（既定: direct）。
     #[serde(default)]
     pub scoring: Scoring,
+    /// グリッド探索（scoring="grid"）のボックス余白（Å, 既定 2.0）。探索中に原子が箱外へはみ出しても
+    /// 正しいグリッド値を引ける緩衝。小さいほど構築が速く省メモリだが、境界近傍のボーダーライン標的が
+    /// 退行しうる（実測: 0 で一部標的が退行、2 で全標的中立）。環境変数 `ISCT_GRID_MARGIN` で更に上書き可。
+    #[serde(default = "default_grid_margin")]
+    pub grid_margin: f64,
     /// 探索モード（既定: standard。`qvina2` で局所探索スキップ＝opt-in 高速化）。
     #[serde(default)]
     pub search: SearchMode,
@@ -162,6 +167,7 @@ impl Default for RunOpts {
             n_runs: None,
             n_steps: default_n_steps(),
             scoring: Scoring::default(),
+            grid_margin: default_grid_margin(),
             search: SearchMode::default(),
             qvina_cos: default_qvina_cos(),
             hunt_cap: default_hunt_cap(),
@@ -245,6 +251,10 @@ fn default_n_steps() -> usize {
     // 0 = 可動原子数から自動スケール（Vina 流。search::auto_n_steps）。
     0
 }
+fn default_grid_margin() -> f64 {
+    // グリッド探索ボックスの余白（Å）。全標的で RMSD<2Å 中立を保つ安全側（docs/results.202607071919）。
+    2.0
+}
 
 /// TOML ファイルを読み込む。
 pub fn load(path: impl AsRef<Path>) -> Result<RunConfig, IoError> {
@@ -264,7 +274,17 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.r#box.center, [1.0, 2.0, 3.0]);
         assert_eq!(cfg.run.seed, 42); // 既定値
+        assert_eq!(cfg.run.grid_margin, 2.0); // 既定 margin
         assert!(cfg.receptor.is_none());
+    }
+
+    #[test]
+    fn parses_grid_margin_override() {
+        let cfg: RunConfig = toml::from_str(
+            "[box]\ncenter=[0,0,0]\nsize=[20,20,20]\n[run]\ngrid_margin = 1.5\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.run.grid_margin, 1.5);
     }
 
     #[test]
