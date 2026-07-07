@@ -7,14 +7,22 @@ Cargo.lock.bak
 # 決定論を全員で維持。テンプレートは .cargo/config.toml.example として追跡する）。
 /.cargo/config.toml
 
-# 検証データ・生成物（bench スクリプトで再生成可能。入力・データは追跡しない）
-/bench/out/
-/bench/data/
+# bench 以下は追跡しない（検証スクリプト・データとも）
+/bench/
 
-# 作業メモ・移行ドキュメント・評価ログ（追跡しない）
+# 作業メモ・移行ドキュメント・評価ログ・計画書（追跡しない。MANUAL.md のみ追跡）
 /FINDING.md
 /PORTING.md
 /docs/
+/CLAUDE.md
+/EVALUATION.md
+/EVALUATION.SCREENING.md
+/PROGRESS.md
+/isct-dock.md
+/DIFF.md
+/PLAN.md
+/PLAN.*.md
+/SIMD_OPTIMIZE.md
 
 # Python キャッシュ
 __pycache__/
