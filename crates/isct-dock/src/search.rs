@@ -166,7 +166,8 @@ impl Default for SearchParams {
             // 浅い per-step BFGS は、各ステップが decoy 基へ底打ちするのを避け、受理小移動を基底間で
             // ドリフト蓄積させて別基(native)へ届かせる（Vina 流）。単独の浅化は収束を損ねるため、
             // 多 step（auto_n_steps 増）と最終深 polish（polish_iters/polish_modes）とセットで用いる。
-            chain_iters: 30,
+            // 直線探索 warm-start と併せて 35 が既定（RMSD/エネルギー中立で高速化。config と一致）。
+            chain_iters: 35,
             polish_iters: 20,
             cluster_rmsd: 2.0,
             n_modes: 9,

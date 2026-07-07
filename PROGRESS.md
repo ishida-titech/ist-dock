@@ -96,6 +96,12 @@
   GWOVina、10M 本番、isct-dock の native ランキングスコア改良（torsion 補正の露出）。
 
 ## 更新履歴
+- 2026-07-07: **直線探索の warm-start(alpha) を既定化＋drift 既定 `chain_iters` を 30→35**
+  （`docs/results.202607062203`）。BFGS バックトラッキングの初期ステップを前回採択値×2（上限 1.0）から開始し
+  毎反復の後退回数を削減。**vina モードで 2.0×・RMSD/エネルギー完全中立**（1kzk 52.7→26.6s, evals/run 4.21M→1.97M）。
+  drift は warm-start 単独で成功率 −2〜3pt のため `chain_iters=35` で相殺（warm ci=35 ≈ 基準 no-warm ci=30：
+  Astex 74標的 成功率/RMSD/エネルギー全てノイズ範囲, 32コアで 1.20×）。vina は per-step 反復を `(25+重原子)/3` に
+  固定するため `chain_iters` の影響を受けない。決定論維持・clippy 警告ゼロ・test 全 pass。
 - 2026-07-06: **分子内ポテンシャルの LUT スプライン化で探索を高速化**（`docs/results.202607061402`）。
   per-eval 律速だった分子内ペアの exp 実計算（gauss1/gauss2）を、AutoDock Vina `precalculate` 相当の
   事前計算テーブル（新規 `crates/isct-core/src/intra_lut.rs`: XS 型対×r² → (値, d値/d(r²)) 線形補間、

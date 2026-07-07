@@ -22,7 +22,7 @@ hunt_cap = 10.0      # 探索中の正エネルギー上限（Vina curl, 激突�
 # qvina_cos = 0.90   # search="qvina2" 時の勾配方向一致閾値（高=保守的/低=攻める）
 
 # --- 以下は既定で十分。必要時のみ調整 ---
-# chain_iters = 30          # drift の各ステップ局所最適化反復（浅く保ち広く探索）
+# chain_iters = 35          # drift/qvina2 の各ステップ局所最適化反復（浅く保ち広く探索。vina は無視）
 # polish_iters = 20         # 代表ポーズの最終精密化反復（厳密 f64）
 # polish_modes = 9          # 精密化にかける代表モード数（≥ n_modes）
 # n_modes = 9               # 出力する最大モード数

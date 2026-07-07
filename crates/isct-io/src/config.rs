@@ -184,7 +184,9 @@ fn default_temp_final() -> f64 {
 fn default_chain_iters() -> usize {
     // 浅い per-step BFGS で鎖を基底間にドリフトさせ広く探索する（Vina 流）。単独の浅化は収束を損ねる
     // ため、多 step（auto_n_steps 増）と最終深 polish（polish_iters/polish_modes）とセットで用いる。
-    30
+    // 直線探索の warm-start(alpha) と併せて 35 を既定とする（Astex でエネルギー中立・RMSD 中立を保ちつつ
+    // 高速化。warm-start 単独＋ci=30 の成功率 −2〜3pt を ci=35 が相殺、docs/results.202607062203）。
+    35
 }
 fn default_polish_iters() -> usize {
     // grid 整合探索後、代表は既にほぼ最適。深い exact polish は精度をほぼ変えず高コストのため浅く。

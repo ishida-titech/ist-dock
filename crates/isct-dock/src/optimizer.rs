@@ -79,6 +79,9 @@ where
     let mut hinv = DMatrix::<f64>::identity(n, n);
     // BFGS 逆ヘシアン更新の作業行列（反復毎の n×n `DMatrix` 5–7 枚確保を回避）。
     let mut ws = BfgsWorkspace::new(n);
+    // 直線探索の初期ステップをウォームスタート: 生の勾配単位で 1.0 は過大になりやすく毎反復多数の
+    // 後退を招く。前回採択ステップを起点（×2, 上限 1.0）にして後退回数を減らす（Newton 域では 1.0 に復帰）。
+    let mut step_init = 1.0;
 
     for _ in 0..max_iter {
         if grad.norm() < 1e-4 {
@@ -91,9 +94,9 @@ where
             set_identity(&mut hinv);
         }
 
-        // バックトラッキング直線探索（Armijo）。値のみ評価。
+        // バックトラッキング直線探索（Armijo）。値のみ評価。初期ステップはウォームスタート値。
         let g_dot_p = grad.dot(&p);
-        let mut step = 1.0;
+        let mut step = step_init;
         let mut accepted = false;
         let mut new_conf = conf.clone();
         for _ in 0..40 {
@@ -112,6 +115,8 @@ where
         if !accepted {
             break;
         }
+        // 次反復のウォームスタート: 採択ステップを ×2（上限 1.0）。
+        step_init = (step * 2.0).min(1.0);
 
         let s = step * &p;
         let (new_energy, new_gfull) = value_grad(&new_conf);
