@@ -150,22 +150,14 @@ fn set_identity(m: &mut DMatrix<f64>) {
     m.fill_diagonal(1.0);
 }
 
-/// BFGS 逆ヘシアン更新の作業行列。反復間で再利用しアロクを避ける。
+/// BFGS 逆ヘシアン更新の作業ベクトル（Hy=Hinv·y）。反復間で再利用しアロクを避ける。
 struct BfgsWorkspace {
-    left: DMatrix<f64>,
-    right: DMatrix<f64>,
-    tmp: DMatrix<f64>,
-    out: DMatrix<f64>,
+    hy: DVector<f64>,
 }
 
 impl BfgsWorkspace {
     fn new(n: usize) -> Self {
-        BfgsWorkspace {
-            left: DMatrix::zeros(n, n),
-            right: DMatrix::zeros(n, n),
-            tmp: DMatrix::zeros(n, n),
-            out: DMatrix::zeros(n, n),
-        }
+        BfgsWorkspace { hy: DVector::zeros(n) }
     }
 }
 
@@ -215,26 +207,22 @@ fn bfgs_inverse_update(
     sy: f64,
     ws: &mut BfgsWorkspace,
 ) {
+    // 逆ヘシアンの rank-2 更新（O(n²)）:
+    //   Hy = Hinv·y,  yHy = yᵀHy,  ρ = 1/sy
+    //   Hinv ← Hinv − ρ(s·Hyᵀ + Hy·sᵀ) + ρ(1 + ρ·yHy)·s·sᵀ
+    // 積形 (I−ρsyᵀ)Hinv(I−ρysᵀ)+ρssᵀ と数学的に等価だが密行列積(O(n³)×2)を避ける（Vina と同形）。
+    // Hinv は対称（単位行列始点＋各 rank-2 更新が対称保存）なので yᵀHinv=(Hinv·y)ᵀ を使える。
     let rho = 1.0 / sy;
     let n = s.len();
-    // left = I - (s yᵀ)ρ, right = I - (y sᵀ)ρ（外積は単一積、旧: `(s*y^T)*rho` と同順）。
+    hinv.mul_to(y, &mut ws.hy); // Hy = Hinv·y（O(n²)）
+    let coeff = rho * (1.0 + rho * y.dot(&ws.hy));
+    let hy = &ws.hy;
     for i in 0..n {
+        let (si, hyi) = (s[i], hy[i]);
         for j in 0..n {
-            let id = if i == j { 1.0 } else { 0.0 };
-            ws.left[(i, j)] = id - (s[i] * y[j]) * rho;
-            ws.right[(i, j)] = id - (y[i] * s[j]) * rho;
+            hinv[(i, j)] += coeff * si * s[j] - rho * (si * hy[j] + hyi * s[j]);
         }
     }
-    // tmp = left * hinv;  out = tmp * right（旧: ((left*hinv)*right) と同結合順）。
-    ws.left.mul_to(hinv, &mut ws.tmp);
-    ws.tmp.mul_to(&ws.right, &mut ws.out);
-    // out += (s sᵀ)ρ（旧: `+ ss` の要素毎加算と同順）。
-    for i in 0..n {
-        for j in 0..n {
-            ws.out[(i, j)] += (s[i] * s[j]) * rho;
-        }
-    }
-    hinv.copy_from(&ws.out);
 }
 
 #[cfg(test)]
