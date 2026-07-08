@@ -120,7 +120,7 @@ impl AdType {
             "H" | "HS" => AdType::NonpolarH,
             "Mg" | "MG" | "Mn" | "MN" | "Zn" | "ZN" | "Ca" | "CA" | "Fe" | "FE" | "Cu"
             | "CU" | "Na" | "NA " | "K" | "Hg" | "HG" | "Ni" | "NI" | "Co" | "CO" | "Cd"
-            | "CD" => AdType::Metal,
+            | "CD" | "V" | "MO" | "W" => AdType::Metal,
             _ if is_glue_carbon(s) => AdType::C,
             _ if is_glue_dummy(s) => AdType::Glue,
             other => return Err(CoreError::UnknownAtomType(other.to_string())),

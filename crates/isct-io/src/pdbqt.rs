@@ -77,30 +77,78 @@ impl Molecule {
             .collect()
     }
 
+    /// 各原子の結合フラグを判定する。
+    ///
+    /// `hetero[i]` = 原子 i が炭素で、異種原子と結合している（疎水性の否定）。
+    /// `polar_h[i]` = 原子 i が N/O で、極性水素と結合している（ドナー）。
+    ///
+    /// 結合は `dist < (cov_i+cov_j)*BOND_TOLERANCE` でしか生じないので、共有結合半径の最大から一様格子の
+    /// セル辺を決め、**近傍セルのみ走査**して O(n²)→O(n) にする（大受容体でのパース時間支配を解消）。
+    /// 各原子は自分の近傍を見て自分のフラグのみ確定する（ペアを両側から訪れても真の再設定は冪等）。
     fn bond_flags(&self) -> BondFlags {
         let n = self.atoms.len();
         let mut hetero = vec![false; n];
         let mut polar_h = vec![false; n];
+        if n == 0 {
+            return BondFlags { hetero, polar_h };
+        }
+        // 分子内に実在する最大共有結合半径からセル辺 = 結合しうる最大原子間距離を決める。
+        let max_cov = self
+            .atoms
+            .iter()
+            .map(|a| a.ad.element().covalent_radius())
+            .fold(0.0_f64, f64::max);
+        let cell = (2.0 * max_cov * BOND_TOLERANCE).max(1e-6);
+        let inv = 1.0 / cell;
+        let key = |p: &Vec3| -> (i32, i32, i32) {
+            (
+                (p.x * inv).floor() as i32,
+                (p.y * inv).floor() as i32,
+                (p.z * inv).floor() as i32,
+            )
+        };
+        let mut grid: HashMap<(i32, i32, i32), Vec<usize>> = HashMap::new();
+        for (i, a) in self.atoms.iter().enumerate() {
+            grid.entry(key(&a.pos)).or_default().push(i);
+        }
         for i in 0..n {
-            for j in (i + 1)..n {
-                let ei = self.atoms[i].ad.element();
-                let ej = self.atoms[j].ad.element();
-                let r = distance(&self.atoms[i].pos, &self.atoms[j].pos);
-                let bond_len = (ei.covalent_radius() + ej.covalent_radius()) * BOND_TOLERANCE;
-                if r >= bond_len {
-                    continue;
-                }
-                if ei == Element::C && ej.is_heteroatom() {
-                    hetero[i] = true;
-                }
-                if ej == Element::C && ei.is_heteroatom() {
-                    hetero[j] = true;
-                }
-                if self.atoms[j].ad == AdType::PolarH && matches!(ei, Element::N | Element::O) {
-                    polar_h[i] = true;
-                }
-                if self.atoms[i].ad == AdType::PolarH && matches!(ej, Element::N | Element::O) {
-                    polar_h[j] = true;
+            let ai = &self.atoms[i];
+            let ei = ai.ad.element();
+            let is_c = ei == Element::C;
+            let is_no = matches!(ei, Element::N | Element::O);
+            // 炭素でも N/O でもない原子はどちらのフラグ対象にもならないので走査不要。
+            if !is_c && !is_no {
+                continue;
+            }
+            let (cx, cy, cz) = key(&ai.pos);
+            'scan: for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        let Some(bucket) = grid.get(&(cx + dx, cy + dy, cz + dz)) else {
+                            continue;
+                        };
+                        for &j in bucket {
+                            if j == i {
+                                continue;
+                            }
+                            let aj = &self.atoms[j];
+                            let ej = aj.ad.element();
+                            let r = distance(&ai.pos, &aj.pos);
+                            let bond_len = (ei.covalent_radius() + ej.covalent_radius()) * BOND_TOLERANCE;
+                            if r >= bond_len {
+                                continue;
+                            }
+                            // 原子 i のフラグは 1 種類のみ（C→hetero, N/O→polar_h）。立てば走査終了。
+                            if is_c && ej.is_heteroatom() {
+                                hetero[i] = true;
+                                break 'scan;
+                            }
+                            if is_no && aj.ad == AdType::PolarH {
+                                polar_h[i] = true;
+                                break 'scan;
+                            }
+                        }
+                    }
                 }
             }
         }
