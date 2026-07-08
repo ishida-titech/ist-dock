@@ -39,27 +39,29 @@ pub fn torsions_only(free_torsions: &[usize]) -> Vec<usize> {
     free_torsions.iter().map(|&t| 6 + t).collect()
 }
 
-/// 値クロージャ `value` と 値＋全 DOF 勾配クロージャ `value_grad` を用いて、`free` で指定した
-/// DOF 部分空間のみ BFGS 局所最小化する。`value_grad` は全 DOF（長さ dim）の勾配を返し、
-/// 本関数が `free` に射影する。
+/// 融合クロージャ `value_grad`（値を返し、全 DOF＝長さ dim の勾配を渡されたバッファへ書き込む）を用いて、
+/// `free` で指定した DOF 部分空間のみ BFGS 局所最小化する。勾配は本関数が `free` に射影する。
+///
+/// **Vina 型 fused line search**: 直線探索の各試行で `value_grad` を呼び（値＋勾配を一括計算）、Armijo 判定
+/// には値のみ使う。採択試行の勾配をバッファに残して BFGS 更新へ再利用し、採択後の別 `value_grad` 評価を
+/// 省く（1 反復の full-objective 評価パスを value~2.1＋value_grad 1 = 3.1 から ~2.1 へ削減）。
 ///
 /// 不変条件（呼び出し側のバッファ再利用に利用）: `free` が非空のとき、**最後に評価する `value_grad` は
-/// 返却する `conf` 上で呼ばれる**（収束 break・直線探索失敗 break・通常更新のいずれでも成立。直線探索は
-/// `value` のみ呼ぶ）。これにより `value_grad` 側スクラッチは返却 conf の中間量を保持する。
-pub fn minimize_free<V, VG>(
+/// 返却する `conf` 上で呼ばれる**（収束 break・直線探索失敗 break・通常更新のいずれでも成立）。これにより
+/// `value_grad` 側スクラッチは返却 conf の中間量を保持する。
+pub fn minimize_free<F>(
     start: Conformation,
-    value: &V,
-    value_grad: &VG,
+    value_grad: &F,
     max_iter: usize,
     free: &[usize],
 ) -> LocalResult
 where
-    V: Fn(&Conformation) -> f64,
-    VG: Fn(&Conformation) -> (f64, Vec<f64>),
+    F: Fn(&Conformation, &mut Vec<f64>) -> f64,
 {
     let n = free.len();
+    let mut gbuf: Vec<f64> = Vec::new();
     if n == 0 {
-        let energy = value(&start);
+        let energy = value_grad(&start, &mut gbuf);
         return LocalResult {
             conf: start,
             energy,
@@ -74,8 +76,8 @@ where
     let mut delta_full = vec![0.0; dim];
 
     let mut conf = start;
-    let (mut energy, gfull) = value_grad(&conf);
-    let mut grad = project(&gfull);
+    let mut energy = value_grad(&conf, &mut gbuf);
+    let mut grad = project(&gbuf);
     let mut hinv = DMatrix::<f64>::identity(n, n);
     // BFGS 逆ヘシアン更新の作業行列（反復毎の n×n `DMatrix` 5–7 枚確保を回避）。
     let mut ws = BfgsWorkspace::new(n);
@@ -94,33 +96,39 @@ where
             set_identity(&mut hinv);
         }
 
-        // バックトラッキング直線探索（Armijo）。値のみ評価。初期ステップはウォームスタート値。
+        // バックトラッキング直線探索（Armijo）。各試行で value+gradient を一括評価し、Armijo 判定には
+        // 値のみ使う。採択試行の勾配は gbuf に残り BFGS 更新へ再利用される。初期ステップはウォームスタート値。
         let g_dot_p = grad.dot(&p);
         let mut step = step_init;
         let mut accepted = false;
         let mut new_conf = conf.clone();
+        let mut new_energy = energy;
         for _ in 0..40 {
             let s = step * &p;
             let mut trial = conf.clone();
             fill_full(&mut delta_full, &s, free);
             trial.apply_delta(&delta_full);
-            let e = value(&trial);
+            let e = value_grad(&trial, &mut gbuf);
             if e <= energy + ARMIJO_C1 * step * g_dot_p {
                 new_conf = trial;
+                new_energy = e;
                 accepted = true;
                 break;
             }
             step *= 0.5;
         }
         if !accepted {
+            // 直線探索失敗（収束近傍）。不変条件（返却 conf 上で最後の value_grad が呼ばれる）を保つため、
+            // 返却する conf 上で value_grad を再評価してスクラッチ／gbuf を復旧する。
+            value_grad(&conf, &mut gbuf);
             break;
         }
         // 次反復のウォームスタート: 採択ステップを ×2（上限 1.0）。
         step_init = (step * 2.0).min(1.0);
 
         let s = step * &p;
-        let (new_energy, new_gfull) = value_grad(&new_conf);
-        let new_grad = project(&new_gfull);
+        // gbuf は採択試行（=new_conf）の全 DOF 勾配を保持。
+        let new_grad = project(&gbuf);
         let y = &new_grad - &grad;
         let sy = s.dot(&y);
         if sy > 1e-10 {
@@ -171,8 +179,12 @@ pub fn minimize_free_fd<V>(
 where
     V: Fn(&Conformation) -> f64,
 {
-    let value_grad = |c: &Conformation| (value(c), fd_grad(value, c, free));
-    minimize_free(start, value, &value_grad, max_iter, free)
+    let value_grad = |c: &Conformation, g: &mut Vec<f64>| -> f64 {
+        let v = value(c);
+        *g = fd_grad(value, c, free);
+        v
+    };
+    minimize_free(start, &value_grad, max_iter, free)
 }
 
 /// `free` の DOF のみ中心差分で勾配を求める（全 DOF 長、非 free は 0）。

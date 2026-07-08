@@ -30,7 +30,6 @@ struct EvalScratch {
     world_pivot: Vec<Vec3>,
     atoms: Vec<ScoredAtom>,
     force: Vec<Vec3>,
-    grad: Vec<f64>,
     /// 直近に評価した conformation の scored 原子 world 座標（RMSD クラスタリングの再計算回避用）。
     scored_pos: Vec<Vec3>,
     /// 直近に評価した conformation の**分子間項（inter, box 込み）**。ポーズの保持・順位付けを
@@ -52,39 +51,9 @@ fn intra_cap(exact: bool, cap: f64) -> f64 {
     }
 }
 
-/// 値（直線探索用）= 分子間 + ボックス罰則 + 分子内。バッファ再利用でアロケーションしない。
-/// `exact=false`（探索）は探索バックエンドに整合した値（Grid なら補間で高速）、`exact=true`（polish）は
-/// 厳密 direct 値。勾配側（`eval_value_grad`）と表面を揃える。
-fn eval_value(
-    lig: &LigandModel,
-    scorer: &Scorer,
-    s: &mut EvalScratch,
-    c: &Conformation,
-    exact: bool,
-    cap: f64,
-) -> f64 {
-    s.evals += 1;
-    lig.world_coords_into(c, &mut s.pos);
-    lig.scored_atoms_into(&s.pos, &mut s.atoms);
-    let inter_box = if exact {
-        scorer.score(&s.atoms)
-    } else {
-        scorer.search_score(&s.atoms, cap)
-    };
-    s.inter = inter_box; // 順位付け用に分子間項を控える（箱内 box=0）。
-    // polish（exact）は cap 無し＝authentic。探索は intra にも hunt_cap を適用（Vina の v[1] 相当）。
-    let intra_cap = intra_cap(exact, cap);
-    // 探索（!exact）は分子内も LUT（exp 回避）、polish（exact）は厳密 exp で出力を厳密に保つ。
-    let intra = if exact {
-        lig.intramolecular(&s.atoms, intra_cap)
-    } else {
-        lig.intramolecular_fast(&s.atoms, intra_cap)
-    };
-    inter_box + intra
-}
-
 /// 値＋解析的勾配（全 DOF）。`exact=true` で厳密 f64 表面（polish 用）、false で探索バックエンド。
-/// 勾配 Vec（dim 長）のみ確保し、その他（world 座標・原子・力）はバッファ再利用。
+/// 勾配は渡された `out`（dim 長へリサイズ）へ書き込み、値を返す（Vec を毎回確保しない＝直線探索の
+/// 各試行で融合評価してもアロクしない）。その他（world 座標・原子・力）もバッファ再利用。
 fn eval_value_grad(
     lig: &LigandModel,
     scorer: &Scorer,
@@ -92,7 +61,8 @@ fn eval_value_grad(
     c: &Conformation,
     exact: bool,
     cap: f64,
-) -> (f64, Vec<f64>) {
+    out: &mut Vec<f64>,
+) -> f64 {
     s.evals += 1;
     lig.world_coords_frames_into(
         c, &mut s.pos, &mut s.ref_axis, &mut s.ref_pivot, &mut s.world_axis, &mut s.world_pivot,
@@ -116,8 +86,8 @@ fn eval_value_grad(
     } else {
         lig.intramolecular_fast_value_grad(&s.atoms, &mut s.force, intra_cap)
     };
-    lig.dof_gradient_into(c, &s.pos, &s.world_axis, &s.world_pivot, &s.force, &mut s.grad);
-    (e, s.grad.clone())
+    lig.dof_gradient_into(c, &s.pos, &s.world_axis, &s.world_pivot, &s.force, out);
+    e
 }
 
 /// 探索パラメータ。
@@ -367,14 +337,14 @@ pub fn dock_constrained(
     // (inter+intra)**（ポーズを物理的に妥当に保つ, Vina と同一）。ただし精密化後の**順位付けは exact inter
     // (=Vina affinity 基準)** で行う: intra 歪みの大きい near-native を低歪み decoy に負けて捨てないため。
     let polish_scratch = RefCell::new(EvalScratch::default());
-    // polish は厳密 f64・cap 無し（authentic）。
-    let value = |c: &Conformation| eval_value(lig, scorer, &mut polish_scratch.borrow_mut(), c, true, f64::INFINITY);
-    let exact_value_grad =
-        |c: &Conformation| eval_value_grad(lig, scorer, &mut polish_scratch.borrow_mut(), c, true, f64::INFINITY);
+    // polish は厳密 f64・cap 無し（authentic）。融合 value_grad（値＋勾配をバッファに書く）。
+    let exact_value_grad = |c: &Conformation, g: &mut Vec<f64>| {
+        eval_value_grad(lig, scorer, &mut polish_scratch.borrow_mut(), c, true, f64::INFINITY, g)
+    };
     let polished: Vec<(Conformation, f64)> = reps
         .into_iter()
         .map(|(conf, _)| {
-            let r = minimize_free(conf, &value, &exact_value_grad, params.polish_iters, &free_dofs);
+            let r = minimize_free(conf, &exact_value_grad, params.polish_iters, &free_dofs);
             // 順位キー = 精密化後ポーズの exact intermolecular（cmd_dock 報告 affinity と同一定義, 少数で安価）。
             let inter = scorer.intermolecular(&lig.scored_atoms(&r.conf));
             (r.conf, inter)
@@ -474,16 +444,14 @@ fn single_run(
     } else {
         MutationStyle::Drift
     };
-    // この run 専用の評価バッファ（スレッドローカル）。直線探索と勾配で**別バッファ**にすることで、
-    // `minimize_free` 返却後に `scratch_g.scored_pos` が **返却 conf の scored 座標**を保持する（直線探索の
-    // value 呼び出しに上書きされない）。`minimize_free` の最後の value_grad は常に返却 conf 上で呼ばれるため、
+    // この run 専用の評価バッファ（スレッドローカル）。融合直線探索では採択試行が最後の value_grad 呼び出し
+    // となるため、`minimize_free` 返却後に `scratch_g.scored_pos` が **返却 conf の scored 座標**を保持する。
     // cluster_insert はこの座標を再利用でき world_coords 再計算を避けられる。
-    let scratch_v = RefCell::new(EvalScratch::default());
     let scratch_g = RefCell::new(EvalScratch::default());
     // 探索は hunt_cap で激突エネルギーを上限化（params.hunt_cap、無効化は INFINITY）。
     let cap = params.hunt_cap;
-    let value = |c: &Conformation| eval_value(lig, scorer, &mut scratch_v.borrow_mut(), c, false, cap);
-    let value_grad = |c: &Conformation| eval_value_grad(lig, scorer, &mut scratch_g.borrow_mut(), c, false, cap);
+    let value_grad =
+        |c: &Conformation, g: &mut Vec<f64>| eval_value_grad(lig, scorer, &mut scratch_g.borrow_mut(), c, false, cap, g);
 
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     // 初期配置（grid 時は一様、direct 時は接触棄却）。固定 torsion は 0 に保つ。
@@ -497,7 +465,7 @@ fn single_run(
         params.uniform_start,
         cap,
     );
-    let mut cur = minimize_free(start, &value, &value_grad, step_iters, free_dofs);
+    let mut cur = minimize_free(start, &value_grad, step_iters, free_dofs);
 
     // 訪れた局所最小をクラスタ保持（受理/非受理を問わず）＝探索の幅を保持。出力数(n_modes)より広く
     // 残し、ドリフトで稀に訪れた near-native モードを大域 polish 候補へ確実に渡す。
@@ -524,15 +492,16 @@ fn single_run(
 
     // 反復局所探索（ILS）＋焼きなまし: 毎ステップ 1 自由度変異 → 浅い局所最適化 → Metropolis 受理。
     let mut mut_delta: Vec<f64> = Vec::new();
+    let mut qvina_grad: Vec<f64> = Vec::new(); // QVina2 スキップ判定の勾配バッファ（再利用）。
     for k in 0..n_steps {
         let mut trial = cur.conf.clone();
         apply_mutation(&mut trial, &mut rng, free_torsions, mut_style, &mut mut_delta);
 
         // QuickVina2 スキップ判定: 安価な勾配 1 回で「既知の斜面」と判定したら local 探索を省く。
         if let Some(hist) = history.as_mut() {
-            let (_e, g_full) = value_grad(&trial);
+            value_grad(&trial, &mut qvina_grad);
             let dof = dof_vector(&trial, free_dofs);
-            let g = project_grad(&g_full, free_dofs);
+            let g = project_grad(&qvina_grad, free_dofs);
             let significant = hist.is_new_well(&dof, &g);
             hist.push(dof, g);
             if !significant {
@@ -540,7 +509,7 @@ fn single_run(
             }
         }
 
-        let res = minimize_free(trial, &value, &value_grad, step_iters, free_dofs);
+        let res = minimize_free(trial, &value_grad, step_iters, free_dofs);
         let (res_pos, res_inter) = {
             let g = scratch_g.borrow();
             (g.scored_pos.clone(), g.inter)
@@ -578,7 +547,7 @@ fn single_run(
 
     let mut reps: Vec<(Conformation, f64)> = pool.into_iter().map(|(c, e, _)| (c, e)).collect();
     reps.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-    let evals = scratch_v.borrow().evals + scratch_g.borrow().evals;
+    let evals = scratch_g.borrow().evals;
     (reps, evals)
 }
 
@@ -598,11 +567,10 @@ fn single_run_tpe(
     free_dofs: &[usize],
     seed: u64,
 ) -> (Vec<(Conformation, f64)>, u64) {
-    let scratch_v = RefCell::new(EvalScratch::default());
     let scratch_g = RefCell::new(EvalScratch::default());
     let cap = params.hunt_cap;
-    let value = |c: &Conformation| eval_value(lig, scorer, &mut scratch_v.borrow_mut(), c, false, cap);
-    let value_grad = |c: &Conformation| eval_value_grad(lig, scorer, &mut scratch_g.borrow_mut(), c, false, cap);
+    let value_grad =
+        |c: &Conformation, g: &mut Vec<f64>| eval_value_grad(lig, scorer, &mut scratch_g.borrow_mut(), c, false, cap, g);
 
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     // 参照配座（固定 torsion は 0 に保つ）。TPE のモデル空間は「この参照からの差」で定義。
@@ -650,7 +618,7 @@ fn single_run_tpe(
 
         // 提案を配座へ写し BFGS 局所最適化。
         let start = tpe::conf_from_vec(&reference, free_torsions, root_pivot, &v);
-        let res = minimize_free(start, &value, &value_grad, local_iters, free_dofs);
+        let res = minimize_free(start, &value_grad, local_iters, free_dofs);
         // pool 保持は inter キー、TPE 観測（下）は objective（探索地形の学習元）＝分離。
         let (res_pos, res_inter) = {
             let g = scratch_g.borrow();
@@ -670,7 +638,7 @@ fn single_run_tpe(
     // 代表は (conf, inter) で返す。inter 昇順（=affinity 良い順）。
     let mut reps: Vec<(Conformation, f64)> = pool.into_iter().map(|(c, e, _)| (c, e)).collect();
     reps.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-    let evals = scratch_v.borrow().evals + scratch_g.borrow().evals;
+    let evals = scratch_g.borrow().evals;
     (reps, evals)
 }
 
