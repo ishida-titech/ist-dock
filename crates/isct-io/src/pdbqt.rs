@@ -67,6 +67,47 @@ impl Molecule {
         out
     }
 
+    /// AutoDock Vina 1.2 の torsion entropy 補正に使う実効回転結合数 `num_tors`。
+    ///
+    /// Vina は affinity を `e_inter / (1 + W_ROT · num_tors)` で計算するが、この `num_tors` は TORSDOF
+    /// （名目回転結合数）ではない。Vina 1.2.7 `conf_independent.cpp` の `atom_rotors` 定義より:
+    /// `num_tors = Σ_{回転結合(a,b)} 0.5·(⟦heavy_nb(a)>1⟧ + ⟦heavy_nb(b)>1⟧)`。
+    /// すなわち**内部回転結合は 1.0、末端基（相手側の重原子隣接数が 1＝CH₃/OH/NH₂ 等）への回転結合は 0.5**
+    /// と数える（0.5 刻みの実数）。`heavy_nb(x)` は x に共有結合する非水素原子数。
+    /// 回転結合はフラグメント木の `bond`（BRANCH）。純トポロジー量＝ポーズ非依存。
+    pub fn num_tors_vina(&self) -> f64 {
+        // 回転結合が無ければ 0（受容体・剛体リガンドで隣接計算をスキップ）。
+        if self.fragments.iter().all(|f| f.bond.is_none()) {
+            return 0.0;
+        }
+        let n = self.atoms.len();
+        let heavy: Vec<usize> = (0..n)
+            .filter(|&i| self.atoms[i].ad.element() != Element::H)
+            .collect();
+        // heavy_degree[i] = 原子 i の非水素共有結合隣接数（結合判定はパースと同一規則）。
+        let mut heavy_degree = vec![0u32; n];
+        for (k, &i) in heavy.iter().enumerate() {
+            let ei = self.atoms[i].ad.element();
+            for &j in &heavy[k + 1..] {
+                let ej = self.atoms[j].ad.element();
+                let d = distance(&self.atoms[i].pos, &self.atoms[j].pos);
+                if d < (ei.covalent_radius() + ej.covalent_radius()) * BOND_TOLERANCE {
+                    heavy_degree[i] += 1;
+                    heavy_degree[j] += 1;
+                }
+            }
+        }
+        let mut num_tors = 0.0;
+        for f in &self.fragments {
+            if let Some((a, b)) = f.bond {
+                let ca = if heavy_degree[a] > 1 { 1.0 } else { 0.0 };
+                let cb = if heavy_degree[b] > 1 { 1.0 } else { 0.0 };
+                num_tors += 0.5 * (ca + cb);
+            }
+        }
+        num_tors
+    }
+
     /// 各原子の XS 型を返す（重原子のみ Some、水素は None）。ポーズ再構成・枝刈り用。
     pub fn xs_types(&self) -> Vec<Option<isct_core::atom_types::XsType>> {
         let flags = self.bond_flags();
@@ -347,6 +388,15 @@ TORSDOF 1
         assert_eq!(mol.fragments[1].bond, Some((1, 2))); // O(idx1)-C(idx2)
         assert_eq!(mol.fragments[1].atoms, vec![2]);
         assert_eq!(mol.atom_fragment, vec![0, 0, 1]);
+    }
+
+    #[test]
+    fn num_tors_vina_half_counts_terminal_bond() {
+        // LIG は C0-O1-C2 鎖で回転結合は O1-C2。C2 は末端（重原子隣接数1）なので Vina num_tors=0.5。
+        // （内部側 O1 は隣接2>1 で 0.5 寄与、末端側 C2 は 0 寄与 → 計 0.5）。TORSDOF(=1) とは異なる。
+        let mol = parse_str(LIG).unwrap();
+        assert_eq!(mol.torsdof, 1);
+        assert!((mol.num_tors_vina() - 0.5).abs() < 1e-9, "num_tors={}", mol.num_tors_vina());
     }
 
     #[test]

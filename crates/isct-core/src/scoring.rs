@@ -144,10 +144,12 @@ pub fn intermolecular_terms(ligand: &[ScoredAtom], receptor: &[ScoredAtom]) -> T
     total
 }
 
-/// 構造補正を適用した最終スコア（kcal/mol）。
+/// 構造補正（torsion entropy）を適用した最終スコア（kcal/mol, Vina 互換 affinity）。
+/// `num_tors` は Vina 1.2 の実効回転結合数（末端基は 0.5 カウント）＝ `Molecule::num_tors_vina()`。
+/// 名目 TORSDOF ではないことに注意（末端結合を全数で数えると flexible 配位子を過剰にペナルティする）。
 #[inline]
-pub fn apply_torsion_correction(e_inter: f64, n_rot: u32) -> f64 {
-    e_inter / (1.0 + W_ROT * n_rot as f64)
+pub fn apply_torsion_correction(e_inter: f64, num_tors: f64) -> f64 {
+    e_inter / (1.0 + W_ROT * num_tors)
 }
 
 /// Vina の `curl`（hunt_cap）: 探索中に**正のエネルギー（激突）を上限 `v` で滑らかに抑える**。

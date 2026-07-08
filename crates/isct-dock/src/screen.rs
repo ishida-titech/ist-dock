@@ -261,7 +261,7 @@ fn process_cluster(
     entries.push(ScoredEntry {
         compound_id: cluster.seed.compound_id.clone(),
         cluster_id: cluster.id.clone(),
-        total_score: apply_torsion_correction(seed_inter, cluster.seed.molecule.torsdof),
+        total_score: apply_torsion_correction(seed_inter, cluster.seed.molecule.num_tors_vina()),
         e_inter: seed_inter,
         role: "seed",
         pose: params
@@ -321,7 +321,7 @@ fn score_child(
     ScoredEntry {
         compound_id: child.compound_id.clone(),
         cluster_id: cluster_id.to_string(),
-        total_score: apply_torsion_correction(best.e_inter, child.molecule.torsdof),
+        total_score: apply_torsion_correction(best.e_inter, child.molecule.num_tors_vina()),
         e_inter: best.e_inter,
         role: "child",
         pose: params

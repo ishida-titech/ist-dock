@@ -384,7 +384,9 @@ fn cmd_dock(
     let e_intra = lig.intramolecular(&final_atoms, f64::INFINITY);
     // Vina 互換の最終スコア（affinity）= 分子間項に torsion 補正を掛けたもの。
     // 順位付け・スクリーニングはこの値を使う（生 intermolecular はサイズ依存で識別力が落ちる）。
-    let affinity = scoring::apply_torsion_correction(e_inter, lig_mol.torsdof);
+    // num_tors は Vina 1.2 の実効回転結合数（末端基は 0.5, TORSDOF ではない）。
+    let num_tors = lig_mol.num_tors_vina();
+    let affinity = scoring::apply_torsion_correction(e_inter, num_tors);
     let reference = lig.reference_scored_positions();
     let rmsd = geometry::rmsd(&lig.scored_positions(&best.conf), &reference);
 
@@ -418,7 +420,7 @@ fn cmd_dock(
     println!("modes (RMSD-clustered)     : {}", modes.len());
     for (i, m) in modes.iter().enumerate() {
         let inter = scorer.intermolecular(&lig.scored_atoms(&m.conf));
-        let aff = scoring::apply_torsion_correction(inter, lig_mol.torsdof);
+        let aff = scoring::apply_torsion_correction(inter, num_tors);
         let rm = geometry::rmsd(&lig.scored_positions(&m.conf), &reference);
         println!(
             "  mode {:2}  affinity={:8.4}  inter={:8.4}  rmsd_vs_crystal={:6.3} Å",
@@ -445,7 +447,7 @@ fn cmd_score(receptor: &PathBuf, ligand: &PathBuf) -> Result<()> {
     let terms = intermolecular_terms(&lig_atoms, &rec_atoms);
     let e_inter = terms.weighted_sum();
     let n_rot = lig.torsdof;
-    let affinity = scoring::apply_torsion_correction(e_inter, n_rot);
+    let affinity = scoring::apply_torsion_correction(e_inter, lig.num_tors_vina());
 
     println!("# isct-dock score (Vina 互換)");
     println!("receptor atoms (scored): {}", rec_atoms.len());
