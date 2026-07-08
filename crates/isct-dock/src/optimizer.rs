@@ -195,11 +195,10 @@ fn fd_grad<V: Fn(&Conformation) -> f64>(value: &V, conf: &Conformation, free: &[
     g
 }
 
-/// BFGS 逆ヘシアン更新: Hinv ← (I - ρ s yᵀ) Hinv (I - ρ y sᵀ) + ρ s sᵀ（Sherman-Morrison 形式）。
-///
-/// アロク回避のため作業行列 `ws` を再利用する。**数値はビット一致を維持する**:
-/// 外積（`s yᵀ`, `y sᵀ`, `s sᵀ`）は要素毎の単一積で手計算（累積無し＝丸め順に依存しない）、
-/// 行列積は nalgebra の `mul_to`（`*` と同一カーネル）を使い、結合順・加算順を旧実装と厳密一致させる。
+/// BFGS 逆ヘシアン更新（rank-2 形, O(n²)）: Hinv ← Hinv − ρ(s·Hyᵀ + Hy·sᵀ) + ρ(1 + ρ·yHy)·s·sᵀ
+/// （Hy=Hinv·y, yHy=yᵀHy, ρ=1/sy）。積形 (I−ρsyᵀ)Hinv(I−ρysᵀ)+ρssᵀ と数学的に等価だが n×n 密行列積
+/// （O(n³)×2）を matvec 1 回＋外積 2 本（O(n²)）に置き換える（AutoDock Vina と同形）。アロク回避のため
+/// 作業ベクトル `ws.hy` を再利用する。Hinv は対称（単位行列始点＋rank-2 更新が対称保存）。
 fn bfgs_inverse_update(
     hinv: &mut DMatrix<f64>,
     s: &DVector<f64>,
