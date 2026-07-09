@@ -112,7 +112,7 @@ pub struct RunOpts {
     #[serde(default = "default_seed")]
     pub seed: u64,
     /// 独立 run 数（探索の網羅性）。**未指定なら探索モード別の既定**（`resolve_n_runs`）:
-    /// vina は n_runs=exhaustiveness に対応するため既定 8（Vina 既定）、それ以外（standard/qvina2/tpe）は
+    /// vina/tpe は n_runs=exhaustiveness(num_tasks) に対応するため既定 8、それ以外（standard/qvina2）は
     /// 軽い per-run を best-of-N で回すため既定 60。明示指定すればモードに依らずその値を使う。
     #[serde(default)]
     pub n_runs: Option<usize>,
@@ -237,7 +237,11 @@ fn default_seed() -> u64 {
 /// vina-mode（`SearchMode::Vina`）の未指定時 n_runs 既定。AutoDock Vina の exhaustiveness に対応し、
 /// per-run が重いので Vina 既定の 8 に合わせる（`n_runs=60` のままだと Vina の 7.5 倍遅い）。
 const DEFAULT_N_RUNS_VINA: usize = 8;
-/// vina 以外（standard/qvina2/tpe）の未指定時 n_runs 既定。軽い per-run を best-of-N で回して精度を出す
+/// tpe-mode（`SearchMode::Tpe`）の未指定時 n_runs 既定。TPEvina の `num_tasks`(=exhaustiveness) に対応。
+/// TPEvina は「少数・深い run」（per-run steps=num_steps/15）で回すため 8 とし、深い `auto_n_steps_tpe`
+/// と組で AutoDock Vina 相当の総探索量にする（`docs/results.202607090951`, 60→8 で redocking 改善）。
+const DEFAULT_N_RUNS_TPE: usize = 8;
+/// vina/tpe 以外（standard/qvina2）の未指定時 n_runs 既定。軽い per-run を best-of-N で回して精度を出す
 /// 水準（benzamidine 検証で複数シードが安定して RMSD<2Å）。
 const DEFAULT_N_RUNS_OTHER: usize = 60;
 
@@ -245,6 +249,7 @@ const DEFAULT_N_RUNS_OTHER: usize = 60;
 pub fn default_n_runs_for(mode: SearchMode) -> usize {
     match mode {
         SearchMode::Vina => DEFAULT_N_RUNS_VINA,
+        SearchMode::Tpe => DEFAULT_N_RUNS_TPE,
         _ => DEFAULT_N_RUNS_OTHER,
     }
 }
@@ -310,12 +315,12 @@ mod tests {
 
     #[test]
     fn n_runs_defaults_per_mode_when_unset() {
-        // n_runs 未指定 → モード別既定（vina=8, それ以外=60）。
+        // n_runs 未指定 → モード別既定（vina/tpe=8, それ以外=60）。
         let cfg: RunConfig =
             toml::from_str("[box]\ncenter=[0,0,0]\nsize=[20,20,20]\n").unwrap();
         assert_eq!(cfg.run.n_runs, None);
         assert_eq!(cfg.run.resolve_n_runs(SearchMode::Vina), 8);
         assert_eq!(cfg.run.resolve_n_runs(SearchMode::Standard), 60);
-        assert_eq!(cfg.run.resolve_n_runs(SearchMode::Tpe), 60);
+        assert_eq!(cfg.run.resolve_n_runs(SearchMode::Tpe), 8);
     }
 }

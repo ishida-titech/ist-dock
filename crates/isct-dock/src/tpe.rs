@@ -13,8 +13,8 @@
 //!   （gi=greater 内スコア順位, N_g=greater 観測数）。greater が 27 個以上たまると活性化し、g(x) による
 //!   期待改善（g/l 最小化）で `ei_candidates(sample_num)` 個の候補から 1 点を選ぶ。旧移植は `*_7s` 実験変種の
 //!   減衰式 `(upper/2−iter)/upper` を採っており greater が常に不活性だった（`docs/findings.202607090942`）。
-//!   `num_lower_groups`(lower 上限)=10, `sample_num`(EI 候補)=7, `kernel_density_frequency`(再構築回数)=4,
-//!   `start_search_num`(warmup 割合)=20 を既定とする。
+//!   `num_lower_groups`(lower 上限)=10, `sample_num`(EI 候補)=25, `kernel_density_frequency`(再構築回数)=4,
+//!   `start_search_num`(warmup 割合)=20 を既定とする（`docs/results.202607091051`, `docs/findings.202607091051`）。
 //!
 //! モデル空間ベクトル（長さ `6 + n_free_torsions`）: `[pos(3, 絶対), rot(3, 参照配座からの scaled-axis 差),
 //! free_torsion(n, 参照からの差)]`。位置は探索ボックス角、回転・torsion は [-π, π] を範囲とする。
@@ -47,7 +47,7 @@ pub struct TpeParams {
 impl Default for TpeParams {
     fn default() -> Self {
         TpeParams {
-            ei_candidates: 7,
+            ei_candidates: 25,
             startup_frac: 20,
             lower_cap: 10,
             greater_cap: 10,

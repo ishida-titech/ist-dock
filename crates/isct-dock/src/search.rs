@@ -201,11 +201,13 @@ pub fn auto_n_steps_vina(n_scored_atoms: usize, n_torsions: usize) -> usize {
     105 * (50 + heuristic)
 }
 
-/// TPE モードの per-run 提案数。各提案が BFGS 局所最適化を伴う（vina 同様「少数・高コスト」）が、
-/// Parzen モデル構築にウォームアップ観測が要るため vina より多めの予算を確保する。
+/// TPE モードの per-run 提案数。**TPEvina 既定に忠実**: 1 run = TPEvina の 1 task とみなし、per-task
+/// steps = `num_steps/15`（`num_steps` は vina と同じ Vina ヒューリスティック `auto_n_steps_vina`）。
+/// 既定 `n_runs=8`（=num_tasks）と組で **AutoDock Vina 相当の総探索量**（`n_runs × steps ≈ num_steps·8/15`）
+/// になる。各提案が BFGS 局所最適化を伴うため「少数・深い run」。小リガンドは floor 200 で warmup を確保。
+/// （`docs/results.202607090951`: 60 浅 run→8 深 run で redocking 改善）
 pub fn auto_n_steps_tpe(n_scored_atoms: usize, n_torsions: usize) -> usize {
-    let eff = n_scored_atoms.min(8 + 5 * n_torsions);
-    (6 * eff).max(200)
+    (auto_n_steps_vina(n_scored_atoms, n_torsions) / 15).max(200)
 }
 
 /// 探索モードに応じた per-run ステップ数（`SearchParams.n_steps == 0` のとき使う）。

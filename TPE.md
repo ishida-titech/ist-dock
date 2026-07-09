@@ -111,8 +111,8 @@ TPEvina 原実装は `random_device` シードで run 毎に非再現（作者�
 
 > **現状（commit f9e37e5 以降）**: greater 重みは上記**順位ベース**で、観測が 27 個以上たまると活性化し EI が機能する
 > （出荷版 TPEvina `bfgs.h` 準拠）。**それ以前は `*_7s` 実験変種の減衰式 `(upper/2−iter)/upper` を移植しており
-> greater が常に不活性＝EI が死んでいた**（`docs/findings.202607090942`）。ただし `ei_candidates` 既定は現状 7 で、
-> 検証では 25（＝TPEvina `sample_num`）が明確に良い（`docs/results.202607090951`, best-of-3 70→90%）。
+> greater が常に不活性＝EI が死んでいた**（`docs/findings.202607090942`）。EI 復活後は `ei_candidates`=25
+> （＝TPEvina `sample_num`）が明確に良く（best-of-3 70→90%, `docs/results.202607090951`）、2026-07-09 に既定化済（§5）。
 
 ---
 
@@ -120,10 +120,10 @@ TPEvina 原実装は `random_device` シードで run 毎に非再現（作者�
 
 | isct 変数名 (TPEvina 変数名) | 意味 | isct 現在値（既定） | TPEvina 値 | drift 等と共有 |
 |---|---|---|---|---|
-| `n_runs` (`num_tasks`=`exhaustiveness`) | 独立 run 数。総探索量=n_runs×n_steps | **60** | `exhaustiveness`（既定 **1**） | **◆共有**（`DEFAULT_N_RUNS_OTHER`＝standard/qvina2/tpe 共通。vina のみ 8） |
-| `n_steps` (`steps`=`num_steps/15`) | 1 run の提案数（探索の深さ） | **auto** = `6·min(N,8+5T)`（≥200, `auto_n_steps_tpe`） | `num_steps/15`≈1000–1900 | config 欄は共有だが **auto 式はモード別**（drift=`auto_n_steps`, vina=`auto_n_steps_vina`） |
+| `n_runs` (`num_tasks`=`exhaustiveness`) | 独立 run 数。総探索量=n_runs×n_steps | **8** | `exhaustiveness`（既定 **1**） | TPE 専用既定（`DEFAULT_N_RUNS_TPE`=8）。standard/qvina2=60, vina=8 |
+| `n_steps` (`steps`=`num_steps/15`) | 1 run の提案数（探索の深さ） | **auto** = `auto_n_steps_vina/15`（≥200, `auto_n_steps_tpe`。TPEvina の num_steps/15） | `num_steps/15`≈1000–1900 | config 欄は共有だが **auto 式はモード別**（drift=`auto_n_steps`, vina=`auto_n_steps_vina`） |
 | `startup_frac` → warmup(`start_search_num`) | 一様探索比率。warmup=n_steps/startup_frac | **20** | warmup=`steps/20` | TPE 専用 |
-| `ei_candidates` (`sample_num`) | 1 提案あたり lower から引く候補数（EI 用） | **7**（検証では 25 が良） | **25**（既定 `bfgs.h`）/ 7（`*_7s` 変種） | TPE 専用 |
+| `ei_candidates` (`sample_num`) | 1 提案あたり lower から引く候補数（EI 用） | **25** | **25**（既定 `bfgs.h`）/ 7（`*_7s` 変種） | TPE 専用 |
 | `lower_cap` (`num_lower_groups`) | lower（良群）サイズ上限。実サイズ=clamp(0.25√N,2,これ) | **10** | `max(10,min(0.25√N,25))`（既定 bfgs.h） | TPE 専用 |
 | `greater_cap` (`num_upper_groups`) | greater（悪）カーネルの上限数（切詰め）。`lower_cap` の greater 版 | **10** | 既定 bfgs.h は全 greater を使用 | TPE 専用 |
 | `density_reuse` (`kernel_density_frequency`) | 後半でモデルを作り直す回数 | **4** | **4** | TPE 専用 |
@@ -131,12 +131,10 @@ TPEvina 原実装は `random_device` シードで run 毎に非再現（作者�
 | `early_stop_patience` (`termination`) | 改善なし提案で打切り | **0**（tpe 無効） | `termination=steps/25` | ◆共有（全モードの config 欄） |
 
 **TPE 専用ハイパラは `TpeParams`（`tpe.rs`）**: `ei_candidates`, `startup_frac`, `lower_cap`, `greater_cap`,
-`density_reuse`, `local_iters`。config `[run]` で `tpe_ei_candidates` / `tpe_startup_frac` のみ opt-in 上書き可
-（既定不変）。
+`density_reuse`, `local_iters`。config `[run]` で `tpe_ei_candidates` / `tpe_startup_frac` を opt-in 上書き可
+（未指定なら上記の新既定）。
 
 ### drift 等と共有の変数・機構（◆）＝ TPE 固有でない点に注意
-- `n_runs`（既定 60, `DEFAULT_N_RUNS_OTHER`）— standard(drift)/qvina2/tpe で共通。**Drift 由来で TPE には過多の疑い**
-  （`docs/results.202607090812`, TPEvina は少数 run）。
 - `chain_iters`（=35）— drift は各 MC ステップの浅い BFGS、tpe は `local_iters=0` 時の局所最適化反復として流用。
 - `minimize_free`（BFGS 局所最適化）, `contact_start`（初期配置）, `hunt_cap`（curl）, `EvalScratch`/`eval_value_grad`
   （スコア）— 全モード共通の機構。
@@ -145,8 +143,9 @@ TPEvina 原実装は `random_device` シードで run 毎に非再現（作者�
 - `n_steps` の **config 欄**は共有だが、未指定時の auto 値はモード別（`auto_n_steps_for`）。
 
 ### 現在の既定値まとめ（双方）
-- **isct（既定）**: `n_runs`=60◆, `n_steps`=auto(`6·min(N,8+5T)`,≥200), `startup_frac`=20, `ei_candidates`=7,
-  `lower_cap`=10, `greater_cap`=10, `density_reuse`=4, `local_iters`=0(→`chain_iters`=35◆), `early_stop`=無効。
+- **isct（既定, 2026-07-09 改定）**: `n_runs`=**8**, `n_steps`=auto(`auto_n_steps_vina/15`,≥200), `startup_frac`=**20**,
+  `ei_candidates`=**25**, `lower_cap`=10, `greater_cap`=10, `density_reuse`=4, `local_iters`=0(→`chain_iters`=35◆),
+  `early_stop`=無効。＝出荷版 TPEvina に忠実な設定（10標的×3seed, box22.5³ で best-of-3 90%, `docs/results.202607091051`）。
 - **TPEvina（既定 `bfgs.h`）**: `num_tasks`=`exhaustiveness`(=1), `steps`=`num_steps/15`, warmup=`steps/20`,
   `sample_num`=25, lower=`max(10,min(0.25√N,25))`, greater=全体, reuse=4, local=full BFGS, `termination`=`steps/25`。
 
@@ -154,12 +153,11 @@ TPEvina 原実装は `random_device` シードで run 毎に非再現（作者�
 
 ## 6. 既知の論点（チューニングの現状, 詳細は docs/）
 
-- **greater 順位ベース化で EI 復活済**（commit f9e37e5, `docs/findings.202607090942`）。RANK25（順位greater＋
-  `ei_candidates`=25）が best-of-3 70→90%・平均RMSD 3.89→3.50（`docs/results.202607090951`）。**`ei_candidates`
-  既定 7→25 の既定化が有力候補**（要判断）。
-- **`n_runs`=60 は Drift 既定の流用で不適切**。TPEvina は少数・深い run。n_runs=8＋深い n_steps が改善
-  （`docs/results.202607090812`）。ただし run 数減で独立試行が減る副作用あり。
-- **warmup 最適は `startup_frac`≈10–15**（warmup≈n_steps/10–15）。行き過ぎ(≤7)は非単調に悪化
-  （`docs/results.202607090841`）。
+- **既定改定済（2026-07-09）**: greater 順位ベース化（commit f9e37e5）で EI 復活後、`n_runs`=8・深 auto n_steps・
+  `startup_frac`=20・`ei_candidates`=25 を既定化。box22.5³ 10標的×3seed で **best-of-3 90%・平均RMSD 3.50**
+  （`docs/results.202607091051`）。出荷版 TPEvina に忠実な設定。
+- **warmup 最適は greater 活性で 15→20 へ移動**（`docs/findings.202607091051`）。死 greater 時代は sf10–15 が最良
+  （`docs/results.202607090841`）だったが、EI 活性後は sf20 が 1ig3/1owe を回復し優る。
+- **未了**: n_runs=8 での独立試行減の影響（run 数掃引）、全 Astex での既定検証、1n2j 等の全設定失敗標的（探索非律速）。
 - **score と RMSD の乖離**: 深い探索ほど低エネルギー decoy を掴むため score↓でも RMSD が改善しない標的がある
   （採点律速, `docs/findings.202607082223`）。評価の主指標は RMSD 成功率。
