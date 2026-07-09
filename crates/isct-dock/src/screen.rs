@@ -231,8 +231,12 @@ fn process_cluster(
     // n_steps=0（未指定）は seed のサイズ・torsion 数からモード別に自動決定する（dock CLI と同様）。
     // これを怠ると steps=0 で seed が探索されず、ポーズ品質が著しく劣化する。
     if sp.n_steps == 0 {
-        sp.n_steps =
-            crate::search::auto_n_steps_for(sp.kind, seed_lig.n_scored(), seed_lig.n_torsions());
+        sp.n_steps = crate::search::auto_n_steps_for(
+            sp.kind,
+            seed_lig.n_scored(),
+            seed_lig.n_torsions(),
+            sp.tpe.steps_divisor,
+        );
     }
     let seed_core: std::collections::HashSet<usize> =
         cluster.seed.core_atoms.iter().copied().collect();

@@ -178,8 +178,11 @@ fn build_search_params(
             if let Some(v) = run.tpe_ei_candidates {
                 t.ei_candidates = v;
             }
-            if let Some(v) = run.tpe_startup_frac {
-                t.startup_frac = v;
+            if let Some(v) = run.tpe_startup_ratio {
+                t.startup_ratio = v;
+            }
+            if let Some(v) = run.tpe_steps_divisor {
+                t.steps_divisor = v;
             }
             t
         },
@@ -357,7 +360,12 @@ fn cmd_dock(
     warn_vina_exhaustiveness(params.kind, params.n_runs);
 
     let eff_steps = if params.n_steps == 0 {
-        auto_n_steps_for(params.kind, lig.n_scored(), lig.n_torsions())
+        auto_n_steps_for(
+            params.kind,
+            lig.n_scored(),
+            lig.n_torsions(),
+            params.tpe.steps_divisor,
+        )
     } else {
         params.n_steps
     };

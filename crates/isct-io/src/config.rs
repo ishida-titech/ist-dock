@@ -159,12 +159,17 @@ pub struct RunOpts {
     /// 早期停止 patience（新規モードも改善も無いステップ数の上限）。0 で無効。収束した易標的を短縮。
     #[serde(default = "default_early_stop_patience")]
     pub early_stop_patience: usize,
-    /// TPE モード専用: EI 候補数（`TpeParams.ei_candidates`）の上書き。未指定なら既定 7（TPEvina 本来は 25）。
+    /// TPE モード専用: EI 候補数（`TpeParams.ei_candidates`）の上書き。未指定なら既定 25。
     #[serde(default)]
     pub tpe_ei_candidates: Option<usize>,
-    /// TPE モード専用: warmup 割合（`TpeParams.startup_frac`, warmup = n_steps/この値）の上書き。未指定なら既定 20。
+    /// TPE モード専用: warmup 比率（`TpeParams.startup_ratio`, warmup = n_steps×この値, 0.0–1.0）の上書き。
+    /// 未指定なら既定 0.05。
     #[serde(default)]
-    pub tpe_startup_frac: Option<usize>,
+    pub tpe_startup_ratio: Option<f64>,
+    /// TPE モード専用: auto n_steps の除数（`TpeParams.steps_divisor`, auto_n_steps_vina/この値）の上書き。
+    /// 未指定なら既定 15。n_steps を明示指定した場合は不使用。
+    #[serde(default)]
+    pub tpe_steps_divisor: Option<usize>,
 }
 
 impl Default for RunOpts {
@@ -187,7 +192,8 @@ impl Default for RunOpts {
             polish_modes: default_polish_modes(),
             early_stop_patience: default_early_stop_patience(),
             tpe_ei_candidates: None,
-            tpe_startup_frac: None,
+            tpe_startup_ratio: None,
+            tpe_steps_divisor: None,
         }
     }
 }

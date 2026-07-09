@@ -205,18 +205,25 @@ pub fn auto_n_steps_vina(n_scored_atoms: usize, n_torsions: usize) -> usize {
 /// steps = `num_steps/15`（`num_steps` は vina と同じ Vina ヒューリスティック `auto_n_steps_vina`）。
 /// 既定 `n_runs=8`（=num_tasks）と組で **AutoDock Vina 相当の総探索量**（`n_runs × steps ≈ num_steps·8/15`）
 /// になる。各提案が BFGS 局所最適化を伴うため「少数・深い run」。小リガンドは floor 200 で warmup を確保。
+/// `steps_divisor` は TPEvina の num_steps/15 の 15（`TpeParams.steps_divisor`, 既定 15）。
 /// （`docs/results.202607090951`: 60 浅 run→8 深 run で redocking 改善）
-pub fn auto_n_steps_tpe(n_scored_atoms: usize, n_torsions: usize) -> usize {
-    (auto_n_steps_vina(n_scored_atoms, n_torsions) / 15).max(200)
+pub fn auto_n_steps_tpe(n_scored_atoms: usize, n_torsions: usize, steps_divisor: usize) -> usize {
+    (auto_n_steps_vina(n_scored_atoms, n_torsions) / steps_divisor.max(1)).max(200)
 }
 
 /// 探索モードに応じた per-run ステップ数（`SearchParams.n_steps == 0` のとき使う）。
 /// vina-mode は「少数・高コスト」ステップ（`auto_n_steps_vina`）、それ以外（drift/qvina2）は
 /// 通常スケール（`auto_n_steps`）。dock・screen・CLI ログで共通利用し選択ロジックを一元化する。
-pub fn auto_n_steps_for(kind: SearchKind, n_scored_atoms: usize, n_torsions: usize) -> usize {
+/// `tpe_steps_divisor` は tpe-mode のみで使う（`TpeParams.steps_divisor` を渡す。他モードでは無視）。
+pub fn auto_n_steps_for(
+    kind: SearchKind,
+    n_scored_atoms: usize,
+    n_torsions: usize,
+    tpe_steps_divisor: usize,
+) -> usize {
     match kind {
         SearchKind::Vina => auto_n_steps_vina(n_scored_atoms, n_torsions),
-        SearchKind::Tpe => auto_n_steps_tpe(n_scored_atoms, n_torsions),
+        SearchKind::Tpe => auto_n_steps_tpe(n_scored_atoms, n_torsions, tpe_steps_divisor),
         _ => auto_n_steps(n_scored_atoms, n_torsions),
     }
 }
@@ -307,7 +314,12 @@ pub fn dock_constrained(
 
     // per-run ステップ数: n_steps==0 なら自動スケール（モード別、auto_n_steps_for に一元化）。
     let n_steps = if params.n_steps == 0 {
-        auto_n_steps_for(params.kind, lig.n_scored(), free_torsions.len())
+        auto_n_steps_for(
+            params.kind,
+            lig.n_scored(),
+            free_torsions.len(),
+            params.tpe.steps_divisor,
+        )
     } else {
         params.n_steps
     };
@@ -587,7 +599,7 @@ fn single_run_tpe(
     let mut pool: Vec<(Conformation, f64, Vec<Vec3>)> = Vec::new();
     let mut obs: Vec<tpe::Obs> = Vec::new();
 
-    let warmup = (n_steps / tp.startup_frac.max(1)).max(1);
+    let warmup = ((n_steps as f64 * tp.startup_ratio) as usize).max(1);
     let freq = (n_steps.saturating_sub(warmup) / tp.density_reuse.max(1)).max(1);
     let mut model: Option<tpe::TpeModel> = None;
     let mut since_rebuild = 0usize;

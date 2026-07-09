@@ -14,7 +14,8 @@
 //!   期待改善（g/l 最小化）で `ei_candidates(sample_num)` 個の候補から 1 点を選ぶ。旧移植は `*_7s` 実験変種の
 //!   減衰式 `(upper/2−iter)/upper` を採っており greater が常に不活性だった（`docs/findings.202607090942`）。
 //!   `num_lower_groups`(lower 上限)=10, `sample_num`(EI 候補)=25, `kernel_density_frequency`(再構築回数)=4,
-//!   `start_search_num`(warmup 割合)=20 を既定とする（`docs/results.202607091051`, `docs/findings.202607091051`）。
+//!   `start_search_num`(warmup 比率 startup_ratio)=0.05 を既定とする（`docs/results.202607091051`,
+//!   `docs/findings.202607091051`）。
 //!
 //! モデル空間ベクトル（長さ `6 + n_free_torsions`）: `[pos(3, 絶対), rot(3, 参照配座からの scaled-axis 差),
 //! free_torsion(n, 参照からの差)]`。位置は探索ボックス角、回転・torsion は [-π, π] を範囲とする。
@@ -31,8 +32,12 @@ use crate::ligand::Conformation;
 pub struct TpeParams {
     /// 1 提案あたり lower 混合から引く候補数（n_ei_candidates, TPEvina `sample_num`）。
     pub ei_candidates: usize,
-    /// ウォームアップ（一様ランダム）割合: warmup = n_steps / startup_frac（TPEvina `start_search_num`）。
-    pub startup_frac: usize,
+    /// ウォームアップ（一様ランダム）割合: warmup = n_steps × startup_ratio（0.0–1.0）。
+    /// TPEvina `start_search_num`（あちらは除数だが isct では直感的な比率にした。既定 0.05 = 従来の 1/20）。
+    pub startup_ratio: f64,
+    /// auto n_steps の除数: `auto_n_steps_tpe = auto_n_steps_vina / steps_divisor`（TPEvina の num_steps/15 の 15）。
+    /// n_steps を明示指定した場合は不使用。
+    pub steps_divisor: usize,
     /// lower（良）集合サイズ上限（TPEvina `num_lower_groups`）。実サイズ = clamp(0.25√N, 2, これ)。
     pub lower_cap: usize,
     /// greater（悪）カーネル数の上限（`lower_cap` の greater 版）。g(x) はこの個数まで切詰めて使う。
@@ -48,7 +53,8 @@ impl Default for TpeParams {
     fn default() -> Self {
         TpeParams {
             ei_candidates: 25,
-            startup_frac: 20,
+            startup_ratio: 0.05,
+            steps_divisor: 15,
             lower_cap: 10,
             greater_cap: 10,
             density_reuse: 4,
