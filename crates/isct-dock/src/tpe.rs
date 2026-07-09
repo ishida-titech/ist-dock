@@ -35,8 +35,9 @@ pub struct TpeParams {
     pub startup_frac: usize,
     /// lower（良）集合サイズ上限（TPEvina `num_lower_groups`）。実サイズ = clamp(0.25√N, 2, これ)。
     pub lower_cap: usize,
-    /// g(x) に使う greater（悪）観測数の上限、かつ greater 重み減衰の分母（TPEvina `num_upper_groups`）。
-    pub upper_groups: usize,
+    /// greater（悪）カーネル数の上限（`lower_cap` の greater 版）。g(x) はこの個数まで切詰めて使う。
+    /// TPEvina 変数名は `num_upper_groups`（＝本来「greater」の集合。名称が紛らわしいため isct では greater_cap）。
+    pub greater_cap: usize,
     /// TPE フェーズでのモデル再構築回数（TPEvina `kernel_density_frequency`＝1 モデルの使い回し係数）。
     pub density_reuse: usize,
     /// 1 提案あたりの局所最適化（BFGS）反復数。0 なら呼び出し側の既定（`chain_iters`）を使う。
@@ -49,7 +50,7 @@ impl Default for TpeParams {
             ei_candidates: 7,
             startup_frac: 20,
             lower_cap: 10,
-            upper_groups: 10,
+            greater_cap: 10,
             density_reuse: 4,
             local_iters: 0,
         }
@@ -163,7 +164,7 @@ fn sample_normal<R: Rng>(rng: &mut R, mean: f64, sigma: f64) -> f64 {
 struct Dim {
     /// lower カーネル（value, sigma）。
     lower: Vec<(f64, f64)>,
-    /// greater カーネル（value, sigma, weight）。g(x) 用に上限 `upper_groups` 個へ切詰め済み。
+    /// greater カーネル（value, sigma, weight）。g(x) 用に上限 `greater_cap` 個へ切詰め済み。
     /// weight は観測のスコア順位由来（順位ベース, 既定 bfgs.h `(N_g−k−1)/(N_g−26)` 相当）。
     greater: Vec<(f64, f64, f64)>,
 }
@@ -282,7 +283,7 @@ impl TpeModel {
             let lower: Vec<(f64, f64)> = (0..lv.len())
                 .map(|k| (lv[k], kernel_sigma(&lv, k, lo, hi, lv.len())))
                 .collect();
-            // greater カーネル: (値, 順位重み) を値でソート→sigma、g(x) 用に upper_groups 個へ切詰め。
+            // greater カーネル: (値, 順位重み) を値でソート→sigma、g(x) 用に greater_cap 個へ切詰め。
             let mut gvw: Vec<(f64, f64)> = greater_idx
                 .iter()
                 .enumerate()
@@ -293,7 +294,7 @@ impl TpeModel {
             let n_div = (1 + gv.len()).min(100).saturating_sub(1).max(1);
             let greater: Vec<(f64, f64, f64)> = (0..gvw.len())
                 .map(|k| (gvw[k].0, kernel_sigma(&gv, k, lo, hi, n_div), gvw[k].1))
-                .take(p.upper_groups)
+                .take(p.greater_cap)
                 .collect();
             dims.push(Dim { lower, greater });
         }
@@ -305,14 +306,12 @@ impl TpeModel {
 
     /// 1 候補ベクトルをサンプルする。
     ///
-    /// **高速経路（`greater_active==false`）**: greater 重みが 0 のとき g(x)=0 で全候補が同点（Σlog(g/l)=-∞）
-    /// となり `ei_candidates` 本引いても先頭が選ばれるだけ＝候補選択も g/l 計算も無意味。よって各次元
-    /// **1 点だけ**引いて返す（g/l の exp 計算と未使用候補のサンプリングを丸ごと省く）。TPEvina 既定では
-    /// 探索初期に greater 重みが 0 化するため、通常はこの経路。
+    /// **高速経路（`greater_active==false`）**: greater 重みが全 0（greater 観測が 27 個未満）で g(x)=0 の
+    /// とき全候補が同点（Σlog(g/l)=-∞）となり `ei_candidates` 本引いても先頭が選ばれるだけ＝候補選択も
+    /// g/l 計算も無意味。よって各次元 **1 点だけ**引いて返す（exp 計算と未使用候補のサンプリングを省く）。
     ///
-    /// **完全経路（`greater_active==true`）**: 各次元で lower 混合から `ei_candidates` 個引き、全次元にわたる
-    /// Σ log(g/l) が最小の候補スロットを採用（tie は先頭）。upper_groups を大きくして greater 重みを
-    /// 生かした「本来の TPE」挙動のときに使う。
+    /// **完全経路（`greater_active==true`）**: greater が活性（観測 27 個以上）のときの本来の TPE。各次元で
+    /// lower 混合から `ei_candidates` 個引き、全次元にわたる Σ log(g/l) が最小の候補スロットを採用（tie は先頭）。
     pub fn sample<R: Rng>(
         &self,
         rng: &mut R,
