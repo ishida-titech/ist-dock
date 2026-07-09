@@ -35,9 +35,9 @@ pub struct TpeParams {
     /// ウォームアップ（一様ランダム）割合: warmup = n_steps × startup_ratio（0.0–1.0）。
     /// TPEvina `start_search_num`（あちらは除数だが isct では直感的な比率にした。既定 0.05 = 従来の 1/20）。
     pub startup_ratio: f64,
-    /// auto n_steps の除数: `auto_n_steps_tpe = auto_n_steps_vina / steps_divisor`（TPEvina の num_steps/15 の 15）。
-    /// n_steps を明示指定した場合は不使用。
-    pub steps_divisor: usize,
+    /// auto n_steps の係数: `auto_n_steps_tpe = auto_n_steps_vina × step_ratio`（**大きいほど深い**）。
+    /// 既定 1/15 ≈ 0.0667（＝TPEvina の num_steps/15）。n_steps を明示指定した場合は不使用。
+    pub step_ratio: f64,
     /// lower（良）集合サイズ上限（TPEvina `num_lower_groups`）。実サイズ = clamp(0.25√N, 2, これ)。
     pub lower_cap: usize,
     /// greater（悪）カーネル数の上限（`lower_cap` の greater 版）。g(x) はこの個数まで切詰めて使う。
@@ -54,7 +54,7 @@ impl Default for TpeParams {
         TpeParams {
             ei_candidates: 25,
             startup_ratio: 0.05,
-            steps_divisor: 15,
+            step_ratio: 1.0 / 15.0,
             lower_cap: 10,
             greater_cap: 10,
             density_reuse: 4,

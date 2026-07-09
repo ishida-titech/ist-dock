@@ -205,25 +205,25 @@ pub fn auto_n_steps_vina(n_scored_atoms: usize, n_torsions: usize) -> usize {
 /// steps = `num_steps/15`（`num_steps` は vina と同じ Vina ヒューリスティック `auto_n_steps_vina`）。
 /// 既定 `n_runs=8`（=num_tasks）と組で **AutoDock Vina 相当の総探索量**（`n_runs × steps ≈ num_steps·8/15`）
 /// になる。各提案が BFGS 局所最適化を伴うため「少数・深い run」。小リガンドは floor 200 で warmup を確保。
-/// `steps_divisor` は TPEvina の num_steps/15 の 15（`TpeParams.steps_divisor`, 既定 15）。
-/// （`docs/results.202607090951`: 60 浅 run→8 深 run で redocking 改善）
-pub fn auto_n_steps_tpe(n_scored_atoms: usize, n_torsions: usize, steps_divisor: usize) -> usize {
-    (auto_n_steps_vina(n_scored_atoms, n_torsions) / steps_divisor.max(1)).max(200)
+/// `step_ratio` は auto_n_steps_vina に掛ける係数（`TpeParams.step_ratio`, 既定 1/15＝TPEvina の num_steps/15）。
+/// **大きいほど深い**。（`docs/results.202607090951`: 60 浅 run→8 深 run で redocking 改善）
+pub fn auto_n_steps_tpe(n_scored_atoms: usize, n_torsions: usize, step_ratio: f64) -> usize {
+    ((auto_n_steps_vina(n_scored_atoms, n_torsions) as f64 * step_ratio) as usize).max(200)
 }
 
 /// 探索モードに応じた per-run ステップ数（`SearchParams.n_steps == 0` のとき使う）。
 /// vina-mode は「少数・高コスト」ステップ（`auto_n_steps_vina`）、それ以外（drift/qvina2）は
 /// 通常スケール（`auto_n_steps`）。dock・screen・CLI ログで共通利用し選択ロジックを一元化する。
-/// `tpe_steps_divisor` は tpe-mode のみで使う（`TpeParams.steps_divisor` を渡す。他モードでは無視）。
+/// `tpe_step_ratio` は tpe-mode のみで使う（`TpeParams.step_ratio` を渡す。他モードでは無視）。
 pub fn auto_n_steps_for(
     kind: SearchKind,
     n_scored_atoms: usize,
     n_torsions: usize,
-    tpe_steps_divisor: usize,
+    tpe_step_ratio: f64,
 ) -> usize {
     match kind {
         SearchKind::Vina => auto_n_steps_vina(n_scored_atoms, n_torsions),
-        SearchKind::Tpe => auto_n_steps_tpe(n_scored_atoms, n_torsions, tpe_steps_divisor),
+        SearchKind::Tpe => auto_n_steps_tpe(n_scored_atoms, n_torsions, tpe_step_ratio),
         _ => auto_n_steps(n_scored_atoms, n_torsions),
     }
 }
@@ -318,7 +318,7 @@ pub fn dock_constrained(
             params.kind,
             lig.n_scored(),
             free_torsions.len(),
-            params.tpe.steps_divisor,
+            params.tpe.step_ratio,
         )
     } else {
         params.n_steps

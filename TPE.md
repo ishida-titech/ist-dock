@@ -121,8 +121,8 @@ TPEvina 原実装は `random_device` シードで run 毎に非再現（作者�
 | isct 変数名 (TPEvina 変数名) | 意味 | isct 現在値（既定） | TPEvina 値 | drift 等と共有 |
 |---|---|---|---|---|
 | `n_runs` (`num_tasks`=`exhaustiveness`) | 独立 run 数。総探索量=n_runs×n_steps | **8** | `exhaustiveness`（既定 **1**） | TPE 専用既定（`DEFAULT_N_RUNS_TPE`=8）。standard/qvina2=60, vina=8 |
-| `n_steps` (`steps`=`num_steps/15`) | 1 run の提案数（探索の深さ） | **auto** = `auto_n_steps_vina/steps_divisor`（≥200, `auto_n_steps_tpe`） | `num_steps/15`≈1000–1900 | config 欄は共有だが **auto 式はモード別**（drift=`auto_n_steps`, vina=`auto_n_steps_vina`） |
-| `steps_divisor` (`num_steps/`**`15`**) | auto n_steps の除数。`auto_n_steps_vina/steps_divisor` | **15** | **15** | TPE 専用 |
+| `n_steps` (`steps`=`num_steps/15`) | 1 run の提案数（探索の深さ） | **auto** = `auto_n_steps_vina×step_ratio`（≥200, `auto_n_steps_tpe`） | `num_steps/15`≈1000–1900 | config 欄は共有だが **auto 式はモード別**（drift=`auto_n_steps`, vina=`auto_n_steps_vina`） |
+| `step_ratio` (`1/`**`15`**) | auto n_steps の係数。`auto_n_steps_vina×step_ratio`（**大きいほど深い**） | **1/15≈0.0667** | **1/15** | TPE 専用 |
 | `startup_ratio` (`start_search_num`) | warmup 比率。warmup=n_steps×startup_ratio（0.0–1.0） | **0.05**（=1/20） | warmup=`steps/20` | TPE 専用 |
 | `ei_candidates` (`sample_num`) | 1 提案あたり lower から引く候補数（EI 用） | **25** | **25**（既定 `bfgs.h`）/ 7（`*_7s` 変種） | TPE 専用 |
 | `lower_cap` (`num_lower_groups`) | lower（良群）サイズ上限。実サイズ=clamp(0.25√N,2,これ) | **10** | `max(10,min(0.25√N,25))`（既定 bfgs.h） | TPE 専用 |
@@ -131,9 +131,9 @@ TPEvina 原実装は `random_device` シードで run 毎に非再現（作者�
 | `local_iters` (—) | 1 提案あたり BFGS 反復数。0 で `chain_iters` | **0** → `chain_iters` | full BFGS | 実体 `chain_iters` は **◆共有** |
 | `early_stop_patience` (`termination`) | 改善なし提案で打切り | **0**（tpe 無効） | `termination=steps/25` | ◆共有（全モードの config 欄） |
 
-**TPE 専用ハイパラは `TpeParams`（`tpe.rs`）**: `ei_candidates`, `startup_ratio`, `steps_divisor`, `lower_cap`,
+**TPE 専用ハイパラは `TpeParams`（`tpe.rs`）**: `ei_candidates`, `startup_ratio`, `step_ratio`, `lower_cap`,
 `greater_cap`, `density_reuse`, `local_iters`。config `[run]` で `tpe_ei_candidates` / `tpe_startup_ratio` /
-`tpe_steps_divisor` を opt-in 上書き可（未指定なら上記の新既定）。
+`tpe_step_ratio` を opt-in 上書き可（未指定なら上記の新既定）。
 
 ### drift 等と共有の変数・機構（◆）＝ TPE 固有でない点に注意
 - `chain_iters`（=35）— drift は各 MC ステップの浅い BFGS、tpe は `local_iters=0` 時の局所最適化反復として流用。
@@ -144,8 +144,8 @@ TPEvina 原実装は `random_device` シードで run 毎に非再現（作者�
 - `n_steps` の **config 欄**は共有だが、未指定時の auto 値はモード別（`auto_n_steps_for`）。
 
 ### 現在の既定値まとめ（双方）
-- **isct（既定, 2026-07-09 改定）**: `n_runs`=**8**, `n_steps`=auto(`auto_n_steps_vina/steps_divisor`,≥200,
-  `steps_divisor`=15), `startup_ratio`=**0.05**, `ei_candidates`=**25**, `lower_cap`=10, `greater_cap`=10,
+- **isct（既定, 2026-07-09 改定）**: `n_runs`=**8**, `n_steps`=auto(`auto_n_steps_vina×step_ratio`,≥200,
+  `step_ratio`=1/15), `startup_ratio`=**0.05**, `ei_candidates`=**25**, `lower_cap`=10, `greater_cap`=10,
   `density_reuse`=4, `local_iters`=0(→`chain_iters`=35◆),
   `early_stop`=無効。＝出荷版 TPEvina に忠実な設定（10標的×3seed, box22.5³ で best-of-3 90%, `docs/results.202607091051`）。
 - **TPEvina（既定 `bfgs.h`）**: `num_tasks`=`exhaustiveness`(=1), `steps`=`num_steps/15`, warmup=`steps/20`,

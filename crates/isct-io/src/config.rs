@@ -166,10 +166,10 @@ pub struct RunOpts {
     /// 未指定なら既定 0.05。
     #[serde(default)]
     pub tpe_startup_ratio: Option<f64>,
-    /// TPE モード専用: auto n_steps の除数（`TpeParams.steps_divisor`, auto_n_steps_vina/この値）の上書き。
-    /// 未指定なら既定 15。n_steps を明示指定した場合は不使用。
+    /// TPE モード専用: auto n_steps の係数（`TpeParams.step_ratio`, auto_n_steps_vina×この値, **大きいほど深い**）の上書き。
+    /// 未指定なら既定 1/15≈0.0667。n_steps を明示指定した場合は不使用。
     #[serde(default)]
-    pub tpe_steps_divisor: Option<usize>,
+    pub tpe_step_ratio: Option<f64>,
 }
 
 impl Default for RunOpts {
@@ -193,7 +193,7 @@ impl Default for RunOpts {
             early_stop_patience: default_early_stop_patience(),
             tpe_ei_candidates: None,
             tpe_startup_ratio: None,
-            tpe_steps_divisor: None,
+            tpe_step_ratio: None,
         }
     }
 }

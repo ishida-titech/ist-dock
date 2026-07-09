@@ -181,8 +181,8 @@ fn build_search_params(
             if let Some(v) = run.tpe_startup_ratio {
                 t.startup_ratio = v;
             }
-            if let Some(v) = run.tpe_steps_divisor {
-                t.steps_divisor = v;
+            if let Some(v) = run.tpe_step_ratio {
+                t.step_ratio = v;
             }
             t
         },
@@ -364,7 +364,7 @@ fn cmd_dock(
             params.kind,
             lig.n_scored(),
             lig.n_torsions(),
-            params.tpe.steps_divisor,
+            params.tpe.step_ratio,
         )
     } else {
         params.n_steps

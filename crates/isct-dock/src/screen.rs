@@ -235,7 +235,7 @@ fn process_cluster(
             sp.kind,
             seed_lig.n_scored(),
             seed_lig.n_torsions(),
-            sp.tpe.steps_divisor,
+            sp.tpe.step_ratio,
         );
     }
     let seed_core: std::collections::HashSet<usize> =
