@@ -10,83 +10,20 @@
 //! 最終スコアは別途厳密 f64（`scoring::intermolecular_terms`）で採点する前提（探索専用近似）。
 
 use rayon::prelude::*;
+use wide::f64x4;
 
 use crate::atom_types::XsType;
 use crate::geometry::Vec3;
-use crate::scoring::{eval_pair, ScoredAtom, CUTOFF};
+use crate::scoring::{ScoredAtom, CUTOFF};
+use crate::scoring_simd::probe_energy_f64x4;
 
-/// 受容体原子の均一セルリスト（マップ構築で各格子点の近傍原子だけを走査するため）。
-/// セル辺長 = CUTOFF なので、ある点の近傍 3×3×3 セルに「その点からカットオフ内の原子」が必ず入る。
-#[derive(Debug, Clone)]
-struct CellList {
-    origin: Vec3,
-    cell: f64,
-    nx: usize,
-    ny: usize,
-    nz: usize,
-    cells: Vec<Vec<u32>>,
-    atoms: Vec<ScoredAtom>,
-}
-
-impl CellList {
-    fn new(atoms: &[ScoredAtom]) -> Self {
-        let cell = CUTOFF;
-        let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
-        let mut hi = Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-        for a in atoms {
-            lo = lo.inf(&a.pos);
-            hi = hi.sup(&a.pos);
-        }
-        if atoms.is_empty() {
-            lo = Vec3::zeros();
-            hi = Vec3::zeros();
-        }
-        // 余白 1 セルを足してクランプ時の取りこぼしを防ぐ。
-        let origin = lo - Vec3::new(cell, cell, cell);
-        let span = (hi - lo) + Vec3::new(2.0 * cell, 2.0 * cell, 2.0 * cell);
-        let n = |s: f64| ((s / cell).ceil() as usize).max(1);
-        let (nx, ny, nz) = (n(span.x), n(span.y), n(span.z));
-        let idx = |v: f64, o: f64, m: usize| {
-            (((v - o) / cell).floor() as isize).clamp(0, m as isize - 1) as usize
-        };
-        let mut cells = vec![Vec::new(); nx * ny * nz];
-        for (i, a) in atoms.iter().enumerate() {
-            let cx = idx(a.pos.x, origin.x, nx);
-            let cy = idx(a.pos.y, origin.y, ny);
-            let cz = idx(a.pos.z, origin.z, nz);
-            cells[cx + nx * (cy + ny * cz)].push(i as u32);
-        }
-        CellList { origin, cell, nx, ny, nz, cells, atoms: atoms.to_vec() }
-    }
-
-    /// 点 `p` のカットオフ内候補（3×3×3 近傍セル）の受容体原子に `f` を適用する。
-    #[inline]
-    fn for_neighbors(&self, p: Vec3, mut f: impl FnMut(&ScoredAtom)) {
-        let cx = (((p.x - self.origin.x) / self.cell).floor() as isize).clamp(0, self.nx as isize - 1);
-        let cy = (((p.y - self.origin.y) / self.cell).floor() as isize).clamp(0, self.ny as isize - 1);
-        let cz = (((p.z - self.origin.z) / self.cell).floor() as isize).clamp(0, self.nz as isize - 1);
-        for dz in -1..=1 {
-            let z = cz + dz;
-            if z < 0 || z >= self.nz as isize {
-                continue;
-            }
-            for dy in -1..=1 {
-                let y = cy + dy;
-                if y < 0 || y >= self.ny as isize {
-                    continue;
-                }
-                for dx in -1..=1 {
-                    let x = cx + dx;
-                    if x < 0 || x >= self.nx as isize {
-                        continue;
-                    }
-                    let c = x as usize + self.nx * (y as usize + self.ny * z as usize);
-                    for &ai in &self.cells[c] {
-                        f(&self.atoms[ai as usize]);
-                    }
-                }
-            }
-        }
+/// bool → f64 フラグ（1.0/0.0）。スキャッタ SIMD のペア係数用。
+#[inline]
+fn flag64(b: bool) -> f64 {
+    if b {
+        1.0
+    } else {
+        0.0
     }
 }
 
@@ -205,8 +142,8 @@ pub struct VinaGrid {
     nx: usize,
     ny: usize,
     nz: usize,
-    /// 受容体のセルリスト（マップ構築で近傍原子だけ走査）。
-    cells: CellList,
+    /// 枝刈り済み受容体原子（マップ構築のスキャッタで走査）。
+    receptor: Vec<ScoredAtom>,
     /// XS 型インデックス → マップ（未生成は None）。
     maps: Vec<Option<GridMap>>,
 }
@@ -226,7 +163,7 @@ impl VinaGrid {
             nx,
             ny,
             nz,
-            cells: CellList::new(receptor),
+            receptor: receptor.to_vec(),
             maps: vec![None; XsType::COUNT],
         }
     }
@@ -241,31 +178,79 @@ impl VinaGrid {
         }
     }
 
-    /// 型 `t` のマップを構築する（各格子点で近傍受容体の Vina エネルギーを合算）。
-    /// z スライス単位で rayon 並列、近傍はセルリストで限定。
+    /// 型 `t` のマップを構築する（AutoGrid 流**スキャッタ**＋SIMD）。
+    ///
+    /// 格子点ごとに近傍を集める（gather）のでなく、**受容体原子ごとにカットオフ球内の格子点行（x 連続）へ寄与を
+    /// 加算**する。x 連続 4 点を `probe_energy_f64x4`（f64x4, 値のみ）で一括評価し、ギャザーの materialize を避けて
+    /// `exp` を 4 レーンで回す。z スライス単位で rayon 並列＝スライスごとに独立の f64 アキュムレータへ加算するので
+    /// 書き込み競合なし。**f64 で合算**するため、現行の「点ごと f64 和→f32 キャスト」と加算順のみ差（~1e-16）＝
+    /// f32 格納後はビット一致（＝精度中立）。カットオフ・ペア集合は gather と同一（`r²<CUTOFF²`）。
+    /// 前提: AVX2（`.cargo/config.toml` の `x86-64-v3`）。
     fn build_map(&self, t: XsType) -> GridMap {
         let (nx, ny, nz) = (self.nx, self.ny, self.nz);
+        let (ox, oy, oz) = (self.origin.x, self.origin.y, self.origin.z);
+        let sp = self.spacing;
         let cutoff2 = CUTOFF * CUTOFF;
+        // プローブ型（格子の対象 XS 型）のスカラ属性。
+        let p_radius = t.radius();
+        let p_hydro = flag64(t.is_hydrophobic());
+        let p_donor = flag64(t.is_donor());
+        let p_acceptor = flag64(t.is_acceptor());
+        let receptor = &self.receptor;
         let mut data = vec![0.0f32; nx * ny * nz];
         data.par_chunks_mut(nx * ny).enumerate().for_each(|(iz, slice)| {
-            let pz = self.origin.z + iz as f64 * self.spacing;
-            for iy in 0..ny {
-                let py = self.origin.y + iy as f64 * self.spacing;
-                for ix in 0..nx {
-                    let px = self.origin.x + ix as f64 * self.spacing;
-                    let p = Vec3::new(px, py, pz);
-                    let mut e = 0.0;
-                    self.cells.for_neighbors(p, |r| {
-                        let d2 = (p - r.pos).norm_squared();
-                        if d2 < cutoff2 {
-                            // 値のみ評価（`eval_pair`）。グリッドは値のみ格納し勾配は探索時に trilinear 補間の
-                            // 微分で得るため、ペアの解析勾配は不要。`eval_pair(..).weighted_sum()` は
-                            // `pair_energy_grad(..).0` とビット一致（同一関数形・重み・加算順）。
-                            e += eval_pair(t, r.xs, d2.sqrt()).weighted_sum();
-                        }
-                    });
-                    slice[ix + nx * iy] = e as f32;
+            let pz = oz + iz as f64 * sp;
+            // このスライス専用の f64 アキュムレータ（現行の点ごと f64 和と同じ精度）。
+            let mut acc = vec![0.0f64; nx * ny];
+            for a in receptor.iter() {
+                let (ax, ay, az) = (a.pos.x, a.pos.y, a.pos.z);
+                let dz = pz - az;
+                let rxy2 = cutoff2 - dz * dz; // xy 平面に残るカットオフ半径²
+                if rxy2 <= 0.0 {
+                    continue; // この z はこの原子のカットオフ球外
                 }
+                let a_radius = a.xs.radius();
+                let a_hydro = flag64(a.xs.is_hydrophobic());
+                let a_donor = flag64(a.xs.is_donor());
+                let a_acceptor = flag64(a.xs.is_acceptor());
+                let rxy = rxy2.sqrt();
+                let iy_lo = (((ay - rxy - oy) / sp).floor() as isize).max(0);
+                let iy_hi = (((ay + rxy - oy) / sp).ceil() as isize).min(ny as isize - 1);
+                for iy in iy_lo..=iy_hi {
+                    let py = oy + iy as f64 * sp;
+                    let dy = py - ay;
+                    let rx2 = rxy2 - dy * dy;
+                    if rx2 <= 0.0 {
+                        continue;
+                    }
+                    let rx = rx2.sqrt();
+                    let ix_lo = (((ax - rx - ox) / sp).floor() as isize).max(0);
+                    let ix_hi = (((ax + rx - ox) / sp).ceil() as isize).min(nx as isize - 1);
+                    if ix_hi < ix_lo {
+                        continue;
+                    }
+                    let row = nx * iy as usize;
+                    let mut ix = ix_lo;
+                    while ix <= ix_hi {
+                        let x0 = ox + ix as f64 * sp;
+                        let pxv = f64x4::new([x0, x0 + sp, x0 + 2.0 * sp, x0 + 3.0 * sp]);
+                        let vals = probe_energy_f64x4(
+                            pxv, py, pz, p_radius, p_hydro, p_donor, p_acceptor, ax, ay, az,
+                            a_radius, a_hydro, a_donor, a_acceptor,
+                        )
+                        .to_array();
+                        // カットオフ外レーンは 0。ix_hi を超えるレーンは書かない（範囲外・OOB 防止）。
+                        let mut lane = 0usize;
+                        while lane < 4 && ix + lane as isize <= ix_hi {
+                            acc[row + (ix as usize + lane)] += vals[lane];
+                            lane += 1;
+                        }
+                        ix += 4;
+                    }
+                }
+            }
+            for (dst, &v) in slice.iter_mut().zip(acc.iter()) {
+                *dst = v as f32;
             }
         });
         GridMap {
@@ -326,6 +311,41 @@ mod tests {
             atom(-1.5, 2.0, 1.0, XsType::NitrogenD),
             atom(1.0, -2.0, 2.0, XsType::CarbonP),
         ]
+    }
+
+    #[test]
+    fn scatter_build_node_matches_direct_sum() {
+        use crate::scoring::eval_pair;
+        // スキャッタ構築の各格子点値が、その点における直接ペア合算（厳密 f64）と一致することを固定する。
+        // 範囲計算の off-by-one・マスク漏れ・原子取りこぼしを検出する回帰テスト。全ノードを走査。
+        let rec = receptor();
+        let mut grid = VinaGrid::new(&rec, Vec3::zeros(), Vec3::new(12.0, 12.0, 12.0), 0.375, 2.0);
+        let t = XsType::CarbonH;
+        grid.ensure(&[t]);
+        let map = grid.map(t);
+        let mut max_err = 0.0f64;
+        for iz in 0..map.nz {
+            for iy in 0..map.ny {
+                for ix in 0..map.nx {
+                    let p = Vec3::new(
+                        map.origin.x + ix as f64 * map.spacing,
+                        map.origin.y + iy as f64 * map.spacing,
+                        map.origin.z + iz as f64 * map.spacing,
+                    );
+                    let mut direct = 0.0;
+                    for r in &rec {
+                        let d = (p - r.pos).norm();
+                        if d < CUTOFF {
+                            direct += eval_pair(t, r.xs, d).weighted_sum();
+                        }
+                    }
+                    let node = map.data[ix + map.nx * (iy + map.ny * iz)] as f64;
+                    max_err = max_err.max((node - direct).abs());
+                }
+            }
+        }
+        // f32 格納 + f64 加算順の差のみ＝実質ビット一致（全ノード）。
+        assert!(max_err < 1e-4, "max scatter-vs-direct node error {max_err}");
     }
 
     #[test]

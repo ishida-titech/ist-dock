@@ -7,7 +7,7 @@
 //! 注: f32 精度のため探索（局所最適化）の目的関数に使う。最終スコアや `vina --score_only`
 //! 一致ゲートはスカラ f64 版（`scoring::intermolecular_terms`）を引き続き使う。
 
-use wide::{f32x8, CmpGe, CmpGt, CmpLe, CmpLt};
+use wide::{f32x8, f64x4, CmpGe, CmpGt, CmpLe, CmpLt};
 
 use crate::geometry::Vec3;
 use crate::scoring::{
@@ -194,6 +194,70 @@ pub fn intermolecular_value_grad_simd(
 #[inline]
 fn hsum(v: f32x8) -> f32 {
     v.to_array().iter().sum()
+}
+
+/// グリッド構築（スキャッタ）用: 1 受容体原子を x 連続 4 格子点（`px`= 4 レーンの x 座標, `py`/`pz` 共通）に対して
+/// 評価し、**重み付きペアエネルギー値のみ**（力・勾配なし, カットオフ外は 0）を f64x4 で返す。
+/// プローブ型（格子の対象 XS 型）とペア原子のスカラ属性を受け取る。f64 精度なのでスカラ f64 build と実質一致
+/// （加算はグリッド側 f64 アキュムレータで行い、最終 f32 格納後はビット一致）。関数形は `scoring::eval_pair` /
+/// `intermolecular_value_grad_simd` の値部と同一（gauss1/gauss2/repulsion/hydrophobic/hbond）。
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub fn probe_energy_f64x4(
+    px: f64x4,
+    py: f64,
+    pz: f64,
+    p_radius: f64,
+    p_hydro: f64,
+    p_donor: f64,
+    p_acceptor: f64,
+    ax: f64,
+    ay: f64,
+    az: f64,
+    a_radius: f64,
+    a_hydro: f64,
+    a_donor: f64,
+    a_acceptor: f64,
+) -> f64x4 {
+    let zero = f64x4::ZERO;
+    let cutoff2 = f64x4::splat(CUTOFF * CUTOFF);
+    let two = f64x4::splat(2.0);
+    let three = f64x4::splat(3.0);
+    let half_lo = f64x4::splat(0.5);
+    let one_five = f64x4::splat(1.5);
+    let neg_07 = f64x4::splat(-0.7);
+    let neg_inv_07 = f64x4::splat(-1.0 / 0.7);
+    let w_g1 = f64x4::splat(W_GAUSS1);
+    let w_g2 = f64x4::splat(W_GAUSS2);
+    let w_rep = f64x4::splat(W_REPULSION);
+    let w_hyd = f64x4::splat(W_HYDROPHOBIC);
+    let w_hb = f64x4::splat(W_HBOND);
+
+    let dx = px - f64x4::splat(ax);
+    let dy = f64x4::splat(py - ay);
+    let dz = f64x4::splat(pz - az);
+    let r2 = dx * dx + dy * dy + dz * dz;
+    let r = r2.sqrt();
+    let d = r - f64x4::splat(p_radius + a_radius);
+
+    let z1 = d * two;
+    let g1 = (zero - z1 * z1).exp();
+    let z2 = (d - three) * half_lo;
+    let g2 = (zero - z2 * z2).exp();
+    let rep = d.cmp_lt(zero).blend(d * d, zero);
+    // hydrophobic / hbond のペア係数は原子・型で決まるスカラ（全レーン共通）。
+    let hyd_pair = f64x4::splat(p_hydro * a_hydro);
+    let hv = d
+        .cmp_le(half_lo)
+        .blend(f64x4::ONE, d.cmp_ge(one_five).blend(zero, one_five - d));
+    let hb_pair = f64x4::splat((p_donor * a_acceptor).max(p_acceptor * a_donor));
+    let hbv = d
+        .cmp_le(neg_07)
+        .blend(f64x4::ONE, d.cmp_ge(zero).blend(zero, d * neg_inv_07));
+
+    let value =
+        w_g1 * g1 + w_g2 * g2 + w_rep * rep + w_hyd * hv * hyd_pair + w_hb * hbv * hb_pair;
+    r2.cmp_lt(cutoff2).blend(value, zero)
 }
 
 #[cfg(test)]
