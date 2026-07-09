@@ -9,10 +9,12 @@
 //!   本移植は探索全体を seeded `ChaCha8Rng` で駆動し**同一 seed でビット一致**（他モードと同じ ISCT 方針）。
 //! - **数値**: boost/std の分布・浮動小数演算差、正規乱数は Box–Muller で自前生成のため、原実装とは
 //!   ビット一致しない（=忠実な再実装であり byte clone ではない）。
-//! - **既定パラメータ**: TPEvina 既定（`sample_num=7`, `num_lower_groups=10`, `num_upper_groups=10`,
-//!   `kernel_density_frequency=4`, `start_search_num=20`）を踏襲。この既定では greater 重み
-//!   `(upper_groups/2 - iter)/upper_groups` が探索初期に 0 へ収束するため、実効挙動は
-//!   **良観測近傍の Parzen サンプリング（EDA 的 exploitation）**になる（原実装通り）。
+//! - **greater 重み**: 出荷版 TPEvina 既定 `bfgs.h` に合わせ**順位ベース** `w(gi)=clamp(gi/(N_g−26),0,1)`
+//!   （gi=greater 内スコア順位, N_g=greater 観測数）。greater が 27 個以上たまると活性化し、g(x) による
+//!   期待改善（g/l 最小化）で `ei_candidates(sample_num)` 個の候補から 1 点を選ぶ。旧移植は `*_7s` 実験変種の
+//!   減衰式 `(upper/2−iter)/upper` を採っており greater が常に不活性だった（`docs/findings.202607090942`）。
+//!   `num_lower_groups`(lower 上限)=10, `sample_num`(EI 候補)=7, `kernel_density_frequency`(再構築回数)=4,
+//!   `start_search_num`(warmup 割合)=20 を既定とする。
 //!
 //! モデル空間ベクトル（長さ `6 + n_free_torsions`）: `[pos(3, 絶対), rot(3, 参照配座からの scaled-axis 差),
 //! free_torsion(n, 参照からの差)]`。位置は探索ボックス角、回転・torsion は [-π, π] を範囲とする。
@@ -161,17 +163,16 @@ fn sample_normal<R: Rng>(rng: &mut R, mean: f64, sigma: f64) -> f64 {
 struct Dim {
     /// lower カーネル（value, sigma）。
     lower: Vec<(f64, f64)>,
-    /// greater カーネル（value, sigma）。g(x) 用に上限 `upper_groups` 個へ切詰め済み。
-    greater: Vec<(f64, f64)>,
-    /// greater 全体に適用する重み（TPEvina: 反復依存でスカラ）。
-    greater_weight: f64,
+    /// greater カーネル（value, sigma, weight）。g(x) 用に上限 `upper_groups` 個へ切詰め済み。
+    /// weight は観測のスコア順位由来（順位ベース, 既定 bfgs.h `(N_g−k−1)/(N_g−26)` 相当）。
+    greater: Vec<(f64, f64, f64)>,
 }
 
 /// 全次元の Parzen モデル。`build` で観測から構築し `sample` で候補を引く。
 pub struct TpeModel {
     dims: Vec<Dim>,
-    /// greater 重み > 0 か（全次元共通のスカラ）。`false` のとき g(x)=0 で候補選択が退化し、
-    /// 高速経路（各次元 1 点のみサンプル・g/l 計算省略）に切り替える。
+    /// greater が活性か（順位ベース重みが正になる = greater 観測が 27 個以上）。`false` のとき g(x)=0 で
+    /// 候補選択が退化し、高速経路（各次元 1 点のみサンプル・g/l 計算省略）に切り替える。
     greater_active: bool,
 }
 
@@ -205,7 +206,7 @@ fn draw_lower<R: Rng>(rng: &mut R, lower: &[(f64, f64)], lo: f64, hi: f64) -> f6
     }
 }
 
-/// 1 次元の Gaussian 混合密度を `param` で評価（equal-weight または greater_weight 付き）。
+/// 1 次元の Gaussian 混合密度を `param` で評価（equal-weight, lower 用）。
 #[inline]
 fn mixture_density(kernels: &[(f64, f64)], param: f64, weight: f64) -> f64 {
     use std::f64::consts::PI;
@@ -219,13 +220,27 @@ fn mixture_density(kernels: &[(f64, f64)], param: f64, weight: f64) -> f64 {
         .sum()
 }
 
+/// 順位ベースの per-要素重み付き Gaussian 混合密度（greater/g(x) 用）。
+#[inline]
+fn mixture_density_weighted(kernels: &[(f64, f64, f64)], param: f64) -> f64 {
+    use std::f64::consts::PI;
+    let norm = 1.0 / (2.0 * PI).sqrt();
+    kernels
+        .iter()
+        .map(|&(val, sigma, w)| {
+            let z = (param - val) / sigma;
+            w * norm / sigma * (-0.5 * z * z).exp()
+        })
+        .sum()
+}
+
 impl TpeModel {
-    /// 観測 `obs` からモデルを構築する。`iter` は greater 重み減衰に使う提案カウンタ。
-    /// 観測が 2 点未満のときは `None`（呼び出し側はウォームアップにフォールバック）。
+    /// 観測 `obs` からモデルを構築する。`_iter`（提案カウンタ）は順位ベース greater 重みでは不要だが、
+    /// 呼び出し側の互換のため残す。観測が 2 点未満のときは `None`（呼び出し側はウォームアップにフォールバック）。
     pub fn build(
         obs: &[Obs],
         p: &TpeParams,
-        iter: usize,
+        _iter: usize,
         l_limit: &[f64],
         g_limit: &[f64],
     ) -> Option<TpeModel> {
@@ -245,9 +260,17 @@ impl TpeModel {
         let lower_idx = &idx[..n_lower];
         let greater_idx = &idx[n_lower..];
 
-        // greater 重み（TPEvina: min(1,max(0,(upper/2 - iter)/upper))）。iter が進むと 0 へ。
-        let gw = (((p.upper_groups / 2) as f64 - iter as f64) / p.upper_groups as f64)
-            .clamp(0.0, 1.0);
+        // 順位ベース greater 重み（既定 bfgs.h: w(gi)=clamp(gi/(N_g−26),0,1)）。gi=greater 内スコア順位
+        // （0=最良greater→重み0, 悪いほど大）。N_g<27 で全 0＝greater 不活性。反復 iter には依存しない。
+        let n_g = greater_idx.len();
+        let greater_active = n_g >= 27;
+        let gw_of = |gi: usize| -> f64 {
+            if n_g < 27 {
+                0.0
+            } else {
+                (gi as f64 / (n_g as f64 - 26.0)).clamp(0.0, 1.0)
+            }
+        };
 
         let dim = l_limit.len();
         let mut dims = Vec::with_capacity(dim);
@@ -259,23 +282,24 @@ impl TpeModel {
             let lower: Vec<(f64, f64)> = (0..lv.len())
                 .map(|k| (lv[k], kernel_sigma(&lv, k, lo, hi, lv.len())))
                 .collect();
-            // greater カーネル: 値でソート→sigma、g(x) 用に upper_groups 個へ切詰め。
-            let mut gv: Vec<f64> = greater_idx.iter().map(|&i| obs[i].v[j]).collect();
-            gv.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            // greater カーネル: (値, 順位重み) を値でソート→sigma、g(x) 用に upper_groups 個へ切詰め。
+            let mut gvw: Vec<(f64, f64)> = greater_idx
+                .iter()
+                .enumerate()
+                .map(|(gi, &i)| (obs[i].v[j], gw_of(gi)))
+                .collect();
+            gvw.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            let gv: Vec<f64> = gvw.iter().map(|x| x.0).collect();
             let n_div = (1 + gv.len()).min(100).saturating_sub(1).max(1);
-            let greater: Vec<(f64, f64)> = (0..gv.len())
-                .map(|k| (gv[k], kernel_sigma(&gv, k, lo, hi, n_div)))
+            let greater: Vec<(f64, f64, f64)> = (0..gvw.len())
+                .map(|k| (gvw[k].0, kernel_sigma(&gv, k, lo, hi, n_div), gvw[k].1))
                 .take(p.upper_groups)
                 .collect();
-            dims.push(Dim {
-                lower,
-                greater,
-                greater_weight: gw,
-            });
+            dims.push(Dim { lower, greater });
         }
         Some(TpeModel {
             dims,
-            greater_active: gw > 0.0,
+            greater_active,
         })
     }
 
@@ -316,7 +340,7 @@ impl TpeModel {
             for (s, ei) in ei_per_slot.iter_mut().enumerate() {
                 let param = draw_lower(rng, &d.lower, lo, hi);
                 let lx = mixture_density(&d.lower, param, 1.0);
-                let gx = mixture_density(&d.greater, param, d.greater_weight);
+                let gx = mixture_density_weighted(&d.greater, param);
                 // TPEvina は g/l を最小化（比小=良）。log で次元合成。
                 let ratio = if lx > 0.0 { gx / lx } else { f64::INFINITY };
                 *ei += ratio.ln();
@@ -392,16 +416,38 @@ mod tests {
     }
 
     #[test]
-    fn fast_path_when_greater_dead() {
-        // 大きな iter で greater 重み=0 → 高速経路。各次元 1 点だけ引き範囲内を返す。
+    fn fast_path_when_few_greater() {
+        // greater 観測が 27 個未満（順位ベース重み全 0）→ 高速経路。各次元 1 点だけ引き範囲内を返す。
         let (l, g) = bounds(Vec3::zeros(), Vec3::new(10.0, 10.0, 10.0), 1); // dim=7
         let p = TpeParams::default();
         let mut rng = ChaCha8Rng::seed_from_u64(3);
-        let obs: Vec<Obs> = (0..30)
+        // 20 obs → n_lower=2, n_g=18 (<27) → greater 不活性。
+        let obs: Vec<Obs> = (0..20)
             .map(|i| Obs { v: warmup_sample(&mut rng, &l, &g), score: i as f64 })
             .collect();
-        let model = TpeModel::build(&obs, &p, 100, &l, &g).unwrap(); // iter=100 → gw=0
-        assert!(!model.greater_active, "greater should be dead at large iter");
+        let model = TpeModel::build(&obs, &p, 0, &l, &g).unwrap();
+        assert!(!model.greater_active, "greater should be inactive with <27 greater obs");
+        for _ in 0..20 {
+            let v = model.sample(&mut rng, &p, &l, &g);
+            assert_eq!(v.len(), l.len());
+            for j in 0..v.len() {
+                assert!(v[j] >= l[j] - 1e-9 && v[j] <= g[j] + 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn greater_active_when_enough_obs() {
+        // greater 観測が 27 個以上 → 順位ベース重みが正で活性化。完全経路でも範囲内を返す。
+        let (l, g) = bounds(Vec3::zeros(), Vec3::new(10.0, 10.0, 10.0), 1); // dim=7
+        let p = TpeParams::default();
+        let mut rng = ChaCha8Rng::seed_from_u64(5);
+        // 40 obs → n_lower=2, n_g=38 (>=27) → greater 活性。
+        let obs: Vec<Obs> = (0..40)
+            .map(|i| Obs { v: warmup_sample(&mut rng, &l, &g), score: i as f64 })
+            .collect();
+        let model = TpeModel::build(&obs, &p, 0, &l, &g).unwrap();
+        assert!(model.greater_active, "greater should be active with >=27 greater obs");
         for _ in 0..20 {
             let v = model.sample(&mut rng, &p, &l, &g);
             assert_eq!(v.len(), l.len());

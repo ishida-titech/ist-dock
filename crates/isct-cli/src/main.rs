@@ -172,8 +172,17 @@ fn build_search_params(
         kind: search_kind(mode),
         qvina_cos: qvina_cos_override.unwrap_or(run.qvina_cos),
         hunt_cap: run.hunt_cap,
-        // TPE ハイパーパラメータは既定（TPEvina 準拠）。config 露出は将来対応。
-        tpe: Default::default(),
+        // TPE ハイパーパラメータ。既定は TPEvina 準拠、EI 候補数と warmup 割合は config で上書き可（opt-in）。
+        tpe: {
+            let mut t = isct_dock::tpe::TpeParams::default();
+            if let Some(v) = run.tpe_ei_candidates {
+                t.ei_candidates = v;
+            }
+            if let Some(v) = run.tpe_startup_frac {
+                t.startup_frac = v;
+            }
+            t
+        },
     }
 }
 
