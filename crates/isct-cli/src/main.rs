@@ -184,6 +184,15 @@ fn build_search_params(
             if let Some(v) = run.tpe_step_ratio {
                 t.step_ratio = v;
             }
+            if let Some(v) = run.tpe_lower_cap {
+                t.lower_cap = v;
+            }
+            if let Some(v) = run.tpe_greater_cap {
+                t.greater_cap = v;
+            }
+            if let Some(v) = run.tpe_density_reuse {
+                t.density_reuse = v;
+            }
             t
         },
     }

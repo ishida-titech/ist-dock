@@ -13,7 +13,7 @@
 //!   （gi=greater 内スコア順位, N_g=greater 観測数）。greater が 27 個以上たまると活性化し、g(x) による
 //!   期待改善（g/l 最小化）で `ei_candidates(sample_num)` 個の候補から 1 点を選ぶ。旧移植は `*_7s` 実験変種の
 //!   減衰式 `(upper/2−iter)/upper` を採っており greater が常に不活性だった（`docs/findings.202607090942`）。
-//!   `num_lower_groups`(lower 上限)=10, `sample_num`(EI 候補)=25, `kernel_density_frequency`(再構築回数)=4,
+//!   `num_lower_groups`(lower 上限)=10, `sample_num`(EI 候補)=25, `kernel_density_frequency`(再構築回数)=6,
 //!   `start_search_num`(warmup 比率 startup_ratio)=0.05 を既定とする（`docs/results.202607091051`,
 //!   `docs/findings.202607091051`）。
 //!
@@ -36,7 +36,7 @@ pub struct TpeParams {
     /// TPEvina `start_search_num`（あちらは除数だが isct では直感的な比率にした。既定 0.05 = 従来の 1/20）。
     pub startup_ratio: f64,
     /// auto n_steps の係数: `auto_n_steps_tpe = auto_n_steps_vina × step_ratio`（**大きいほど深い**）。
-    /// 既定 1/15 ≈ 0.0667（＝TPEvina の num_steps/15）。n_steps を明示指定した場合は不使用。
+    /// 既定 0.1（TPEvina の num_steps/15 相当は 1/15≈0.0667）。n_steps を明示指定した場合は不使用。
     pub step_ratio: f64,
     /// lower（良）集合サイズ上限（TPEvina `num_lower_groups`）。実サイズ = clamp(0.25√N, 2, これ)。
     pub lower_cap: usize,
@@ -54,10 +54,10 @@ impl Default for TpeParams {
         TpeParams {
             ei_candidates: 25,
             startup_ratio: 0.05,
-            step_ratio: 1.0 / 15.0,
+            step_ratio: 0.1,
             lower_cap: 10,
             greater_cap: 10,
-            density_reuse: 4,
+            density_reuse: 6,
             local_iters: 0,
         }
     }
