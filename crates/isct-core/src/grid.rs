@@ -13,7 +13,7 @@ use rayon::prelude::*;
 
 use crate::atom_types::XsType;
 use crate::geometry::Vec3;
-use crate::scoring::{pair_energy_grad, ScoredAtom, CUTOFF};
+use crate::scoring::{eval_pair, ScoredAtom, CUTOFF};
 
 /// 受容体原子の均一セルリスト（マップ構築で各格子点の近傍原子だけを走査するため）。
 /// セル辺長 = CUTOFF なので、ある点の近傍 3×3×3 セルに「その点からカットオフ内の原子」が必ず入る。
@@ -258,7 +258,10 @@ impl VinaGrid {
                     self.cells.for_neighbors(p, |r| {
                         let d2 = (p - r.pos).norm_squared();
                         if d2 < cutoff2 {
-                            e += pair_energy_grad(t, r.xs, d2.sqrt()).0;
+                            // 値のみ評価（`eval_pair`）。グリッドは値のみ格納し勾配は探索時に trilinear 補間の
+                            // 微分で得るため、ペアの解析勾配は不要。`eval_pair(..).weighted_sum()` は
+                            // `pair_energy_grad(..).0` とビット一致（同一関数形・重み・加算順）。
+                            e += eval_pair(t, r.xs, d2.sqrt()).weighted_sum();
                         }
                     });
                     slice[ix + nx * iy] = e as f32;
