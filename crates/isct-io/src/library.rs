@@ -101,6 +101,16 @@ struct RawMol {
 }
 
 /// マニフェスト（TOML）を読み、参照 PDBQT を解決してライブラリを構築する。
+/// スキップされたクラスタ（リガンド）の記録。screen で解釈不能な原子・不正 PDBQT を含むクラスタを
+/// 全体停止せずスキップした際に、その理由を残す（サマリ表示・`skipped.tsv` 用）。
+#[derive(Debug, Clone)]
+pub struct SkipRecord {
+    pub cluster_id: String,
+    pub compound_id: String,
+    pub reason: String,
+}
+
+/// マニフェストを厳密ロードする（1 件でも解決失敗なら全体を Err）。単発検証・pack の既定に使う。
 pub fn load(path: impl AsRef<Path>) -> Result<Library, IoError> {
     let path = path.as_ref();
     let text = std::fs::read_to_string(path)?;
@@ -109,53 +119,83 @@ pub fn load(path: impl AsRef<Path>) -> Result<Library, IoError> {
 
     let mut clusters = Vec::with_capacity(raw.clusters.len());
     for rc in raw.clusters {
-        let pocket = match (rc.pocket_center, rc.pocket_size) {
-            (Some(center), Some(size)) => Some(Pocket { center, size }),
-            (None, None) => None,
-            _ => {
-                return Err(IoError::Library(format!(
-                    "cluster {}: pocket_center と pocket_size は両方指定するか両方省略する",
-                    rc.id
-                )))
-            }
-        };
+        clusters.push(build_cluster(base, rc)?);
+    }
+    Ok(Library { clusters })
+}
 
-        let seed = resolve_mol(base, rc.seed, &rc.id, "seed")?;
-        let n_core = seed.core_atoms.len();
+/// マニフェストを**寛容ロード**する（解釈不能なクラスタはスキップして継続）。ファイル読込・TOML 構文の
+/// 失敗は致命（Err）だが、個々のクラスタの解決失敗（未知原子・不正 PDBQT・パス欠落・構造不整合）は
+/// `SkipRecord` に記録して残りを続行する。10M スクリーニングで 1 リガンドが全体を落とさないための経路。
+pub fn load_lenient(path: impl AsRef<Path>) -> Result<(Library, Vec<SkipRecord>), IoError> {
+    let path = path.as_ref();
+    let text = std::fs::read_to_string(path)?;
+    let raw: RawLibrary = toml::from_str(&text)?;
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
 
-        // 子を持つクラスタは seed コアが非空でなければならない（子がそこへ重なるため）。
-        // 子のいない seed のみクラスタは空コア＝全自由度ドッキングで正常。
-        if !rc.children.is_empty() && n_core == 0 {
+    let mut clusters = Vec::with_capacity(raw.clusters.len());
+    let mut skipped = Vec::new();
+    for rc in raw.clusters {
+        let cluster_id = rc.id.clone();
+        let compound_id = rc.seed.compound_id.clone();
+        match build_cluster(base, rc) {
+            Ok(c) => clusters.push(c),
+            Err(e) => skipped.push(SkipRecord {
+                cluster_id,
+                compound_id,
+                reason: e.to_string(),
+            }),
+        }
+    }
+    Ok((Library { clusters }, skipped))
+}
+
+/// 1 クラスタ（seed＋子）を生の manifest エントリから構築する。`load`（厳密）と `load_lenient`（寛容）で共有。
+fn build_cluster(base: &Path, rc: RawCluster) -> Result<Cluster, IoError> {
+    let pocket = match (rc.pocket_center, rc.pocket_size) {
+        (Some(center), Some(size)) => Some(Pocket { center, size }),
+        (None, None) => None,
+        _ => {
             return Err(IoError::Library(format!(
-                "cluster {} seed {}: 子があるのに core_atoms が空",
-                rc.id, seed.compound_id
-            )));
+                "cluster {}: pocket_center と pocket_size は両方指定するか両方省略する",
+                rc.id
+            )))
         }
+    };
 
-        let mut children = Vec::with_capacity(rc.children.len());
-        for raw_child in rc.children {
-            let child = resolve_mol(base, raw_child, &rc.id, "child")?;
-            if child.core_atoms.len() != n_core {
-                return Err(IoError::Library(format!(
-                    "cluster {}: 子 {} の core_atoms 数 {} が seed の {} と不一致",
-                    rc.id,
-                    child.compound_id,
-                    child.core_atoms.len(),
-                    n_core
-                )));
-            }
-            children.push(child);
-        }
+    let seed = resolve_mol(base, rc.seed, &rc.id, "seed")?;
+    let n_core = seed.core_atoms.len();
 
-        clusters.push(Cluster {
-            id: rc.id,
-            pocket,
-            seed,
-            children,
-        });
+    // 子を持つクラスタは seed コアが非空でなければならない（子がそこへ重なるため）。
+    // 子のいない seed のみクラスタは空コア＝全自由度ドッキングで正常。
+    if !rc.children.is_empty() && n_core == 0 {
+        return Err(IoError::Library(format!(
+            "cluster {} seed {}: 子があるのに core_atoms が空",
+            rc.id, seed.compound_id
+        )));
     }
 
-    Ok(Library { clusters })
+    let mut children = Vec::with_capacity(rc.children.len());
+    for raw_child in rc.children {
+        let child = resolve_mol(base, raw_child, &rc.id, "child")?;
+        if child.core_atoms.len() != n_core {
+            return Err(IoError::Library(format!(
+                "cluster {}: 子 {} の core_atoms 数 {} が seed の {} と不一致",
+                rc.id,
+                child.compound_id,
+                child.core_atoms.len(),
+                n_core
+            )));
+        }
+        children.push(child);
+    }
+
+    Ok(Cluster {
+        id: rc.id,
+        pocket,
+        seed,
+        children,
+    })
 }
 
 /// 1 分子エントリを解決（PDBQT を読み・パースし、core_atoms 範囲を検証）。
@@ -251,6 +291,47 @@ core_atoms = [0, 1]
         assert_eq!(c.seed.molecule.atoms.len(), 2);
         assert_eq!(c.children[0].molecule.atoms.len(), 3);
         assert_eq!(c.children[0].compound_id, "child0");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn lenient_load_skips_bad_ligand_and_continues() {
+        let dir = std::env::temp_dir().join(format!("isct_lib_lenient_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        write(&dir, "good.pdbqt", SEED);
+        // 未知元素 Xx を含む壊れたリガンド（フォールバックでも救えない）。
+        let bad = SEED.replace(" C\n", " Xx\n");
+        write(&dir, "bad.pdbqt", &bad);
+        let manifest = "\
+[[cluster]]
+id = \"good\"
+[cluster.seed]
+compound_id = \"g0\"
+pdbqt = \"good.pdbqt\"
+core_atoms = []
+
+[[cluster]]
+id = \"bad\"
+[cluster.seed]
+compound_id = \"b0\"
+pdbqt = \"bad.pdbqt\"
+core_atoms = []
+";
+        write(&dir, "library.toml", manifest);
+        let path = dir.join("library.toml");
+
+        // 厳密ロードは壊れたリガンドで全体 Err。
+        assert!(load(&path).is_err());
+
+        // 寛容ロードは good を残し bad をスキップ＋記録して継続。
+        let (lib, skipped) = load_lenient(&path).unwrap();
+        assert_eq!(lib.clusters.len(), 1);
+        assert_eq!(lib.clusters[0].id, "good");
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].cluster_id, "bad");
+        assert_eq!(skipped[0].compound_id, "b0");
+        assert!(skipped[0].reason.contains("Xx"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

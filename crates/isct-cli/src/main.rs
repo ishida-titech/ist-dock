@@ -234,10 +234,14 @@ fn setup_thread_pinning(pin: bool) {
 
 /// TOML マニフェストを memmap 用バイナリへ変換する（M4）。
 fn cmd_pack(manifest: &PathBuf, out: &PathBuf) -> Result<()> {
-    let lib = library::load(manifest)
+    // 寛容ロード: 解釈不能なリガンドはスキップして残りをパックする（screen と同挙動）。
+    let (lib, skipped) = library::load_lenient(manifest)
         .with_context(|| format!("failed to load library: {}", manifest.display()))?;
     isct_io::library_bin::pack(&lib, out)
         .with_context(|| format!("failed to pack: {}", out.display()))?;
+    if !skipped.is_empty() {
+        eprintln!("warning: {} 件のリガンドを解釈不能によりスキップしました", skipped.len());
+    }
     println!("packed {} clusters -> {}", lib.clusters.len(), out.display());
     Ok(())
 }
@@ -295,13 +299,17 @@ fn cmd_screen(
     );
 
     // TOML（in-RAM）か バイナリ（memmap streaming）かでソースを選び、汎用 screen を呼ぶ。
+    // TOML は**寛容ロード**: 解釈不能なリガンド（未知原子・不正 PDBQT）は全体を止めずスキップして継続。
+    // バイナリは pack 時に解決済みなので skip は発生しない。
+    let mut skipped = Vec::new();
     let report = if is_binary {
         let src = isct_io::library_bin::BinaryLibrary::open(library_path)
             .with_context(|| format!("failed to open binary library: {}", library_path.display()))?;
         screen(&rec_scored, &src, &params)
     } else {
-        let lib = library::load(library_path)
+        let (lib, skips) = library::load_lenient(library_path)
             .with_context(|| format!("failed to load library: {}", library_path.display()))?;
+        skipped = skips;
         screen(&rec_scored, &lib, &params)
     };
 
@@ -315,10 +323,26 @@ fn cmd_screen(
         std::fs::write(poses_path, isct_dock::screen::poses_pdbqt(&report, top))?;
     }
 
+    // 解釈不能でスキップしたリガンドがあれば skipped.tsv に記録（ランキングと同ディレクトリ）。
+    if !skipped.is_empty() {
+        let skip_path = out_path.with_file_name("skipped.tsv");
+        let mut s = String::from("Cluster_ID\tCompound_ID\tReason\n");
+        for r in &skipped {
+            s.push_str(&format!("{}\t{}\t{}\n", r.cluster_id, r.compound_id, r.reason));
+        }
+        let _ = std::fs::write(&skip_path, s);
+        eprintln!(
+            "warning: {} 件のリガンドを解釈不能によりスキップしました（詳細: {}）",
+            skipped.len(),
+            skip_path.display()
+        );
+    }
+
     println!("# isct-dock screen (ISCT-Dock Phase 1-3, M3)");
     println!("clusters total       : {}", report.n_clusters());
     println!("clusters pruned       : {}", report.n_pruned_clusters());
     println!("children skipped(prune): {}", report.n_skipped_children());
+    println!("ligands skipped(parse): {}", skipped.len());
     println!("molecules scored      : {}", report.entries.len());
     println!("ranking TSV           : {}", out_path.display());
     if let Some(p) = poses_out {

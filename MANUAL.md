@@ -30,19 +30,26 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
 # 方法B: 恒常化（テンプレートをコピーして有効化。戻すには .cargo/config.toml を削除）
 cp .cargo/config.toml.example .cargo/config.toml
 cargo build --release
+
+# 方法C: AVX2 のみ（portable, 推奨）。native と違い AVX2 対応 CPU 間でビット一致を保つ。
+#         .cargo/config.toml に rustflags = ["-C","target-cpu=x86-64-v3"] を書く（grid 経路が主目的ならこれで十分）。
+RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --release
 ```
 
-**効果は workload・CPU 依存で、必ずしも大きくない（本機 = 80 コア Xeon での実測）**:
-- **単発 dock（scoring=direct・SIMD f32 経路）**: ~5%。affinity がわずかに変化（−12.4797→−12.4750）
-  ＝f32 FMA の丸め差で結果が変わる（accuracy トレードオフ）。
-- **grid スクリーニング（既定・推奨）**: **速度差ほぼ無し・出力ビット一致**（grid 補間は f64 で native の
-  影響を受けにくい）。→ 10M grid スクリーニングでは native は実効ゲインが乏しい。
-- per-op の native ゲイン（~1.3×）は、多コアで多数の run/クラスタを並列実行するとスケジューリングに
-  希釈される。**少コア・レイテンシ律速の単発 dock ほど効きやすい**。
+**効果は workload・CPU 依存（本機 = 80 コア Xeon での実測）**:
+- **grid（既定・推奨、`scoring="grid"`）**: **AVX2 で速くなり、かつ出力ビット一致**。グリッド構築が
+  スキャッタ＋`f64x4` SIMD 化されており AVX2 で本来のレーン幅で回る（グリッド床 ~2.9×、全 dock −10〜16%）。
+  加算は f64 なので**スコア/RMSD は非 AVX2 とビット完全一致**（Astex 全85×3seed の 255×3 サンプルで確認,
+  `docs/results.202607092101`）＝**精度トレードオフなしで速くなる**。**grid 経路では AVX2 有効化を推奨**。
+  - ただし v3 非対応の**旧 CPU では動かない**ため、既定ビルド（無効）は portable・決定論のまま据え置く。
+- **単発 dock（`scoring="direct"`・SIMD f32 経路）**: ~5%。**こちらは精度トレードオフあり** — f32 FMA の丸め差で
+  affinity がわずかに変化（−12.4797→−12.4750）、borderline 標的が反転しうる（フル DUD-E で net −7/222）。
+- per-op の native ゲインは多コアで多数の run/クラスタを並列実行するとスケジューリングに希釈される。
+  **少コア・レイテンシ律速の単発 dock ほど効きやすい**。
 
-**トレードオフ**: direct/SIMD 経路では f32 codegen 依存で borderline 標的が反転しうる（フル DUD-E で net
-−7/222 を実測）。結果が CPU codegen 依存になり異機種間でビット一致しなくなる。既定ビルド（無効時）は
-従来どおり厳密 f64・決定論的。有効化した `.cargo/config.toml` は gitignore 済み。詳細は
+**まとめ**: **grid 経路は AVX2 で「速く・ビット一致」＝有効化推奨**。direct/f32 経路のみ codegen 依存の丸め差で
+結果が変わり異機種間ビット一致が崩れる（accuracy トレードオフ）。既定ビルド（無効時）は従来どおり baseline
+x86-64・厳密 f64・決定論的。有効化した `.cargo/config.toml` は gitignore 済み。詳細は
 `.cargo/config.toml.example` のコメント参照。
 
 ---
@@ -114,27 +121,91 @@ output poses               : ligand_isct_out.pdbqt
 - 出力 PDBQT は **マルチモデル**（`MODEL n` / `ENDMDL`、Vina 流）。mode 1 が最良。
 - `RMSD vs input` は最良モードの重原子 RMSD vs 入力ポーズ（再ドッキング検証用。対称性補正なし）。
 
-### 2.3 `screen` — クラスタライブラリのスクリーニング
+### 2.3 `screen` — ライブラリのスクリーニング
 
 ```sh
 ./target/release/isct-dock screen <receptor.pdbqt> <library.toml|library.bin> --config <run.toml> \
     [--out ranking.tsv] [--poses-out poses.pdbqt --top N] [--pin-threads] [--search MODE]
 ```
 
-ライブラリは TOML マニフェスト（小・デバッグ）か `pack` 済みバイナリ（`.bin`、大規模・memmap streaming）。
-`--search`（dock と同じ。seed 探索に適用）・`--poses-out`（上位 N をマルチモデル PDBQT 出力）・
-`--pin-threads`（ワーカを物理コアへピン留め、Linux）。
+単一受容体に対しライブラリ全分子をドッキングする。**共有グリッドを 1 度だけ構築して全分子で再利用**するため、
+`dock` を分子数ぶん繰り返すのと違い、グリッド再構築・受容体パース・プロセス起動が **1 回**で済む（大規模ほど有利）。
+ライブラリは TOML マニフェスト（小・デバッグ）か `pack` 済みバイナリ（`.bin`、大規模・memmap streaming）。共通オプション:
+`--search`（dock と同じ。seed 探索に適用）・`--poses-out`（上位 `--top` をマルチモデル PDBQT 出力）・
+`--pin-threads`（ワーカを物理コアへピン留め、Linux）。並列度は `RAYON_NUM_THREADS`。
 
-クラスタ（代表 seed ＋ MCS コアを共有する子分子群）単位で処理する:
+**ライブラリの作り方で 2 通りの使い方がある**:
+
+| | (A) クラスタリングして使う（§2.3.1） | (B) そのまま使う＝平坦/singleton（§2.3.2） |
+|---|---|---|
+| 対象 | congeneric シリーズ（共通スキャフォールド） | 多様な化合物ライブラリ（クラスタリング不要） |
+| 各分子の扱い | seed＋MCS コア共有の子分子群 | 1 分子 = 1 クラスタ（子なし・全自由度） |
+| 計算 | seed 1回 dock ＋ 子の核固定配置（Phase 1-3） | 各分子を独立に完全ドッキング（=`dock` と同一） |
+| グリッド | クラスタが pocket を持たなければ共有 | 全 singleton が [box] 共有＝1回構築で再利用 |
+
+いずれも出力はランキング TSV（既定 `<library と同ディレクトリ>/ranking.tsv`）。列:
+`Rank, Compound_ID, Cluster_ID, Total_Score, VdW_Energy, Electrostatic_Energy, Target_Protein_State_ID`。
+`Total_Score` は torsion 補正後 affinity（Vina 互換）で昇順ランク。`--poses-out` 指定時は上位 `--top` 件を
+マルチモデル PDBQT（各 MODEL に `REMARK Rank/Compound/Cluster/Score/Role`）で出力。stdout にサマリ
+（クラスタ数・棄却数・スキップした子数・採点分子数）。
+
+> **堅牢性**: TOML ライブラリのロードは**寛容**で、解釈不能なリガンド（元素すら推定できない原子・不正 PDBQT）は
+> **全体を止めずスキップして継続**する（10M 規模で 1 件が全ランを落とさない）。スキップ件数はサマリの
+> `ligands skipped(parse)` に出し、詳細（Cluster_ID/Compound_ID/Reason）を `skipped.tsv`（ランキングと同ディレクトリ）
+> に記録する。単発 `dock`/`score` は 1 分子を意図的に渡す用途のため、解釈不能な原子は明確にエラーにする。
+
+#### 2.3.1 クラスタライブラリを使う場合（scaffold 再利用）
+
+**用途**: 共通コアを持つ congeneric シリーズ。代表 seed を 1 回ドッキングし、子分子はそのコアへ重ねるだけで
+探索を共有・削減する。クラスタ（代表 seed ＋ MCS コアを共有する子分子群）単位で処理する:
 - **Phase 1**: seed をドッキングし、結合が悪い（目的関数 > `prune_threshold`）クラスタは**子を全スキップ**（一括棄却）。
 - **Phase 2/3**: 生存クラスタの各子を、seed の docked コアへ剛体重ね合わせ→R 基 torsion を局所最適化。
 
-出力: ランキング TSV（既定 `<library と同ディレクトリ>/ranking.tsv`）。列:
-`Rank, Compound_ID, Cluster_ID, Total_Score, VdW_Energy, Electrostatic_Energy, Target_Protein_State_ID`。
-`Total_Score` は torsion 補正後 affinity（Vina 互換）で昇順ランク。`--poses-out` 指定時は上位 `--top` 件を
-マルチモデル PDBQT（各 MODEL に `REMARK Rank/Compound/Cluster/Score/Role`）で出力。
+マニフェストは `[[cluster]]` に `seed`（`core_atoms` 非空）と `[[cluster.child]]`（seed と 1:1 同順のコア）を持つ
+（§3 の「クラスタライブラリ・マニフェスト」）。`tools/preprocess/build_library.py` で生成する（§5.1）。
 
-stdout にサマリ（クラスタ数・棄却数・スキップした子数・採点分子数）。
+> 注意: 子は seed コアへ剛体で重ねる前提。**多様性の高いライブラリ（例 DUD-E）では共通コアの再利用率が低く
+> 利得が限定的**なことがある（評価は `docs/` を参照）。congeneric 最適化シリーズで効果が大きい。
+
+#### 2.3.2 クラスタリングせずそのまま使う場合（平坦/singleton スクリーニング）
+
+**用途**: 多様な化合物を単純に全件ドッキングしたい（クラスタリングするほどでない）場合。各リガンドを
+**1 クラスタ（seed のみ・children なし・`core_atoms` 空＝全自由度ドッキング）** にする。`dock` と**厳密に同一の
+探索・スコア（ビット一致）**でありながら、pocket を書かず `[box]` を共有するのでグリッドは 1 度だけ構築され全
+リガンドで再利用される。
+
+**ヘルパ `tools/isct_screening.py`** が受容体＋リガンドディレクトリからこの singleton ライブラリを生成し `screen`
+を実行する（マニフェストを手書きしなくてよい）:
+
+```sh
+python3 tools/isct_screening.py <receptor.pdbqt> <ligand_dir> \
+    [--n_dockings N] [--clean] [--center X Y Z] [--size S] \
+    [--search MODE] [--n_runs N] [--seed S] [--prune_threshold T] [--workdir DIR] [--out PATH] [--bin PATH]
+```
+
+| オプション | 既定 | 説明 |
+|---|---|---|
+| `receptor` / `ligand_dir` | — | 第1=受容体 PDBQT、第2=リガンド PDBQT（`*.pdbqt`）のディレクトリ。 |
+| `--n_dockings N` | 全件 | **ファイル名昇順で先頭 N 件**のみ処理。 |
+| `--clean` | off（保持） | **指定時のみ**中間ファイル（`run.toml`/`library.toml`）を削除。ランキング TSV は常に残す。 |
+| `--center X Y Z` | リガンド重心の平均 | 共有ボックス中心。省略時は対象リガンド群の重心平均を自動採用。 |
+| `--size S` | 22.5 | ボックス一辺（Å）。 |
+| `--search MODE` | `tpe` | 探索モード（`tpe`/`vina`/`drift`/`standard`/`qvina2`）。 |
+| `--n_runs N` | モード既定 | 1 リガンドあたり独立 run 数（速度/精度トレード）。 |
+| `--prune_threshold T` | `1e9`（全件出力） | seed エネルギー > T を除外。ヒットのみ欲しければ `0.0` 等。 |
+| `--workdir` / `--out` / `--bin` | `./isct_screening_out` / `<workdir>/ranking.tsv` / `target/release/isct-dock` | 中間・出力・バイナリのパス。 |
+
+- 入力 glob は `dock` の既定出力 `*_isct_out.pdbqt` を**自動除外**（同一 dir に dock 出力が混在しても再ドッキングしない）。
+- **共有ボックスは全リガンドが同一ポケット付近にある前提**。中心が不適切なら `--center` で明示すること。
+- 手書きで済ませる場合の singleton マニフェスト（`pocket_center/size` を書かず `[box]` 共有）:
+  ```toml
+  [[cluster]]
+  id = "sng_0"
+  [cluster.seed]
+  compound_id = "mol1"
+  pdbqt = "mol1.pdbqt"     # 相対パス（マニフェスト基準）または絶対パス
+  core_atoms = []           # 空＝全自由度ドッキング（＝dock と同一）
+  ```
 
 ### 2.4 `pack` — クラスタライブラリのバイナリ化
 
@@ -160,7 +231,7 @@ size   = [20.0, 20.0, 20.0]      # ボックス寸法 [x,y,z] Å（必須）
 
 [run]
 seed     = 42
-n_runs   = 8                     # 省略可（未指定ならモード別既定: standard/qvina2/tpe=60, vina=8）
+n_runs   = 8                     # 省略可（未指定ならモード別既定: standard/qvina2=60, vina/tpe=8）
 scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "direct"）
 ```
 
@@ -169,7 +240,7 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
 | キー | 既定 | 説明 |
 |---|---|---|
 | `seed` | 42 | 乱数シード（決定論）。 |
-| `n_runs` | モード別（下記） | 独立 run 数（網羅性）。**未指定時の既定は探索モードで変わる**: `standard`/`qvina2`/`tpe`=60、`vina`=8。**`search="vina"` では n_runs = AutoDock Vina の exhaustiveness に対応**（Vina 既定=8）で、vina は 1 run が重いため既定を 8 にしてある。明示指定すればモードに依らずその値を使う（vina で大きな値を指定すると Vina の n_runs/8 倍遅くなる）。スクリーニングでは 8 程度で十分高精度。 |
+| `n_runs` | モード別（下記） | 独立 run 数（網羅性）。**未指定時の既定は探索モードで変わる**: `standard`/`qvina2`=60、`vina`/`tpe`=8。`vina`/`tpe` は 1 run が重い「少数・深い run」設計（`vina` の n_runs は AutoDock Vina の exhaustiveness に対応, Vina 既定=8）。`standard`(drift)/`qvina2` は軽い run の best-of-N なので既定 60。明示指定すればモードに依らずその値を使う（vina で大きな値を指定すると Vina の n_runs/8 倍遅くなる）。**費用対効果の目安**（Astex 実測, `docs/results.202607100005`/`.100834`/`.100847`）: drift は score が n_runs≈40 で飽和（既定 60 は score 用途では過剰、スクリーニングは 30 前後で十分）、tpe は成功率/score とも n_runs=8 で飽和。 |
 | `n_steps` | 0 | per-run の MC ステップ数。**0=自動**（可動原子数×torsion 上限で算出）。 |
 | `scoring` | `"direct"` | 探索の分子間評価。`"grid"`=Vina グリッド補間（高速・推奨）/ `"direct"`=直接原子間(SIMD)。 |
 | `grid_margin` | 2.0 | grid 探索ボックスの余白（Å）。探索中に原子が箱外へはみ出しても正しいグリッド値を引く緩衝。小さいほど**構築が速く省メモリ**だが、境界近傍のボーダーライン標的が退行しうる（実測: 0 で一部退行、2 で全標的 RMSD<2Å 中立）。環境変数 `ISCT_GRID_MARGIN` で更に上書き可（デバッグ用）。 |
@@ -235,6 +306,10 @@ core_atoms = [0, 1, 2]       # 子側コア（seed.core_atoms と 1:1 同順・�
   あるいは `tools/preprocess/prepare_receptor.py`）。
   - 柔軟マクロ環（meeko の `CG0/G0` グルー擬原子）は **対応済み**（`CG0`→脂肪族炭素として採点、`G0`→
     非採点ダミー）。剛体化（`--rigid_macrocycles`）入力も可。
+  - **原子型カバレッジ**: Vina の 17 XS 型（C/N/O/S/P/ハロゲン/金属）に加え **`Si`（ケイ素）を第一級対応**
+    （Vina 1.2 準拠 XS 半径 2.2Å・立体項のみ）、`W`（AutoDock 水和水擬原子）は採点除外。金属は `Met_D` 扱い。
+  - **未知原子型は元素推定で近似フォールバック**（例 `Se→S`, `B→C`, 未知金属→`Met_D`）＝異常終了しない。
+    近似した型は初回に stderr 警告を出す。元素すら推定不能な型のみエラー（`score`/`dock`）またはスキップ（`screen`）。
 - **出力**: マルチモデル PDBQT（`dock`）/ ランキング TSV（`screen`）/ バイナリ `.bin`（`pack`）。
 - 並列度: 環境変数 **`RAYON_NUM_THREADS`** でスレッド数を制御（既定は論理コア数）。決定論は保たれる。
 
@@ -305,6 +380,7 @@ crates/isct-core   原子型・Vina スコア・幾何・grid・SIMD カーネ�
 crates/isct-io     PDBQT パーサ・TOML config・クラスタライブラリ I/O
 crates/isct-dock   ligand(torsion木)・optimizer(BFGS)・search(MC)・energy・screen・phases
 crates/isct-cli    バイナリ `isct-dock`（score / dock / screen / pack）
+tools/             isct_screening.py（平坦/singleton スクリーニング実行, §2.3.2）
 tools/preprocess/  クラスタライブラリ前処理スクリプト（build_library.py 等, §5）
 configs/           注釈付きサンプル設定（dock.example.toml / screen.example.toml）
 ```
