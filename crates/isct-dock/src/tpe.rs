@@ -47,6 +47,18 @@ pub struct TpeParams {
     pub density_reuse: usize,
     /// 1 提案あたりの局所最適化（BFGS）反復数。0 なら呼び出し側の既定（`chain_iters`）を使う。
     pub local_iters: usize,
+    /// **共有観測モード**（**既定 true**）。`n_runs` 個の独立 run ではなく、総予算
+    /// `n_runs × auto_n_steps_tpe` を **1 本の共有観測プール・単一モデル**で逐次探索する（warmup 1 回のみ、
+    /// 前回結果を再利用）。初期依存性の小さい TPE で独立多始点の冗長を除き、少予算で n_runs=8 相当へ到達させる。
+    /// `false` にすると従来の独立 n_runs（`results.202607100834` とビット一致）へ戻せる。
+    pub shared: bool,
+    /// 共有モードのリアンカー周期（提案数）。**0=周期リアンカーなし（単一アンカーの共有探索, 推奨・既定)**。
+    /// >0 で N 提案ごとに探索的 restart（観測は保持）を注入する。Astex 実測ではリアンカー有無で精度はほぼ
+    /// 不変（`docs/results.202607111615`）＝共有観測プール自体が利得源。>0 は探索性を要する用途向けの任意ノブ。
+    pub reanchor_period: usize,
+    /// 共有モードの未踏域カバレッジ重み（0.0 で無効＝従来のエネルギー基準アンカー）。>0 のとき新アンカー候補を
+    /// 既存観測への最小距離（未探索度）で加重選択し、未踏域を重点探索する。
+    pub coverage_weight: f64,
 }
 
 impl Default for TpeParams {
@@ -59,6 +71,9 @@ impl Default for TpeParams {
             greater_cap: 10,
             density_reuse: 6,
             local_iters: 0,
+            shared: true,
+            reanchor_period: 0,
+            coverage_weight: 0.0,
         }
     }
 }
@@ -145,6 +160,28 @@ pub fn vec_from_conf(
         v.push(normalize_angle(c.torsions[t] - reference.torsions[t]));
     }
     v
+}
+
+/// モデル空間 2 ベクトル間の距離（位置=ユークリッド Å, 回転・torsion=角度差ラジアン）。共有モードの
+/// カバレッジ（未踏域）評価用。角度側は `ang_scale`（Å/rad）で Å 換算し位置と合成する。
+pub fn model_dist(a: &[f64], b: &[f64], ang_scale: f64) -> f64 {
+    let mut s = 0.0;
+    for j in 0..3 {
+        let d = a[j] - b[j];
+        s += d * d;
+    }
+    for j in 3..a.len() {
+        let d = normalize_angle(a[j] - b[j]) * ang_scale;
+        s += d * d;
+    }
+    s.sqrt()
+}
+
+/// 観測集合 `obs` への最小距離（＝未探索度; 大きいほど未踏）。`obs` 空なら `f64::INFINITY`。
+pub fn min_dist_to_obs(v: &[f64], obs: &[Obs], ang_scale: f64) -> f64 {
+    obs.iter()
+        .map(|o| model_dist(v, &o.v, ang_scale))
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// ウォームアップ提案: 各次元を範囲内で一様サンプル。
@@ -242,6 +279,11 @@ fn mixture_density_weighted(kernels: &[(f64, f64, f64)], param: f64) -> f64 {
 }
 
 impl TpeModel {
+    /// greater（g(x)）が活性か（観測 27 個以上）。トレース診断用: exploration(g/l 選択) が効いているかを示す。
+    pub fn greater_active(&self) -> bool {
+        self.greater_active
+    }
+
     /// 観測 `obs` からモデルを構築する。`_iter`（提案カウンタ）は順位ベース greater 重みでは不要だが、
     /// 呼び出し側の互換のため残す。観測が 2 点未満のときは `None`（呼び出し側はウォームアップにフォールバック）。
     pub fn build(

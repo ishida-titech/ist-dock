@@ -176,9 +176,21 @@ pub struct RunOpts {
     /// TPE モード専用: greater（悪群）カーネル上限（`TpeParams.greater_cap`）の上書き。未指定なら既定 10。
     #[serde(default)]
     pub tpe_greater_cap: Option<usize>,
-    /// TPE モード専用: モデル再構築回数（`TpeParams.density_reuse`）の上書き。未指定なら既定 4。
+    /// TPE モード専用: モデル再構築回数（`TpeParams.density_reuse`）の上書き。未指定なら既定 6。
     #[serde(default)]
     pub tpe_density_reuse: Option<usize>,
+    /// TPE 共有観測モード（`TpeParams.shared`, **既定 true**）。総予算を単一の共有観測プールで逐次探索する
+    /// （独立 n_runs の冗長を排し前回結果を再利用・warmup 1 回）。**false で従来の独立 n_runs**（`results.202607100834`
+    /// とビット一致）へ戻す。未指定なら既定 true。
+    #[serde(default)]
+    pub tpe_shared: Option<bool>,
+    /// TPE 共有モードのリアンカー周期（提案数, `TpeParams.reanchor_period`）。0=周期リアンカーなし（単一アンカー,
+    /// 推奨）。>0 で N 提案ごとに探索的 restart。未指定なら 0。
+    #[serde(default)]
+    pub tpe_reanchor_period: Option<usize>,
+    /// TPE 共有モードの未踏域カバレッジ重み（`TpeParams.coverage_weight`, 0.0=無効）。未指定なら 0.0。
+    #[serde(default)]
+    pub tpe_coverage_weight: Option<f64>,
 }
 
 impl Default for RunOpts {
@@ -206,6 +218,9 @@ impl Default for RunOpts {
             tpe_lower_cap: None,
             tpe_greater_cap: None,
             tpe_density_reuse: None,
+            tpe_shared: None,
+            tpe_reanchor_period: None,
+            tpe_coverage_weight: None,
         }
     }
 }

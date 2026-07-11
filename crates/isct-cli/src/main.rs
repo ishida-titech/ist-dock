@@ -58,6 +58,10 @@ enum Command {
         /// 乱数シードを上書き（省略時は config の seed）。ベンチマークの seed 振りに使う。
         #[arg(long)]
         seed: Option<u64>,
+        /// 診断用: 探索の**全ステップ**を TSV でこのパスへ書き出す（全探索モード対応。汎用列
+        /// [run/step/energy/pos/rot/torsions]＋アルゴリズム依存列[phase/greater_active/accepted]）。--local-only では無効。
+        #[arg(long)]
+        trace: Option<PathBuf>,
     },
     /// クラスタライブラリをスクリーニングする（M3）。
     Screen {
@@ -107,7 +111,10 @@ fn main() -> Result<()> {
             qvina_cos,
             search,
             seed,
-        } => cmd_dock(&receptor, &ligand, &config, out.as_deref(), local_only, qvina_cos, search, seed),
+            trace,
+        } => cmd_dock(
+            &receptor, &ligand, &config, out.as_deref(), local_only, qvina_cos, search, seed, trace,
+        ),
         Command::Screen {
             receptor,
             library,
@@ -193,8 +200,19 @@ fn build_search_params(
             if let Some(v) = run.tpe_density_reuse {
                 t.density_reuse = v;
             }
+            if let Some(v) = run.tpe_shared {
+                t.shared = v;
+            }
+            if let Some(v) = run.tpe_reanchor_period {
+                t.reanchor_period = v;
+            }
+            if let Some(v) = run.tpe_coverage_weight {
+                t.coverage_weight = v;
+            }
             t
         },
+        // トレースは dock 側で --tpe-trace 指定時のみ設定（screen では未使用）。
+        trace_path: None,
     }
 }
 
@@ -352,6 +370,7 @@ fn cmd_screen(
 }
 
 /// 単一リガンドをボックスへドッキングする（M2）。
+#[allow(clippy::too_many_arguments)]
 fn cmd_dock(
     receptor: &PathBuf,
     ligand: &PathBuf,
@@ -361,6 +380,7 @@ fn cmd_dock(
     qvina_cos: Option<f64>,
     search: Option<config::SearchMode>,
     seed: Option<u64>,
+    trace: Option<PathBuf>,
 ) -> Result<()> {
     let rec = pdbqt::parse_file(receptor)
         .with_context(|| format!("failed to parse receptor: {}", receptor.display()))?;
@@ -389,8 +409,16 @@ fn cmd_dock(
         Scorer::new(&rec_scored, center, size)
     };
 
-    let params = build_search_params(&cfg.run, center, size, mode, qvina_cos, use_grid);
+    let mut params = build_search_params(&cfg.run, center, size, mode, qvina_cos, use_grid);
     warn_vina_exhaustiveness(params.kind, params.n_runs);
+    // 診断トレース（--trace）: 全探索モード対応。--local-only は別経路（大域探索なし）のため無効。
+    if let Some(path) = trace {
+        if local_only {
+            eprintln!("warning: --trace は --local-only では無効です（大域探索を行わないため）。");
+        } else {
+            params.trace_path = Some(path);
+        }
+    }
 
     let eff_steps = if params.n_steps == 0 {
         auto_n_steps_for(

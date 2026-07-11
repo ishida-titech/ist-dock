@@ -85,7 +85,7 @@ Estimated Free Energy of Binding         : -7.45678 kcal/mol
 ### 2.2 `dock` — 単一リガンドのドッキング
 
 ```sh
-./target/release/isct-dock dock <receptor.pdbqt> <ligand.pdbqt> --config <run.toml> [--out OUT.pdbqt] [--local-only] [--search MODE]
+./target/release/isct-dock dock <receptor.pdbqt> <ligand.pdbqt> --config <run.toml> [--out OUT.pdbqt] [--local-only] [--search MODE] [--trace TRACE.tsv]
 ```
 
 | 引数 | 説明 |
@@ -96,6 +96,7 @@ Estimated Free Energy of Binding         : -7.45678 kcal/mol
 | `-o, --out` | 出力ポーズ PDBQT（既定: `<ligand>_isct_out.pdbqt`）。 |
 | `--local-only` | 診断用。大域探索せず入力ポーズから局所最適化のみ。 |
 | `--search <standard\|vina\|qvina2\|tpe>` | 探索アルゴリズムを上書き（config `search` より優先）。`standard`(=`drift`)=ドリフト鎖 / `vina`=Vina 忠実 MC（毎ステップ収束 BFGS）/ `qvina2` / `tpe`=TPE（Parzen サンプリング探索）。 |
+| `--trace <TSV>` | **診断用**: 探索の全ステップを TSV 出力（全モード対応, §2.2.1）。探索結果には無影響・決定論維持。`--local-only` では無効。 |
 | `--qvina-cos <f64>` | `search="qvina2"` 時の勾配方向一致閾値（cos）を上書き。高い=保守的(速度↓精度↑)、低い=攻める(速度↑精度↓)。省略時は config `qvina_cos`（既定 0.90）。 |
 
 出力（stdout）例:
@@ -120,6 +121,29 @@ output poses               : ligand_isct_out.pdbqt
 - `energy evals` = 探索のエネルギー評価回数（drift/vina モードの仕事量を比較する診断値）。
 - 出力 PDBQT は **マルチモデル**（`MODEL n` / `ENDMDL`、Vina 流）。mode 1 が最良。
 - `RMSD vs input` は最良モードの重原子 RMSD vs 入力ポーズ（再ドッキング検証用。対称性補正なし）。
+
+#### 2.2.1 探索トレース `--trace`（診断用・全モード対応）
+`--trace <TSV>` で探索の**全ステップ**を TSV 出力する（`standard`/`vina`/`qvina2`/`tpe` 全モード）。各ステップに
+**生成点（BFGS 前）と `bfgs`（最適化後）の 2 行**。探索結果・決定論には無影響（トレースのエネルギー評価は別
+カウンタ・rng 不消費で、有無でスコアはビット一致）。`--local-only` では無効。列は**汎用情報→アルゴリズム依存情報**
+の順:
+
+| 列 | 区分 | 意味 |
+|---|---|---|
+| `run` | 汎用 | 独立 run のインデックス（TPE 共有モードは 0）。 |
+| `step` | 汎用 | run 内のステップ/提案インデックス。 |
+| `energy` | 汎用 | その点の探索目的値（inter+intra, hunt_cap 付, kcal/mol）。 |
+| `pos_x/y/z` | 汎用 | リガンド root 重心の**絶対**座標（Å）。 |
+| `rot_x/y/z` | 汎用 | **絶対**配向（scaled-axis, rad）。 |
+| `torsions` | 汎用 | free torsion の**絶対**角（rad, `;` 区切り）。 |
+| `phase` | 依存 | 生成源。MC(`standard`/`vina`/`qvina2`)=`start`/`mutate`/`skip`/`bfgs`、TPE=`warmup`/`model`/`coverage`/`bfgs`。 |
+| `greater_active` | 依存 | TPE `model` 行のみ 0/1（1=g(x) 活性＝観測 27 個以上で exploration 有効）。他は `-`。 |
+| `accepted` | 依存 | MC `bfgs` 行のみ Metropolis 受理 0/1。他は `-`。 |
+
+座標は**絶対値**でモード横断比較が可能。用途例: MC の `mutate`（現ポーズの局所変異＝ランダムウォーク）と TPE の
+`model`（Parzen 大域サンプル）で**探索の広さ・動態の違い**を比較、`accepted` で MC の受理率、`greater_active` で
+TPE の exploration 有効性、生成点→`bfgs` の energy 差で BFGS の寄与を可視化できる。
+`awk -F'\t' '$11=="mutate"{...}'` 等で解析。
 
 ### 2.3 `screen` — ライブラリのスクリーニング
 
@@ -260,11 +284,43 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
 独立 Gaussian Parzen 混合でモデル化し、良観測（lower）近傍から候補をサンプル→ BFGS 局所最適化→観測更新を
 繰り返す（前半はウォームアップの一様ランダム）。局所最適化・スコア・grid は他モードと共通機構を再利用。
 - **決定論**: seeded `ChaCha8Rng` で駆動し**同一 seed でビット一致**。
-- **既定挙動**: TPEvina 既定ハイパーパラメータ（`sample_num=7` 等）を踏襲。この既定では greater 重みが
-  探索初期に 0 へ収束するため、実効的に**良ポーズ近傍の Parzen 探索（exploitation 主体）**になる。
+- **既定＝共有観測モード（`tpe_shared=true`）**: 総予算 `n_runs×auto_n_steps` を **1 本の共有観測プール・単一
+  モデルで逐次探索**（warmup 1 回のみ・前回結果を再利用）。独立多始点（各 run が別 warmup/観測/モデル）は初期
+  依存性の小さい TPE では冗長なため、これを排して効率化する。Astex 実測（`docs/results.202607111622`）:
+  - **同予算(n_runs=8)で旧・独立モードを上回る**（探索62 成功率 94.6→95.2%・meanScore −9.5703→−9.5790, 時間同等）。
+  - **同精度なら ~1.3–1.5× 高速**（`n_runs=5–6` で独立 n_runs=8 の成功率に到達, 時間 −20〜30%）。
+  - 利得源は**観測共有**そのもの。任意ノブ `tpe_reanchor_period`（0=単一アンカー[既定] / >0 で N 提案ごと探索的
+    restart）・`tpe_coverage_weight`（0=無効[既定] / >0 で未踏域重点。Astex では利得なし）は既定 off。
+  - meanRMSD は微増するが成功率は非退行〜改善（score-RMSD 乖離）。
 - **ステップ予算**: `n_steps=0`（自動）で `auto_n_steps_tpe`（vina より多め＝モデル用ウォームアップ確保）。
-- ハイパーパラメータは現状コード内既定（TPEvina 準拠）で固定。config 露出は将来対応。品質は標的依存
-  （深い漏斗の標的で良好、探索性の要る標的では drift に劣ることがある）。
+- **ハイパーパラメータは config `[run]` で可変**（未指定なら TPEvina 準拠の既定）:
+  `tpe_ei_candidates`(25, EI 候補数) / `tpe_startup_ratio`(0.05, warmup 比) / `tpe_step_ratio`(0.10, auto n_steps 係数・大=深) /
+  `tpe_lower_cap`(10) / `tpe_greater_cap`(10, Parzen カーネル上限) / `tpe_density_reuse`(6, モデル再構築回数)。
+  加えて `chain_iters`(35, 1 提案あたり BFGS 反復) / `n_runs`(8)。
+- 品質は標的依存（深い漏斗の標的で良好、探索性の要る標的では drift に劣ることがある）。
+
+**速度重視のスクリーニング設定**（共有モードで独立 n_runs=8 相当を ~20–30% 短縮）:
+  ```toml
+  [run]
+  search  = "tpe"
+  scoring = "grid"
+  n_runs  = 6          # 共有既定なので 5–6 で独立 n_runs=8 相当。精度最優先なら 8（既定）
+  ```
+
+**旧・独立モード（`tpe_shared=false`）**: 従来の独立 n_runs 探索へ戻す（`docs/results.202607100834` とビット一致）。
+この独立モードでの補足知見:
+- **既定パラメータは精度パレート最適**（Astex OFAT, `docs/results.202607111515`）: ei/step/chain/n_runs を振っても
+  既定の meanScore を上回れない（`chain_iters↑`/`step_ratio↑`/`n_runs↑` は逆効果か ROI 極小）。
+- **速度プリセット「tpe-fast」**（独立モードで ~10% 高速・成功率非退行・meanScore ほぼ不変。共有既定では基本不要）:
+  ```toml
+  [run]
+  search            = "tpe"
+  scoring           = "grid"
+  n_runs            = 8
+  tpe_shared        = false
+  tpe_ei_candidates = 8    # 既定 25 → 提案あたり密度評価を削減（速度の主レバー）
+  tpe_density_reuse = 15   # 既定 6 → モデル再構築を増やし ei 削減の精度劣化を無コスト補償
+  ```
 
 ### `[screen]` パラメータ（`screen` のみ）
 

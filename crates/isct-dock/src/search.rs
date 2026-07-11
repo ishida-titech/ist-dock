@@ -129,6 +129,10 @@ pub struct SearchParams {
     pub hunt_cap: f64,
     /// TPE モード（`kind == Tpe`）のハイパーパラメータ。他モードでは未使用。
     pub tpe: TpeParams,
+    /// 診断用: 設定すると TPE 共有モード探索の**全ステップのトレース**を TSV でこのパスへ書き出す
+    /// （各提案の生成源[warmup/model/coverage]と生成点＋BFGS 最適化点の位置/回転/torsion/エネルギー）。
+    /// `None` で無効（既定・ホットパス無コスト）。単一 dock 診断用（screen では未設定）。
+    pub trace_path: Option<std::path::PathBuf>,
 }
 
 impl Default for SearchParams {
@@ -162,6 +166,7 @@ impl Default for SearchParams {
             qvina_cos: 0.90,
             hunt_cap: 10.0,
             tpe: TpeParams::default(),
+            trace_path: None,
         }
     }
 }
@@ -329,21 +334,40 @@ pub fn dock_constrained(
 
     // 独立 run を並列実行。各 run は RMSD クラスタした代表ポーズ群を返す。collect で run 順保持＝決定的。
     // 評価バッファは per-run で確保（スレッドごとに独立）。TPE モードは専用ドライバへ分岐。
-    let per_run: Vec<(Vec<(Conformation, f64)>, u64)> = run_seeds
-        .par_iter()
-        .map(|&seed| {
-            if params.kind == SearchKind::Tpe {
-                single_run_tpe(lig, scorer, params, n_steps, free_torsions, &free_dofs, seed)
-            } else {
-                single_run(lig, scorer, params, n_steps, free_torsions, &free_dofs, seed)
-            }
-        })
-        .collect();
+    // TPE 共有観測モード（tpe_shared）は独立 run をやめ、総予算 n_runs×n_steps を単一の逐次共有探索で回す。
+    // trace 有効時は各 run が自前のトレースを返す（run 順保持＝決定的, par_iter でも順序不変）。
+    let trace = params.trace_path.is_some();
+    let per_run: Vec<(Vec<(Conformation, f64)>, u64, Vec<TraceRecord>)> =
+        if params.kind == SearchKind::Tpe && params.tpe.shared {
+            let seed = run_seeds.first().copied().unwrap_or(params.seed);
+            vec![single_search_tpe_shared(
+                lig, scorer, params, n_steps, free_torsions, &free_dofs, seed, 0, trace,
+            )]
+        } else {
+            run_seeds
+                .par_iter()
+                .enumerate()
+                .map(|(run_id, &seed)| {
+                    if params.kind == SearchKind::Tpe {
+                        single_run_tpe(lig, scorer, params, n_steps, free_torsions, &free_dofs, seed, run_id, trace)
+                    } else {
+                        single_run(lig, scorer, params, n_steps, free_torsions, &free_dofs, seed, run_id, trace)
+                    }
+                })
+                .collect()
+        };
+
+    // トレース書き出し（run 順・step 順で連結）。探索結果には無影響。
+    if let Some(path) = &params.trace_path {
+        let all_trace: Vec<TraceRecord> =
+            per_run.iter().flat_map(|(_, _, t)| t.iter().cloned()).collect();
+        write_trace(path, &all_trace);
+    }
 
     // 全 run の代表を集約し、大域 RMSD クラスタリングで上位 polish_modes（≥ n_modes）モードへ絞る。
     // 代表のキーは inter（=affinity 基準）＝affinity の良い near-native を精密化候補へ確実に残す。
-    let mut total_evals: u64 = per_run.iter().map(|(_, e)| e).sum();
-    let all: Vec<(Conformation, f64)> = per_run.into_iter().flat_map(|(r, _)| r).collect();
+    let mut total_evals: u64 = per_run.iter().map(|(_, e, _)| e).sum();
+    let all: Vec<(Conformation, f64)> = per_run.into_iter().flat_map(|(r, _, _)| r).collect();
     let polish_cap = params.polish_modes.max(params.n_modes);
     let reps = cluster_poses(lig, all, params.cluster_rmsd, polish_cap);
 
@@ -441,7 +465,9 @@ fn single_run(
     free_torsions: &[usize],
     free_dofs: &[usize],
     seed: u64,
-) -> (Vec<(Conformation, f64)>, u64) {
+    run_id: usize,
+    trace: bool,
+) -> (Vec<(Conformation, f64)>, u64, Vec<TraceRecord>) {
     // 各ステップの局所最適化反復: drift/qvina2 は浅い `chain_iters`、vina は **AutoDock Vina の
     // per-step 局所探索上限**に一致させる（`max_steps = ssd_par.evals = (25 + num_movable_atoms)/3`,
     // main.cpp）。num_movable_atoms は重原子数で近似。Vina は収束させず浅くキャップするので、
@@ -492,6 +518,19 @@ fn single_run(
     };
     cluster_insert(&mut pool, cur.conf.clone(), cur_inter, cur_pos, params.cluster_rmsd, pool_cap);
 
+    // 診断トレース（trace 有効時のみ）。生成点のエネルギーは主カウンタを汚さない別 scratch で評価。
+    let root_pivot = lig.root_pivot();
+    let mut trace_rec: Vec<TraceRecord> = Vec::new();
+    let trace_scratch = RefCell::new(EvalScratch::default());
+    let mut trace_grad: Vec<f64> = Vec::new();
+    if trace {
+        let (pos, rot, tors) = conf_generic(&cur.conf, root_pivot, free_torsions);
+        trace_rec.push(TraceRecord {
+            run: run_id, step: 0, energy: cur.energy, pos, rot, tors,
+            phase: "start", greater: -1, accepted: 1,
+        });
+    }
+
     // 早期停止（任意・既定 OFF）: best エネルギーが patience ステップ改善しなければ打ち切る。
     // 注意: ドリフト鎖のハード標的（1iep/1y6b 等）は **decoy 基で best が長く停滞してから終盤に native へ
     // 跳ぶ** ため、収束ベースの早期停止は native 到達前に切ってしまい退行させうる（measured）。よって
@@ -511,6 +550,13 @@ fn single_run(
         let mut trial = cur.conf.clone();
         apply_mutation(&mut trial, &mut rng, free_torsions, mut_style, &mut mut_delta);
 
+        // トレース: 変異試行点（BFGS 前）のエネルギー（別 scratch, 主カウンタ不変）。
+        let trial_energy = if trace {
+            eval_value_grad(lig, scorer, &mut trace_scratch.borrow_mut(), &trial, false, cap, &mut trace_grad)
+        } else {
+            0.0
+        };
+
         // QuickVina2 スキップ判定: 安価な勾配 1 回で「既知の斜面」と判定したら local 探索を省く。
         if let Some(hist) = history.as_mut() {
             value_grad(&trial, &mut qvina_grad);
@@ -519,8 +565,23 @@ fn single_run(
             let significant = hist.is_new_well(&dof, &g);
             hist.push(dof, g);
             if !significant {
+                if trace {
+                    let (pos, rot, tors) = conf_generic(&trial, root_pivot, free_torsions);
+                    trace_rec.push(TraceRecord {
+                        run: run_id, step: k, energy: trial_energy, pos, rot, tors,
+                        phase: "skip", greater: -1, accepted: -1,
+                    });
+                }
                 continue; // 局所探索をスキップ（cur 不変＝棄却扱い）
             }
+        }
+
+        if trace {
+            let (pos, rot, tors) = conf_generic(&trial, root_pivot, free_torsions);
+            trace_rec.push(TraceRecord {
+                run: run_id, step: k, energy: trial_energy, pos, rot, tors,
+                phase: "mutate", greater: -1, accepted: -1,
+            });
         }
 
         let res = minimize_free(trial, &value_grad, step_iters, free_dofs);
@@ -554,6 +615,13 @@ fn single_run(
         };
         let accept = res.energy < cur.energy
             || rng.r#gen::<f64>() < (-(res.energy - cur.energy) / temp).exp();
+        if trace {
+            let (pos, rot, tors) = conf_generic(&res.conf, root_pivot, free_torsions);
+            trace_rec.push(TraceRecord {
+                run: run_id, step: k, energy: res.energy, pos, rot, tors,
+                phase: "bfgs", greater: -1, accepted: accept as i8,
+            });
+        }
         if accept {
             cur = res;
         }
@@ -562,7 +630,7 @@ fn single_run(
     let mut reps: Vec<(Conformation, f64)> = pool.into_iter().map(|(c, e, _)| (c, e)).collect();
     reps.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     let evals = scratch_g.borrow().evals;
-    (reps, evals)
+    (reps, evals, trace_rec)
 }
 
 /// TPE（Tree-structured Parzen Estimator）の 1 run。`single_run` と同型の返り値
@@ -580,11 +648,16 @@ fn single_run_tpe(
     free_torsions: &[usize],
     free_dofs: &[usize],
     seed: u64,
-) -> (Vec<(Conformation, f64)>, u64) {
+    run_id: usize,
+    trace: bool,
+) -> (Vec<(Conformation, f64)>, u64, Vec<TraceRecord>) {
     let scratch_g = RefCell::new(EvalScratch::default());
     let cap = params.hunt_cap;
     let value_grad =
         |c: &Conformation, g: &mut Vec<f64>| eval_value_grad(lig, scorer, &mut scratch_g.borrow_mut(), c, false, cap, g);
+    let mut trace_rec: Vec<TraceRecord> = Vec::new();
+    let trace_scratch = RefCell::new(EvalScratch::default());
+    let mut trace_grad: Vec<f64> = Vec::new();
 
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     // 参照配座（固定 torsion は 0 に保つ）。TPE のモデル空間は「この参照からの差」で定義。
@@ -616,22 +689,34 @@ fn single_run_tpe(
 
     for p in 0..n_steps {
         // 提案ベクトル: 前半ウォームアップは一様、後半は Parzen モデル（観測不足時は一様へフォールバック）。
-        let v = if p < warmup {
-            tpe::warmup_sample(&mut rng, &l_limit, &g_limit)
+        let (v, phase, greater) = if p < warmup {
+            (tpe::warmup_sample(&mut rng, &l_limit, &g_limit), "warmup", -1i8)
         } else {
             if model.is_none() || since_rebuild >= freq {
                 model = tpe::TpeModel::build(&obs, &tp, p, &l_limit, &g_limit);
                 since_rebuild = 0;
             }
             since_rebuild += 1;
-            match &model {
+            let ga = model.as_ref().map(|m| m.greater_active()).unwrap_or(false);
+            let sv = match &model {
                 Some(m) => m.sample(&mut rng, &tp, &l_limit, &g_limit),
                 None => tpe::warmup_sample(&mut rng, &l_limit, &g_limit),
-            }
+            };
+            (sv, "model", ga as i8)
         };
 
         // 提案を配座へ写し BFGS 局所最適化。
         let start = tpe::conf_from_vec(&reference, free_torsions, root_pivot, &v);
+        // トレース: 生成点（BFGS 前）を記録（別 scratch で評価, 主カウンタ不変）。
+        if trace {
+            let se = eval_value_grad(
+                lig, scorer, &mut trace_scratch.borrow_mut(), &start, false, cap, &mut trace_grad,
+            );
+            let (pos, rot, tors) = conf_generic(&start, root_pivot, free_torsions);
+            trace_rec.push(TraceRecord {
+                run: run_id, step: p, energy: se, pos, rot, tors, phase, greater, accepted: -1,
+            });
+        }
         let res = minimize_free(start, &value_grad, local_iters, free_dofs);
         // pool 保持は inter キー、TPE 観測（下）は objective（探索地形の学習元）＝分離。
         let (res_pos, res_inter) = {
@@ -639,6 +724,13 @@ fn single_run_tpe(
             (g.scored_pos.clone(), g.inter)
         };
         cluster_insert(&mut pool, res.conf.clone(), res_inter, res_pos, params.cluster_rmsd, pool_cap);
+        if trace {
+            let (pos, rot, tors) = conf_generic(&res.conf, root_pivot, free_torsions);
+            trace_rec.push(TraceRecord {
+                run: run_id, step: p, energy: res.energy, pos, rot, tors,
+                phase: "bfgs", greater: -1, accepted: -1,
+            });
+        }
 
         // ボックス内なら観測へ記録（Parzen モデルの更新元）。
         if in_box(&res.conf) {
@@ -653,7 +745,252 @@ fn single_run_tpe(
     let mut reps: Vec<(Conformation, f64)> = pool.into_iter().map(|(c, e, _)| (c, e)).collect();
     reps.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     let evals = scratch_g.borrow().evals;
-    (reps, evals)
+    (reps, evals, trace_rec)
+}
+
+/// 探索トレース 1 行（**全探索モード共通**, 診断用, `SearchParams.trace_path` 有効時のみ収集）。
+/// 列は**汎用情報（run/step/energy/pos/rot/torsions）を先**に、**アルゴリズム依存情報（phase/greater/accepted）
+/// を後**に置く（`write_trace` 参照）。座標は**絶対値**（pos=root 重心の絶対Å, rot=絶対配向 scaled-axis rad,
+/// torsion=絶対角 rad）でモード横断比較を可能にする。
+#[derive(Clone)]
+struct TraceRecord {
+    /// 独立 run のインデックス（共有 TPE は 0）。
+    run: usize,
+    /// run 内のステップ/提案インデックス。
+    step: usize,
+    /// その点の探索目的値（inter+intra, hunt_cap 付き, kcal/mol）。
+    energy: f64,
+    /// リガンド root 重心の絶対座標（Å）。
+    pos: Vec3,
+    /// 絶対配向（scaled-axis, rad）。
+    rot: [f64; 3],
+    /// free torsion の絶対角（rad）。
+    tors: Vec<f64>,
+    /// 生成源（アルゴリズム依存）: MC=`start`/`mutate`/`skip`/`bfgs`, TPE=`warmup`/`model`/`coverage`/`bfgs`。
+    phase: &'static str,
+    /// TPE `model` 行のみ g(x) 活性 0/1（27 観測以上で 1＝exploration 有効）。他は -1（=`-`）。
+    greater: i8,
+    /// MC `bfgs` 行のみ Metropolis 受理 0/1。他は -1（=`-`）。
+    accepted: i8,
+}
+
+/// `Conformation` を**絶対**の (pos, rot[scaled-axis], free torsion 角) へ写す（トレースのモード横断表現）。
+fn conf_generic(conf: &Conformation, root_pivot: Vec3, free_torsions: &[usize]) -> (Vec3, [f64; 3], Vec<f64>) {
+    let pos = conf.position + root_pivot;
+    let sa = conf.orientation.scaled_axis();
+    let tors = free_torsions.iter().map(|&t| conf.torsions[t]).collect();
+    (pos, [sa.x, sa.y, sa.z], tors)
+}
+
+/// トレースを TSV で書き出す（失敗しても探索結果には影響させず警告のみ）。汎用列→アルゴリズム依存列の順。
+fn write_trace(path: &std::path::Path, records: &[TraceRecord]) {
+    use std::fmt::Write as _;
+    let mut s = String::new();
+    s.push_str("# 探索トレース（全モード共通）: 各ステップの生成点と BFGS 最適化点。座標は絶対値。\n");
+    s.push_str("# phase: MC=start/mutate/skip/bfgs, TPE=warmup/model/coverage/bfgs。energy=探索目的(inter+intra,cap付)。\n");
+    s.push_str("# greater_active=TPE model の g(x)活性(0/1), accepted=MC の Metropolis受理(0/1), 非該当は -。\n");
+    s.push_str("run\tstep\tenergy\tpos_x\tpos_y\tpos_z\trot_x\trot_y\trot_z\ttorsions\tphase\tgreater_active\taccepted\n");
+    let flag = |v: i8| match v {
+        0 => "0",
+        1 => "1",
+        _ => "-",
+    };
+    for r in records {
+        let tors: Vec<String> = r.tors.iter().map(|x| format!("{x:.4}")).collect();
+        let _ = writeln!(
+            s,
+            "{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}\t{}",
+            r.run, r.step, r.energy,
+            r.pos.x, r.pos.y, r.pos.z, r.rot[0], r.rot[1], r.rot[2],
+            tors.join(";"), r.phase, flag(r.greater), flag(r.accepted),
+        );
+    }
+    match std::fs::write(path, s) {
+        Ok(()) => eprintln!("探索トレース書き出し: {} ({} 行)", path.display(), records.len()),
+        Err(e) => eprintln!("warning: 探索トレース書き出し失敗 ({}): {e}", path.display()),
+    }
+}
+
+/// **共有観測 TPE**（opt-in, `tpe_shared=true`）。独立 `n_runs` run の代わりに、総予算
+/// `budget = n_runs × n_steps` を **1 本の共有観測プール・単一 Parzen モデル**で逐次探索する。
+/// warmup は先頭 1 回のみ。周期 `reanchor_period` ごとに **未踏域カバレッジ加重の探索的スタート**を注入して
+/// 多始点の頑健性を保つ（観測・モデルはリセットしない＝前回結果を再利用）。返り値・下流集約は他モードと同型。
+///
+/// 座標系の注意: `conf_from_vec`/`vec_from_conf` の rot・torsion 次元は **reference 相対**のため、観測を
+/// 共有するには**単一の固定 global 参照**で全エンコードする必要がある。本関数は先頭 `contact_start` を
+/// global 参照として固定し、以降の探索的スタートもこの参照でエンコードして同一モデル空間に載せる。
+#[allow(clippy::too_many_arguments)]
+fn single_search_tpe_shared(
+    lig: &LigandModel,
+    scorer: &Scorer,
+    params: &SearchParams,
+    n_steps: usize,
+    free_torsions: &[usize],
+    free_dofs: &[usize],
+    seed: u64,
+    run_id: usize,
+    trace: bool,
+) -> (Vec<(Conformation, f64)>, u64, Vec<TraceRecord>) {
+    let scratch_g = RefCell::new(EvalScratch::default());
+    let cap = params.hunt_cap;
+    let value_grad =
+        |c: &Conformation, g: &mut Vec<f64>| eval_value_grad(lig, scorer, &mut scratch_g.borrow_mut(), c, false, cap, g);
+
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    // 固定 global 参照（全観測・全サンプルのエンコード基準）。以降アンカーを変えても参照は不変。
+    let reference = contact_start(
+        lig, scorer, &mut rng, params.center, params.size, free_torsions, params.uniform_start, cap,
+    );
+    let (l_limit, g_limit) = tpe::bounds(params.center, params.size, free_torsions.len());
+    let tp = params.tpe;
+    let local_iters = if tp.local_iters > 0 { tp.local_iters } else { params.chain_iters };
+    let root_pivot = lig.root_pivot();
+    // カバレッジ距離の角度スケール（rad→Å 換算）。1 rad の回転 ≈ 回転半径 Å の変位。
+    let ang_scale = gyration_radius(&lig.reference_scored_positions()).max(1.0);
+
+    let budget = params.n_runs.max(1) * n_steps.max(1);
+    let warmup = ((budget as f64 * tp.startup_ratio) as usize).max(1);
+    let freq = (budget.saturating_sub(warmup) / tp.density_reuse.max(1)).max(1);
+    // リアンカー周期: 0=周期リアンカーなし（単一アンカーの共有探索, 推奨）。>0 で N 提案ごとに探索的 restart。
+    // Astex では有無で精度ほぼ不変（利得源は共有観測プール自体）＝既定 0 で単一アンカー。
+    let reanchor_period = tp.reanchor_period;
+
+    let pool_cap = params.polish_modes.max(params.n_modes);
+    let mut pool: Vec<(Conformation, f64, Vec<Vec3>)> = Vec::new();
+    let mut obs: Vec<tpe::Obs> = Vec::new();
+    let mut model: Option<tpe::TpeModel> = None;
+    let mut since_rebuild = 0usize;
+
+    // 診断トレース（trace 有効時のみ）。生成点のエネルギーは主カウンタを汚さない別 scratch で評価。
+    let mut trace_rec: Vec<TraceRecord> = Vec::new();
+    let trace_scratch = RefCell::new(EvalScratch::default());
+    let mut trace_grad: Vec<f64> = Vec::new();
+
+    let half = params.size * 0.5;
+    let in_box = |conf: &Conformation| -> bool {
+        let abs = conf.position + root_pivot;
+        (abs.x - params.center.x).abs() <= half.x
+            && (abs.y - params.center.y).abs() <= half.y
+            && (abs.z - params.center.z).abs() <= half.z
+    };
+
+    for p in 0..budget {
+        // スタート配座の決め方: warmup=一様、周期境界=探索的カバレッジスタート、それ以外=共有モデル。
+        // phase/greater はトレース用（生成源と g(x) 活性）。
+        let at_boundary = p > 0 && reanchor_period > 0 && p % reanchor_period == 0;
+        let (start, phase, greater): (Conformation, &'static str, i8) = if p < warmup {
+            let v = tpe::warmup_sample(&mut rng, &l_limit, &g_limit);
+            (tpe::conf_from_vec(&reference, free_torsions, root_pivot, &v), "warmup", -1)
+        } else if at_boundary {
+            // 未踏域カバレッジ加重の探索的スタート（coverage_weight=0 なら従来のエネルギー基準）。
+            let c = coverage_start(
+                lig, scorer, &mut rng, params.center, params.size, free_torsions,
+                params.uniform_start, cap, &reference, root_pivot, &obs, ang_scale,
+                tp.coverage_weight,
+            );
+            (c, "coverage", -1)
+        } else {
+            if model.is_none() || since_rebuild >= freq {
+                model = tpe::TpeModel::build(&obs, &tp, p, &l_limit, &g_limit);
+                since_rebuild = 0;
+            }
+            since_rebuild += 1;
+            let ga = model.as_ref().map(|m| m.greater_active()).unwrap_or(false);
+            let v = match &model {
+                Some(m) => m.sample(&mut rng, &tp, &l_limit, &g_limit),
+                None => tpe::warmup_sample(&mut rng, &l_limit, &g_limit),
+            };
+            (tpe::conf_from_vec(&reference, free_torsions, root_pivot, &v), "model", ga as i8)
+        };
+
+        // トレース: 生成点（BFGS 前）を記録。エネルギーは別 scratch で評価（主 eval カウンタ不変）。
+        if trace {
+            let se = eval_value_grad(
+                lig, scorer, &mut trace_scratch.borrow_mut(), &start, false, cap, &mut trace_grad,
+            );
+            let (pos, rot, tors) = conf_generic(&start, root_pivot, free_torsions);
+            trace_rec.push(TraceRecord {
+                run: run_id, step: p, energy: se, pos, rot, tors, phase, greater, accepted: -1,
+            });
+        }
+
+        let res = minimize_free(start, &value_grad, local_iters, free_dofs);
+
+        // トレース: BFGS 最適化点（同 step）を記録。
+        if trace {
+            let (pos, rot, tors) = conf_generic(&res.conf, root_pivot, free_torsions);
+            trace_rec.push(TraceRecord {
+                run: run_id, step: p, energy: res.energy, pos, rot, tors,
+                phase: "bfgs", greater: -1, accepted: -1,
+            });
+        }
+        let (res_pos, res_inter) = {
+            let g = scratch_g.borrow();
+            (g.scored_pos.clone(), g.inter)
+        };
+        cluster_insert(&mut pool, res.conf.clone(), res_inter, res_pos, params.cluster_rmsd, pool_cap);
+
+        if in_box(&res.conf) {
+            obs.push(tpe::Obs {
+                v: tpe::vec_from_conf(&reference, free_torsions, root_pivot, &res.conf),
+                score: res.energy,
+            });
+        }
+    }
+
+    let mut reps: Vec<(Conformation, f64)> = pool.into_iter().map(|(c, e, _)| (c, e)).collect();
+    reps.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    let evals = scratch_g.borrow().evals;
+    (reps, evals, trace_rec)
+}
+
+/// 共有 TPE の探索的スタート: `contact_start` 同様に複数試行から選ぶが、選択基準に**未踏域カバレッジ**を
+/// 加える。`coverage_weight=0` なら純エネルギー基準（`contact_start` と同等）。>0 のとき
+/// `energy − coverage_weight × novelty`（novelty=既存観測への最小距離）を最小化する候補を選ぶ＝低エネルギーかつ
+/// 未探索な launch を優先。決定論は呼び出し側 rng で担保。
+#[allow(clippy::too_many_arguments)]
+fn coverage_start<R: Rng>(
+    lig: &LigandModel,
+    scorer: &Scorer,
+    rng: &mut R,
+    center: Vec3,
+    size: Vec3,
+    free_torsions: &[usize],
+    uniform: bool,
+    cap: f64,
+    reference: &Conformation,
+    root_pivot: Vec3,
+    obs: &[tpe::Obs],
+    ang_scale: f64,
+    coverage_weight: f64,
+) -> Conformation {
+    let n_tries = if uniform { 20 } else { 60 };
+    let sample = |rng: &mut R| -> Conformation {
+        let mut c = lig.random_in_box(rng, center, size);
+        lock_torsions(&mut c, free_torsions);
+        c
+    };
+    let metric = |c: &Conformation| -> f64 {
+        let e = scorer.search_score(&lig.scored_atoms(c), cap);
+        if coverage_weight > 0.0 && !obs.is_empty() {
+            let v = tpe::vec_from_conf(reference, free_torsions, root_pivot, c);
+            let nov = tpe::min_dist_to_obs(&v, obs, ang_scale);
+            e - coverage_weight * nov
+        } else {
+            e
+        }
+    };
+    let mut best_c = sample(rng);
+    let mut best_m = metric(&best_c);
+    for _ in 1..n_tries {
+        let c = sample(rng);
+        let m = metric(&c);
+        if m < best_m {
+            best_m = m;
+            best_c = c;
+        }
+    }
+    best_c
 }
 
 /// 受容体と好ましく接触する初期配置を**複数試行から best を選ぶ**（Vina の randomize 流＝各 run に
