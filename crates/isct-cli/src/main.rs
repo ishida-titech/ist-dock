@@ -52,7 +52,8 @@ enum Command {
         /// 低い=攻める(速度↑精度↓)。省略時は config の qvina_cos（既定 0.90）。
         #[arg(long)]
         qvina_cos: Option<f64>,
-        /// 探索アルゴリズムを上書き（standard=ドリフト鎖 / vina=Vina 忠実 MC / qvina2 / tpe / tpe_fast=低予算
+        /// 探索アルゴリズムを上書き（standard=ドリフト鎖 / drift_qvina2=ドリフト＋局所スキップ(isct 独自) /
+        /// qvina2=本来の QuickVina2 相当(Vina 忠実 MC＋スキップ, exh=8) / vina=Vina 忠実 MC / tpe / tpe_fast=低予算
         /// スクリーニング向けプリセット n_runs=1+局所チェーン）。省略時は config の search。
         #[arg(long, value_parser = parse_search_mode)]
         search: Option<config::SearchMode>,
@@ -85,7 +86,8 @@ enum Command {
         /// ワーカスレッドを物理コアにピン留め（Linux。他 OS は no-op）。
         #[arg(long)]
         pin_threads: bool,
-        /// 探索アルゴリズムを上書き（standard=ドリフト鎖 / vina=Vina 忠実 MC / qvina2 / tpe / tpe_fast=低予算
+        /// 探索アルゴリズムを上書き（standard=ドリフト鎖 / drift_qvina2=ドリフト＋局所スキップ(isct 独自) /
+        /// qvina2=本来の QuickVina2 相当(Vina 忠実 MC＋スキップ, exh=8) / vina=Vina 忠実 MC / tpe / tpe_fast=低予算
         /// スクリーニング向けプリセット n_runs=1+局所チェーン）。省略時は config の search。
         #[arg(long, value_parser = parse_search_mode)]
         search: Option<config::SearchMode>,
@@ -131,16 +133,18 @@ fn main() -> Result<()> {
     }
 }
 
-/// `--search` の値をパースする（standard|drift|vina|qvina2|tpe|tpe_fast）。`drift` は `standard` の別名。
+/// `--search` の値をパースする（standard|drift|drift_qvina2|qvina2|vina|tpe|tpe_fast）。`drift` は
+/// `standard` の別名。`qvina2`=本来の QuickVina2 相当、`drift_qvina2`=ドリフト基盤の isct 独自版。
 fn parse_search_mode(s: &str) -> Result<config::SearchMode, String> {
     match s.to_ascii_lowercase().as_str() {
         "standard" | "drift" => Ok(config::SearchMode::Standard),
+        "drift_qvina2" | "driftqvina2" => Ok(config::SearchMode::DriftQvina2),
         "qvina2" => Ok(config::SearchMode::Qvina2),
         "vina" => Ok(config::SearchMode::Vina),
         "tpe" => Ok(config::SearchMode::Tpe),
         "tpe_fast" | "tpefast" => Ok(config::SearchMode::TpeFast),
         other => Err(format!(
-            "unknown search mode '{other}' (standard|drift|vina|qvina2|tpe|tpe_fast)"
+            "unknown search mode '{other}' (standard|drift|drift_qvina2|qvina2|vina|tpe|tpe_fast)"
         )),
     }
 }
@@ -149,6 +153,7 @@ fn parse_search_mode(s: &str) -> Result<config::SearchMode, String> {
 fn search_kind(m: config::SearchMode) -> SearchKind {
     match m {
         config::SearchMode::Standard => SearchKind::Drift,
+        config::SearchMode::DriftQvina2 => SearchKind::DriftQvina2,
         config::SearchMode::Qvina2 => SearchKind::Qvina2,
         config::SearchMode::Vina => SearchKind::Vina,
         config::SearchMode::Tpe | config::SearchMode::TpeFast => SearchKind::Tpe,
@@ -271,10 +276,11 @@ fn build_search_params(
 /// stderr で警告する（精度は run 本数で頭打ち＝別要因）。stdout・出力・決定論には一切影響しない。
 fn warn_vina_exhaustiveness(kind: SearchKind, n_runs: usize) {
     const VINA_DEFAULT_EXHAUSTIVENESS: usize = 8;
-    if kind == SearchKind::Vina && n_runs > 2 * VINA_DEFAULT_EXHAUSTIVENESS {
+    // vina と本来の qvina2（vina 基盤）は n_runs を exhaustiveness として使う。
+    if matches!(kind, SearchKind::Vina | SearchKind::Qvina2) && n_runs > 2 * VINA_DEFAULT_EXHAUSTIVENESS {
         eprintln!(
-            "warning: vina-mode は n_runs を exhaustiveness として使います（AutoDock Vina 既定=8）。\
-             n_runs={n_runs} は Vina(exh=8) の約 {:.1}倍のコストです。公平な比較には n_runs=8 を推奨。",
+            "warning: vina/qvina2-mode は n_runs を exhaustiveness として使います（AutoDock Vina 既定=8）。\
+             n_runs={n_runs} は exh=8 の約 {:.1}倍のコストです。公平な比較には n_runs=8 を推奨。",
             n_runs as f64 / VINA_DEFAULT_EXHAUSTIVENESS as f64,
         );
     }

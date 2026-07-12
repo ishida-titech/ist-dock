@@ -217,8 +217,8 @@ pub fn auto_n_steps_tpe(n_scored_atoms: usize, n_torsions: usize, step_ratio: f6
 }
 
 /// 探索モードに応じた per-run ステップ数（`SearchParams.n_steps == 0` のとき使う）。
-/// vina-mode は「少数・高コスト」ステップ（`auto_n_steps_vina`）、それ以外（drift/qvina2）は
-/// 通常スケール（`auto_n_steps`）。dock・screen・CLI ログで共通利用し選択ロジックを一元化する。
+/// vina・本来の qvina2（vina 基盤）は「少数・高コスト」ステップ（`auto_n_steps_vina`）、それ以外
+/// （drift/drift_qvina2）は通常スケール（`auto_n_steps`）。dock・screen・CLI ログで共通利用し一元化する。
 /// `tpe_step_ratio` は tpe-mode のみで使う（`TpeParams.step_ratio` を渡す。他モードでは無視）。
 pub fn auto_n_steps_for(
     kind: SearchKind,
@@ -227,7 +227,8 @@ pub fn auto_n_steps_for(
     tpe_step_ratio: f64,
 ) -> usize {
     match kind {
-        SearchKind::Vina => auto_n_steps_vina(n_scored_atoms, n_torsions),
+        // vina と本来の qvina2（vina 基盤）は「少数・高コスト」ステップ。drift_qvina2 は通常スケール。
+        SearchKind::Vina | SearchKind::Qvina2 => auto_n_steps_vina(n_scored_atoms, n_torsions),
         SearchKind::Tpe => auto_n_steps_tpe(n_scored_atoms, n_torsions, tpe_step_ratio),
         _ => auto_n_steps(n_scored_atoms, n_torsions),
     }
@@ -291,7 +292,9 @@ pub enum SearchKind {
     /// ドリフト鎖 ILS（既定）: 各ステップ浅い局所最適化（`chain_iters`）で広く探索。
     #[default]
     Drift,
-    /// QuickVina2 相当の局所探索スキップ（opt-in 高速化・決定論維持）。
+    /// ドリフト鎖＋QuickVina2 の局所探索スキップ（isct 独自・軽い per-run × best-of-N・決定論維持）。
+    DriftQvina2,
+    /// **本来の QuickVina2 相当**: Vina 忠実 MC（Vina の per-step 局所探索上限・Vina 変異/温度）＋局所探索スキップ。
     Qvina2,
     /// Vina 忠実 MC: 各ステップ**収束まで BFGS**（実装レベル差の切り分け用）。
     Vina,
@@ -472,11 +475,12 @@ fn single_run(
     run_id: usize,
     trace: bool,
 ) -> (Vec<(Conformation, f64)>, u64, Vec<TraceRecord>) {
-    // 各ステップの局所最適化反復: drift/qvina2 は浅い `chain_iters`、vina は **AutoDock Vina の
+    // 各ステップの局所最適化反復: drift/drift_qvina2 は浅い `chain_iters`、vina/qvina2 は **AutoDock Vina の
     // per-step 局所探索上限**に一致させる（`max_steps = ssd_par.evals = (25 + num_movable_atoms)/3`,
     // main.cpp）。num_movable_atoms は重原子数で近似。Vina は収束させず浅くキャップするので、
     // これで per-step コストも Vina 相当になる（多ステップ×浅局所＝Vina の探索形）。
-    let is_vina = params.kind == SearchKind::Vina;
+    // Vina 基盤（忠実 MC）か: 純 vina に加え、本来の qvina2（vina 基盤＋スキップ）も含む。
+    let is_vina = matches!(params.kind, SearchKind::Vina | SearchKind::Qvina2);
     let step_iters = if is_vina {
         ((25 + lig.n_scored()) / 3).max(1)
     } else {
@@ -544,7 +548,8 @@ fn single_run(
     let mut stale = 0usize;
 
     // QuickVina2: 変異後の試行点が「新しい井戸」でなければ局所探索をスキップ（per-run 履歴＝決定論）。
-    let mut history = (params.kind == SearchKind::Qvina2)
+    // drift_qvina2（ドリフト基盤）・qvina2（vina 基盤）の両方で有効。
+    let mut history = matches!(params.kind, SearchKind::DriftQvina2 | SearchKind::Qvina2)
         .then(|| HistoryBuffer::new(QVinaParams::for_dofs(free_dofs.len(), params.qvina_cos)));
 
     // 反復局所探索（ILS）＋焼きなまし: 毎ステップ 1 自由度変異 → 浅い局所最適化 → Metropolis 受理。

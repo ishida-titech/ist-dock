@@ -92,14 +92,21 @@ pub enum Scoring {
     Grid,
 }
 
-/// 探索モード。`standard`=ドリフト鎖 ILS（既定・決定論）/ `qvina2`=QuickVina2 相当の局所探索スキップ
-/// （opt-in 高速化・決定論維持）/ `vina`=Vina 忠実 MC（毎ステップ収束まで BFGS。実装レベル差の切り分け用）。
+/// 探索モード。`standard`=ドリフト鎖 ILS（既定・決定論）/ `drift_qvina2`=ドリフト鎖に QuickVina2 の局所探索
+/// スキップを載せた isct 独自版（軽い per-run × best-of-60）/ `qvina2`=**本来の QuickVina2 相当**（Vina 忠実 MC＋
+/// 局所探索スキップ, exhaustiveness=8）/ `vina`=Vina 忠実 MC（毎ステップ収束まで BFGS。実装レベル差の切り分け用）。
 /// `qvinaw`（QuickVina-W: 協調 blind docking・非決定論）は後続フェーズ。
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchMode {
     #[default]
     Standard,
+    /// ドリフト鎖 ILS（`standard`）に QuickVina2 の局所探索スキップだけを載せた isct 独自版（軽い per-run ×
+    /// best-of-60, n_runs=60）。基盤が Vina でない点で本来の QuickVina2 とは別物（下記 `qvina2` が忠実版）。
+    #[serde(rename = "drift_qvina2")]
+    DriftQvina2,
+    /// **本来の QuickVina2 相当**: Vina 忠実 MC（各ステップ Vina の per-step 局所探索上限・Vina 変異/温度）に
+    /// 局所探索スキップを載せた版。n_runs=exhaustiveness=8（Vina と同予算）。
     Qvina2,
     Vina,
     /// TPE（Tree-structured Parzen Estimator, TPEvina 由来の Parzen サンプリング探索・opt-in）。
@@ -300,10 +307,12 @@ const DEFAULT_N_RUNS_OTHER: usize = 60;
 /// 探索モード別の n_runs 既定（config で未指定のとき使う）。
 pub fn default_n_runs_for(mode: SearchMode) -> usize {
     match mode {
-        SearchMode::Vina => DEFAULT_N_RUNS_VINA,
+        // vina と本来の qvina2 は exhaustiveness=8（少数・高コスト run）。
+        SearchMode::Vina | SearchMode::Qvina2 => DEFAULT_N_RUNS_VINA,
         SearchMode::Tpe => DEFAULT_N_RUNS_TPE,
         // tpe_fast は低予算プリセット＝n_runs=1（局所チェーンで restart を代替）。
         SearchMode::TpeFast => 1,
+        // standard・drift_qvina2 は軽い per-run の best-of-60。
         _ => DEFAULT_N_RUNS_OTHER,
     }
 }
