@@ -26,77 +26,79 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// 固定ポーズの Vina 互換スコアを評価する（M1）。
+    /// Evaluate the Vina-compatible score of a fixed pose (M1).
     Score {
-        /// 受容体 PDBQT。
+        /// Receptor PDBQT.
         receptor: PathBuf,
-        /// リガンド PDBQT。
+        /// Ligand PDBQT.
         ligand: PathBuf,
     },
-    /// 単一リガンドをドッキングする（M2）。
+    /// Dock a single ligand (M2).
     Dock {
-        /// 受容体 PDBQT。
+        /// Receptor PDBQT.
         receptor: PathBuf,
-        /// リガンド PDBQT（結晶ポーズ＝RMSD 基準としても使う）。
+        /// Ligand PDBQT (crystal pose; also used as the RMSD reference).
         ligand: PathBuf,
-        /// TOML 設定（探索ボックス・シード等）。
+        /// TOML config (search box, seed, etc.).
         #[arg(short, long)]
         config: PathBuf,
-        /// 出力ポーズ PDBQT（既定: <ligand>_isct_out.pdbqt）。
+        /// Output pose PDBQT (default: <ligand>_isct_out.pdbqt).
         #[arg(short, long)]
         out: Option<PathBuf>,
-        /// 診断用: 大域探索をせず結晶（入力）ポーズから局所最適化のみ行う。
+        /// Diagnostic: skip global search and only run local optimization from the crystal (input) pose.
         #[arg(long)]
         local_only: bool,
-        /// QuickVina2（search="qvina2"）の勾配方向一致閾値（cos）を上書き。高い=保守的(速度↓精度↑)、
-        /// 低い=攻める(速度↑精度↓)。省略時は config の qvina_cos（既定 0.90）。
+        /// Override the QuickVina2 (search="qvina2") gradient-direction agreement threshold (cos).
+        /// Higher = conservative (slower/more accurate), lower = aggressive (faster/less accurate).
+        /// Defaults to config qvina_cos (default 0.90).
         #[arg(long)]
         qvina_cos: Option<f64>,
-        /// 探索アルゴリズムを上書き（standard=ドリフト鎖 / drift_qvina2=ドリフト＋局所スキップ(isct 独自) /
-        /// qvina2=本来の QuickVina2 相当(Vina 忠実 MC＋スキップ, exh=8) / vina=Vina 忠実 MC / tpe / tpe_fast=低予算
-        /// スクリーニング向けプリセット n_runs=1+局所チェーン）。省略時は config の search。
+        /// Override the search algorithm (standard=drift-chain / drift_qvina2=drift + local-search skip
+        /// (isct-specific) / qvina2=faithful QuickVina2 (Vina MC + skip, exh=8) / vina=Vina-faithful MC /
+        /// tpe / tpe_fast=low-budget screening preset n_runs=1 + local chain). Defaults to config search.
         #[arg(long, value_parser = parse_search_mode)]
         search: Option<config::SearchMode>,
-        /// 乱数シードを上書き（省略時は config の seed）。ベンチマークの seed 振りに使う。
+        /// Override the RNG seed (defaults to config seed). Used for seed sweeps in benchmarking.
         #[arg(long)]
         seed: Option<u64>,
-        /// 診断用: 探索の**全ステップ**を TSV でこのパスへ書き出す（全探索モード対応。汎用列
-        /// [run/step/energy/pos/rot/torsions]＋アルゴリズム依存列[phase/greater_active/accepted]）。--local-only では無効。
+        /// Diagnostic: write every search step as TSV to this path (all search modes; generic columns
+        /// [run/step/energy/pos/rot/torsions] + algorithm-specific [phase/greater_active/accepted]).
+        /// Disabled with --local-only.
         #[arg(long)]
         trace: Option<PathBuf>,
     },
-    /// クラスタライブラリをスクリーニングする（M3）。
+    /// Screen a cluster library (M3).
     Screen {
-        /// 受容体 PDBQT。
+        /// Receptor PDBQT.
         receptor: PathBuf,
-        /// クラスタライブラリのマニフェスト（TOML）。
+        /// Cluster library manifest (TOML).
         library: PathBuf,
-        /// TOML 設定（探索ボックス・シード・棄却閾値等）。
+        /// TOML config (search box, seed, prune threshold, etc.).
         #[arg(short, long)]
         config: PathBuf,
-        /// 出力ランキング TSV（既定: <library と同じディレクトリ>/ranking.tsv）。
+        /// Output ranking TSV (default: ranking.tsv in the library's directory).
         #[arg(short, long)]
         out: Option<PathBuf>,
-        /// 上位ポーズをマルチモデル PDBQT で書き出す先（省略時はポーズ出力なし）。
+        /// Destination to write the top poses as multi-model PDBQT (no pose output if omitted).
         #[arg(long)]
         poses_out: Option<PathBuf>,
-        /// `--poses-out` で書き出す上位ランク数（既定 100）。
+        /// Number of top-ranked entries to write with --poses-out (default 100).
         #[arg(long, default_value_t = 100)]
         top: usize,
-        /// ワーカスレッドを物理コアにピン留め（Linux。他 OS は no-op）。
+        /// Pin worker threads to physical cores (Linux; no-op on other OSes).
         #[arg(long)]
         pin_threads: bool,
-        /// 探索アルゴリズムを上書き（standard=ドリフト鎖 / drift_qvina2=ドリフト＋局所スキップ(isct 独自) /
-        /// qvina2=本来の QuickVina2 相当(Vina 忠実 MC＋スキップ, exh=8) / vina=Vina 忠実 MC / tpe / tpe_fast=低予算
-        /// スクリーニング向けプリセット n_runs=1+局所チェーン）。省略時は config の search。
+        /// Override the search algorithm (standard=drift-chain / drift_qvina2=drift + local-search skip
+        /// (isct-specific) / qvina2=faithful QuickVina2 (Vina MC + skip, exh=8) / vina=Vina-faithful MC /
+        /// tpe / tpe_fast=low-budget screening preset n_runs=1 + local chain). Defaults to config search.
         #[arg(long, value_parser = parse_search_mode)]
         search: Option<config::SearchMode>,
     },
-    /// TOML マニフェスト＋PDBQT のクラスタライブラリを memmap 用バイナリへ変換する（M4）。
+    /// Convert a TOML-manifest + PDBQT cluster library into a memmap binary (M4).
     Pack {
-        /// クラスタライブラリのマニフェスト（TOML）。
+        /// Cluster library manifest (TOML).
         manifest: PathBuf,
-        /// 出力バイナリ（.bin）。
+        /// Output binary (.bin).
         out: PathBuf,
     },
 }
