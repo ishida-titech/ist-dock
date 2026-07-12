@@ -795,9 +795,9 @@ fn conf_generic(conf: &Conformation, root_pivot: Vec3, free_torsions: &[usize]) 
 fn write_trace(path: &std::path::Path, records: &[TraceRecord]) {
     use std::fmt::Write as _;
     let mut s = String::new();
-    s.push_str("# 探索トレース（全モード共通）: 各ステップの生成点と BFGS 最適化点。座標は絶対値。\n");
-    s.push_str("# phase: MC=start/mutate/skip/bfgs, TPE=warmup/model/coverage/bfgs。energy=探索目的(inter+intra,cap付)。\n");
-    s.push_str("# greater_active=TPE model の g(x)活性(0/1), accepted=MC の Metropolis受理(0/1), 非該当は -。\n");
+    s.push_str("# search trace (all modes): per-step proposal and BFGS-optimized points. Coordinates are absolute.\n");
+    s.push_str("# phase: MC=start/mutate/skip/bfgs, TPE=warmup/model/coverage/bfgs. energy=search objective (inter+intra, capped).\n");
+    s.push_str("# greater_active=TPE model g(x) active (0/1), accepted=MC Metropolis accept (0/1), N/A is -.\n");
     s.push_str("run\tstep\tenergy\tpos_x\tpos_y\tpos_z\trot_x\trot_y\trot_z\ttorsions\tphase\tgreater_active\taccepted\n");
     let flag = |v: i8| match v {
         0 => "0",
@@ -815,8 +815,8 @@ fn write_trace(path: &std::path::Path, records: &[TraceRecord]) {
         );
     }
     match std::fs::write(path, s) {
-        Ok(()) => eprintln!("探索トレース書き出し: {} ({} 行)", path.display(), records.len()),
-        Err(e) => eprintln!("warning: 探索トレース書き出し失敗 ({}): {e}", path.display()),
+        Ok(()) => eprintln!("search trace written: {} ({} rows)", path.display(), records.len()),
+        Err(e) => eprintln!("warning: failed to write search trace ({}): {e}", path.display()),
     }
 }
 

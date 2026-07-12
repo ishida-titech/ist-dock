@@ -281,8 +281,8 @@ fn warn_vina_exhaustiveness(kind: SearchKind, n_runs: usize) {
     // vina と本来の qvina2（vina 基盤）は n_runs を exhaustiveness として使う。
     if matches!(kind, SearchKind::Vina | SearchKind::Qvina2) && n_runs > 2 * VINA_DEFAULT_EXHAUSTIVENESS {
         eprintln!(
-            "warning: vina/qvina2-mode は n_runs を exhaustiveness として使います（AutoDock Vina 既定=8）。\
-             n_runs={n_runs} は exh=8 の約 {:.1}倍のコストです。公平な比較には n_runs=8 を推奨。",
+            "warning: vina/qvina2 mode uses n_runs as exhaustiveness (AutoDock Vina default=8). \
+             n_runs={n_runs} costs about {:.1}x of exh=8. For a fair comparison n_runs=8 is recommended.",
             n_runs as f64 / VINA_DEFAULT_EXHAUSTIVENESS as f64,
         );
     }
@@ -314,7 +314,7 @@ fn cmd_pack(manifest: &PathBuf, out: &PathBuf) -> Result<()> {
     isct_io::library_bin::pack(&lib, out)
         .with_context(|| format!("failed to pack: {}", out.display()))?;
     if !skipped.is_empty() {
-        eprintln!("warning: {} 件のリガンドを解釈不能によりスキップしました", skipped.len());
+        eprintln!("warning: skipped {} ligand(s) that could not be parsed", skipped.len());
     }
     println!("packed {} clusters -> {}", lib.clusters.len(), out.display());
     Ok(())
@@ -406,7 +406,7 @@ fn cmd_screen(
         }
         let _ = std::fs::write(&skip_path, s);
         eprintln!(
-            "warning: {} 件のリガンドを解釈不能によりスキップしました（詳細: {}）",
+            "warning: skipped {} ligand(s) that could not be parsed (details: {})",
             skipped.len(),
             skip_path.display()
         );
@@ -470,7 +470,7 @@ fn cmd_dock(
     // 診断トレース（--trace）: 全探索モード対応。--local-only は別経路（大域探索なし）のため無効。
     if let Some(path) = trace {
         if local_only {
-            eprintln!("warning: --trace は --local-only では無効です（大域探索を行わないため）。");
+            eprintln!("warning: --trace is ignored with --local-only (no global search is performed).");
         } else {
             params.trace_path = Some(path);
         }
@@ -538,7 +538,7 @@ fn cmd_dock(
     });
     std::fs::write(&out_path, out_text)?;
 
-    println!("# isct-dock dock (Vina 互換, RMSD クラスタリング)");
+    println!("# isct-dock dock (Vina-compatible, RMSD clustering)");
     println!("affinity (Vina, kcal/mol)  : {affinity:.4}");
     println!("intermolecular energy      : {e_inter:.4} kcal/mol");
     println!("intramolecular energy      : {e_intra:.4} kcal/mol");
@@ -583,7 +583,7 @@ fn cmd_score(receptor: &PathBuf, ligand: &PathBuf) -> Result<()> {
     let n_rot = lig.torsdof;
     let affinity = scoring::apply_torsion_correction(e_inter, lig.num_tors_vina());
 
-    println!("# isct-dock score (Vina 互換)");
+    println!("# isct-dock score (Vina-compatible)");
     println!("receptor atoms (scored): {}", rec_atoms.len());
     println!("ligand atoms   (scored): {}", lig_atoms.len());
     println!();
