@@ -279,6 +279,10 @@ fn gyration_radius(ref_pos: &[Vec3]) -> f64 {
 enum MutationStyle {
     Drift,
     Vina { gyration: f64 },
+    /// 局所チェーン精密化用: Drift の変異幅を一律 `scale` 倍に縮小（並進 ±2·scale Å・回転 ±scale rad・
+    /// torsion ±π·scale）。`scale=1.0` は Drift とビット一致（bounds が同一で RNG 消費も不変）。
+    /// 小さいほど基内 dwelling（refine）寄りで basin-hop（歩き去り）を抑える。
+    Refine { scale: f64 },
 }
 
 /// 探索アルゴリズムの種類。
@@ -861,6 +865,12 @@ fn single_search_tpe_shared(
     let mut model: Option<tpe::TpeModel> = None;
     let mut since_rebuild = 0usize;
 
+    // 局所チェーン（tp.local_chain>0 で有効）: competitive 提案を Drift MC で精密化して MC の持続滞在を移植。
+    // best_e は「これまでの全提案の最良 energy」（ゲート基準）。既定 0 なら rng 消費ゼロ＝現行とビット一致。
+    let mut best_e = f64::INFINITY;
+    let mut chain_delta: Vec<f64> = Vec::new();
+    let chain_temp = params.temp_init;
+
     // 診断トレース（trace 有効時のみ）。生成点のエネルギーは主カウンタを汚さない別 scratch で評価。
     let mut trace_rec: Vec<TraceRecord> = Vec::new();
     let trace_scratch = RefCell::new(EvalScratch::default());
@@ -930,10 +940,50 @@ fn single_search_tpe_shared(
         };
         cluster_insert(&mut pool, res.conf.clone(), res_inter, res_pos, params.cluster_rmsd, pool_cap);
 
-        if in_box(&res.conf) {
+        // 局所チェーン: 非 warmup かつ competitive（初期 BFGS が best_so_far+margin 以下）な提案を Drift MC で
+        // 精密化。チェーンの最良ポーズを観測に採用し、各局所最小は pool へ。best_e は起動判定に前提案までの値を使う。
+        let mut obs_conf = res.conf.clone();
+        let mut obs_e = res.energy;
+        if tp.local_chain > 0 && phase != "warmup" && res.energy <= best_e + tp.local_chain_margin {
+            let mut cur_conf = res.conf.clone();
+            let mut cur_e = res.energy;
+            for _ in 0..tp.local_chain {
+                let mut trial = cur_conf.clone();
+                apply_mutation(
+                    &mut trial, &mut rng, free_torsions,
+                    MutationStyle::Refine { scale: tp.local_chain_scale }, &mut chain_delta,
+                );
+                let cres = minimize_free(trial, &value_grad, local_iters, free_dofs);
+                let (c_pos, c_inter) = {
+                    let g = scratch_g.borrow();
+                    (g.scored_pos.clone(), g.inter)
+                };
+                cluster_insert(&mut pool, cres.conf.clone(), c_inter, c_pos, params.cluster_rmsd, pool_cap);
+                let accept = cres.energy < cur_e
+                    || rng.r#gen::<f64>() < (-(cres.energy - cur_e) / chain_temp).exp();
+                if trace {
+                    let (pos, rot, tors) = conf_generic(&cres.conf, root_pivot, free_torsions);
+                    trace_rec.push(TraceRecord {
+                        run: run_id, step: p, energy: cres.energy, pos, rot, tors,
+                        phase: "chain", greater: -1, accepted: accept as i8,
+                    });
+                }
+                if cres.energy < obs_e {
+                    obs_e = cres.energy;
+                    obs_conf = cres.conf.clone();
+                }
+                if accept {
+                    cur_conf = cres.conf;
+                    cur_e = cres.energy;
+                }
+            }
+        }
+        best_e = best_e.min(obs_e);
+
+        if in_box(&obs_conf) {
             obs.push(tpe::Obs {
-                v: tpe::vec_from_conf(&reference, free_torsions, root_pivot, &res.conf),
-                score: res.energy,
+                v: tpe::vec_from_conf(&reference, free_torsions, root_pivot, &obs_conf),
+                score: obs_e,
             });
         }
     }
@@ -1069,6 +1119,12 @@ fn apply_mutation<R: Rng>(
                     *v = rng.gen_range(-2.0..2.0);
                 }
             }
+            // refine: Drift を scale 倍に縮小（scale=1.0 で -2..2 と同一＝ビット一致）。
+            MutationStyle::Refine { scale } => {
+                for v in d.iter_mut().take(3) {
+                    *v = rng.gen_range(-2.0 * scale..2.0 * scale);
+                }
+            }
             MutationStyle::Vina { .. } => {
                 let (x, y, z) = random_in_unit_sphere(rng);
                 d[0] = VINA_AMPLITUDE * x;
@@ -1081,6 +1137,12 @@ fn apply_mutation<R: Rng>(
             MutationStyle::Drift => {
                 for v in d.iter_mut().take(6).skip(3) {
                     *v = rng.gen_range(-1.0..1.0);
+                }
+            }
+            // refine: Drift を scale 倍に縮小（scale=1.0 で -1..1 と同一＝ビット一致）。
+            MutationStyle::Refine { scale } => {
+                for v in d.iter_mut().take(6).skip(3) {
+                    *v = rng.gen_range(-1.0 * scale..1.0 * scale);
                 }
             }
             MutationStyle::Vina { gyration } => {
@@ -1096,9 +1158,13 @@ fn apply_mutation<R: Rng>(
             }
         },
         _ => {
-            // 1 つの自由 torsion を再サンプリング（±π）。両スタイル共通。
+            // 1 つの自由 torsion を摂動。Drift/Vina は ±π（全再サンプリング）、Refine は ±π·scale（局所化）。
             let t = free_torsions[k - 2];
-            d[6 + t] = rng.gen_range(-PI..PI);
+            let amp = match style {
+                MutationStyle::Refine { scale } => PI * scale,
+                _ => PI,
+            };
+            d[6 + t] = rng.gen_range(-amp..amp);
         }
     }
     conf.apply_delta(d);

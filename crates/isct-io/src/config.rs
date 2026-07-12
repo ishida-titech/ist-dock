@@ -104,6 +104,10 @@ pub enum SearchMode {
     Vina,
     /// TPE（Tree-structured Parzen Estimator, TPEvina 由来の Parzen サンプリング探索・opt-in）。
     Tpe,
+    /// TPE 高速プリセット（スクリーニング向け）: TPE と同一アルゴリズムで **n_runs=1 + 局所チェーン
+    /// K=15/margin=4.0/scale=0.75**（`docs/results.202607121135`）。dock 既定(n=3)相当の精度を約半コストで出す。
+    #[serde(rename = "tpe_fast")]
+    TpeFast,
 }
 
 /// 実行パラメータ（既定値あり）。
@@ -191,6 +195,17 @@ pub struct RunOpts {
     /// TPE 共有モードの未踏域カバレッジ重み（`TpeParams.coverage_weight`, 0.0=無効）。未指定なら 0.0。
     #[serde(default)]
     pub tpe_coverage_weight: Option<f64>,
+    /// TPE 共有モードの局所チェーン歩数（`TpeParams.local_chain`, K）。0=OFF（既定・現行とビット一致）。>0 で
+    /// competitive 提案を Drift MC で K 歩精密化＝MC の持続滞在を移植。未指定なら 0。
+    #[serde(default)]
+    pub tpe_local_chain: Option<usize>,
+    /// 局所チェーンのゲート幅（`TpeParams.local_chain_margin`, kcal）。未指定なら 2.0。
+    #[serde(default)]
+    pub tpe_local_chain_margin: Option<f64>,
+    /// 局所チェーンの変異幅スケール（`TpeParams.local_chain_scale`）。1.0=Drift 幅（既定）、<1.0 で縮小し
+    /// basin-hop（歩き去り）を抑制。未指定なら 1.0。
+    #[serde(default)]
+    pub tpe_local_chain_scale: Option<f64>,
 }
 
 impl Default for RunOpts {
@@ -221,6 +236,9 @@ impl Default for RunOpts {
             tpe_shared: None,
             tpe_reanchor_period: None,
             tpe_coverage_weight: None,
+            tpe_local_chain: None,
+            tpe_local_chain_margin: None,
+            tpe_local_chain_scale: None,
         }
     }
 }
@@ -270,10 +288,11 @@ fn default_seed() -> u64 {
 /// vina-mode（`SearchMode::Vina`）の未指定時 n_runs 既定。AutoDock Vina の exhaustiveness に対応し、
 /// per-run が重いので Vina 既定の 8 に合わせる（`n_runs=60` のままだと Vina の 7.5 倍遅い）。
 const DEFAULT_N_RUNS_VINA: usize = 8;
-/// tpe-mode（`SearchMode::Tpe`）の未指定時 n_runs 既定。TPEvina の `num_tasks`(=exhaustiveness) に対応。
-/// TPEvina は「少数・深い run」（per-run steps=num_steps/15）で回すため 8 とし、深い `auto_n_steps_tpe`
-/// と組で AutoDock Vina 相当の総探索量にする（`docs/results.202607090951`, 60→8 で redocking 改善）。
-const DEFAULT_N_RUNS_TPE: usize = 8;
+/// tpe-mode（`SearchMode::Tpe`）の dock 既定 n_runs。**局所チェーン(`tpe_local_chain`)を CLI 既定 K=15 と組で
+/// 使うと、n_runs=3 が旧 n_runs=8（局所チェーンなし）と同精度以上を eval −15%・時間 −30% で達成**（`docs/
+/// results.202607121032`）。restart(n_runs) を減らし基内精密化(チェーン)へ振る方が eval 効率が良い。screen は更に
+/// 低予算の n_runs=1 を CLI 側で既定化（`build_search_params` の is_screen）。
+const DEFAULT_N_RUNS_TPE: usize = 3;
 /// vina/tpe 以外（standard/qvina2）の未指定時 n_runs 既定。軽い per-run を best-of-N で回して精度を出す
 /// 水準（benzamidine 検証で複数シードが安定して RMSD<2Å）。
 const DEFAULT_N_RUNS_OTHER: usize = 60;
@@ -283,6 +302,8 @@ pub fn default_n_runs_for(mode: SearchMode) -> usize {
     match mode {
         SearchMode::Vina => DEFAULT_N_RUNS_VINA,
         SearchMode::Tpe => DEFAULT_N_RUNS_TPE,
+        // tpe_fast は低予算プリセット＝n_runs=1（局所チェーンで restart を代替）。
+        SearchMode::TpeFast => 1,
         _ => DEFAULT_N_RUNS_OTHER,
     }
 }
@@ -348,12 +369,12 @@ mod tests {
 
     #[test]
     fn n_runs_defaults_per_mode_when_unset() {
-        // n_runs 未指定 → モード別既定（vina/tpe=8, それ以外=60）。
+        // n_runs 未指定 → モード別既定（vina=8, tpe=3〔dock〕, それ以外=60）。
         let cfg: RunConfig =
             toml::from_str("[box]\ncenter=[0,0,0]\nsize=[20,20,20]\n").unwrap();
         assert_eq!(cfg.run.n_runs, None);
         assert_eq!(cfg.run.resolve_n_runs(SearchMode::Vina), 8);
         assert_eq!(cfg.run.resolve_n_runs(SearchMode::Standard), 60);
-        assert_eq!(cfg.run.resolve_n_runs(SearchMode::Tpe), 8);
+        assert_eq!(cfg.run.resolve_n_runs(SearchMode::Tpe), 3);
     }
 }

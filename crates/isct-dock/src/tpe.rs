@@ -59,6 +59,17 @@ pub struct TpeParams {
     /// 共有モードの未踏域カバレッジ重み（0.0 で無効＝従来のエネルギー基準アンカー）。>0 のとき新アンカー候補を
     /// 既存観測への最小距離（未探索度）で加重選択し、未踏域を重点探索する。
     pub coverage_weight: f64,
+    /// **局所チェーン歩数**（K, 既定 0=OFF＝現行と完全一致）。共有モードで各提案の初期 BFGS 後、competitive な
+    /// basin（`local_chain_margin` ゲート内）なら Drift 流の短い MC チェーン（mutate+BFGS+Metropolis を K 歩）で
+    /// 精密化する＝MC の「持続滞在」を部分移植し、native 基が浅い探索律速標的（1ig3/1lpz 型）を救う。
+    /// チェーンの最良ポーズを観測に採用し、各局所最小は pool へ挿入。0 で rng 消費ゼロ＝既定挙動とビット一致。
+    pub local_chain: usize,
+    /// 局所チェーンのゲート幅（kcal, 既定 2.0）。提案の初期 BFGS energy が `best_so_far + margin` 以下のときのみ
+    /// チェーンを起動する。native/decoy 双方の competitive basin を精密化しつつ激突提案には浪費しない＝コスト集中。
+    pub local_chain_margin: f64,
+    /// 局所チェーンの変異幅スケール（既定 1.0＝Drift 幅と完全一致・ビット一致）。<1.0 で並進 ±2·scale Å・回転
+    /// ±scale rad・torsion ±π·scale に縮小し、基内 dwelling（refine）寄りにして basin-hop（歩き去り）を抑える。
+    pub local_chain_scale: f64,
 }
 
 impl Default for TpeParams {
@@ -74,6 +85,9 @@ impl Default for TpeParams {
             shared: true,
             reanchor_period: 0,
             coverage_weight: 0.0,
+            local_chain: 0,
+            local_chain_margin: 2.0,
+            local_chain_scale: 1.0,
         }
     }
 }

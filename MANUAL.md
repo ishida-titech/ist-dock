@@ -95,7 +95,7 @@ Estimated Free Energy of Binding         : -7.45678 kcal/mol
 | `-c, --config` | TOML 設定（§3）。探索ボックス必須。 |
 | `-o, --out` | 出力ポーズ PDBQT（既定: `<ligand>_isct_out.pdbqt`）。 |
 | `--local-only` | 診断用。大域探索せず入力ポーズから局所最適化のみ。 |
-| `--search <standard\|vina\|qvina2\|tpe>` | 探索アルゴリズムを上書き（config `search` より優先）。`standard`(=`drift`)=ドリフト鎖 / `vina`=Vina 忠実 MC（毎ステップ収束 BFGS）/ `qvina2` / `tpe`=TPE（Parzen サンプリング探索）。 |
+| `--search <standard\|vina\|qvina2\|tpe\|tpe_fast>` | 探索アルゴリズムを上書き（config `search` より優先）。`standard`(=`drift`)=ドリフト鎖 / `vina`=Vina 忠実 MC（毎ステップ収束 BFGS）/ `qvina2` / `tpe`=TPE（Parzen サンプリング探索, dock 既定 n_runs=3+局所チェーン K=15）/ `tpe_fast`=TPE 低予算プリセット（スクリーニング向け n_runs=1+K=15/margin=4.0/scale=0.75, dock 既定と同精度を約半コスト）。 |
 | `--trace <TSV>` | **診断用**: 探索の全ステップを TSV 出力（全モード対応, §2.2.1）。探索結果には無影響・決定論維持。`--local-only` では無効。 |
 | `--qvina-cos <f64>` | `search="qvina2"` 時の勾配方向一致閾値（cos）を上書き。高い=保守的(速度↓精度↑)、低い=攻める(速度↑精度↓)。省略時は config `qvina_cos`（既定 0.90）。 |
 
@@ -214,7 +214,7 @@ python3 tools/isct_screening.py <receptor.pdbqt> <ligand_dir> \
 | `--clean` | off（保持） | **指定時のみ**中間ファイル（`run.toml`/`library.toml`）を削除。ランキング TSV は常に残す。 |
 | `--center X Y Z` | リガンド重心の平均 | 共有ボックス中心。省略時は対象リガンド群の重心平均を自動採用。 |
 | `--size S` | 22.5 | ボックス一辺（Å）。 |
-| `--search MODE` | `tpe` | 探索モード（`tpe`/`vina`/`drift`/`standard`/`qvina2`）。 |
+| `--search MODE` | `tpe` | 探索モード（`tpe`/`tpe_fast`/`vina`/`drift`/`standard`/`qvina2`）。スクリーニングは低予算 `tpe_fast`（n_runs=1+局所チェーン）推奨。 |
 | `--n_runs N` | モード既定 | 1 リガンドあたり独立 run 数（速度/精度トレード）。 |
 | `--prune_threshold T` | `1e9`（全件出力） | seed エネルギー > T を除外。ヒットのみ欲しければ `0.0` 等。 |
 | `--workdir` / `--out` / `--bin` | `./isct_screening_out` / `<workdir>/ranking.tsv` / `target/release/isct-dock` | 中間・出力・バイナリのパス。 |
@@ -264,11 +264,11 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
 | キー | 既定 | 説明 |
 |---|---|---|
 | `seed` | 42 | 乱数シード（決定論）。 |
-| `n_runs` | モード別（下記） | 独立 run 数（網羅性）。**未指定時の既定は探索モードで変わる**: `standard`/`qvina2`=60、`vina`/`tpe`=8。`vina`/`tpe` は 1 run が重い「少数・深い run」設計（`vina` の n_runs は AutoDock Vina の exhaustiveness に対応, Vina 既定=8）。`standard`(drift)/`qvina2` は軽い run の best-of-N なので既定 60。明示指定すればモードに依らずその値を使う（vina で大きな値を指定すると Vina の n_runs/8 倍遅くなる）。**費用対効果の目安**（Astex 実測, `docs/results.202607100005`/`.100834`/`.100847`）: drift は score が n_runs≈40 で飽和（既定 60 は score 用途では過剰、スクリーニングは 30 前後で十分）、tpe は成功率/score とも n_runs=8 で飽和。 |
+| `n_runs` | モード別（下記） | 独立 run 数（網羅性）。**未指定時の既定は探索モードで変わる**: `standard`/`qvina2`=60、`vina`=8、`tpe`=3（dock, 局所チェーン併用）、`tpe_fast`=1（screen も 1）。`vina` の n_runs は AutoDock Vina の exhaustiveness に対応（Vina 既定=8）。`standard`(drift)/`qvina2` は軽い run の best-of-N なので既定 60。明示指定すればモードに依らずその値を使う（vina で大きな値を指定すると Vina の n_runs/8 倍遅くなる）。**tpe は局所チェーンで restart を代替し低 n_runs 化**（旧 n_runs=8 相当を n_runs=3+K=15 が時間 −21%、n_runs=1+fast プリセットが約半コストで達成。`docs/results.202607121032`/`.121135`）。旧: drift は score が n_runs≈40 で飽和、tpe(局所チェーンなし)は n_runs=8 で飽和（`docs/results.202607100005`/`.100834`/`.100847`）。 |
 | `n_steps` | 0 | per-run の MC ステップ数。**0=自動**（可動原子数×torsion 上限で算出）。 |
 | `scoring` | `"direct"` | 探索の分子間評価。`"grid"`=Vina グリッド補間（高速・推奨）/ `"direct"`=直接原子間(SIMD)。 |
 | `grid_margin` | 2.0 | grid 探索ボックスの余白（Å）。探索中に原子が箱外へはみ出しても正しいグリッド値を引く緩衝。小さいほど**構築が速く省メモリ**だが、境界近傍のボーダーライン標的が退行しうる（実測: 0 で一部退行、2 で全標的 RMSD<2Å 中立）。環境変数 `ISCT_GRID_MARGIN` で更に上書き可（デバッグ用）。 |
-| `search` | `"standard"` | 探索モード。`"standard"`=ドリフト鎖 ILS（既定・決定論・高速）/ `"vina"`=Vina 忠実 MC（毎ステップ収束 BFGS）/ `"qvina2"`=QuickVina2 相当の局所探索スキップ（opt-in 高速化）/ `"tpe"`=TPE（Tree-structured Parzen Estimator。下記）。`--search` で上書き可。 |
+| `search` | `"standard"` | 探索モード。`"standard"`=ドリフト鎖 ILS（既定・決定論・高速）/ `"vina"`=Vina 忠実 MC（毎ステップ収束 BFGS）/ `"qvina2"`=QuickVina2 相当の局所探索スキップ（opt-in 高速化）/ `"tpe"`=TPE（Tree-structured Parzen Estimator。dock 既定 n_runs=3+局所チェーン K=15。下記）/ `"tpe_fast"`=TPE 低予算プリセット（スクリーニング向け n_runs=1+K=15/margin=4.0/scale=0.75, dock 既定と同精度を約半コスト）。`--search` で上書き可。 |
 | `qvina_cos` | 0.90 | `qvina2` の勾配方向一致閾値（cos）。低いほどスキップ多＝速度↑精度↓。`--qvina-cos` で上書き可。 |
 | `hunt_cap` | 10.0 | 探索中の正エネルギー上限（Vina curl）。激突ポーズの暴走を抑え深い極小へ抜けやすくする。`1e9` で無効化。polish は常に無効（authentic）。 |
 | `chain_iters` | 30 | ILS 各ステップの局所最適化反復（浅く保ち基底間をドリフト）。 |
@@ -297,6 +297,18 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
   `tpe_ei_candidates`(25, EI 候補数) / `tpe_startup_ratio`(0.05, warmup 比) / `tpe_step_ratio`(0.10, auto n_steps 係数・大=深) /
   `tpe_lower_cap`(10) / `tpe_greater_cap`(10, Parzen カーネル上限) / `tpe_density_reuse`(6, モデル再構築回数)。
   加えて `chain_iters`(35, 1 提案あたり BFGS 反復) / `n_runs`(8)。
+- **局所チェーン（`tpe_local_chain` K）＝CLI 既定 ON**: 共有モードで各提案の初期 BFGS 後、competitive な basin
+  （初期 energy が `best_so_far + tpe_local_chain_margin` 以下）に対し Drift 流の短い MC チェーン（mutate+BFGS+
+  Metropolis を K 歩）を回して精密化＝MC の持続滞在(dwelling)を移植。**explore 律速で native が最深な標的の dwelling
+  失敗を救済**（例 1lpz 8.15→1.8Å, aff −10.58/inter −14.60）。低 n_runs で独立 restart を代替し**省コスト化**する
+  （`docs/results.202607121032`,`.121135`）。**CLI 既定プリセット**（config `tpe_local_chain*` / `n_runs` で上書き可）:
+  - **dock**: `n_runs=3` + `tpe_local_chain=15`（margin 2.0, scale 1.0）。71.3%＝旧 n=8 既定(70.9%) を**時間 −21%** で上回る。
+  - **screen**: `n_runs=1` + `tpe_local_chain=15` + `tpe_local_chain_margin=4.0` + `tpe_local_chain_scale=0.75`。
+    71.3% を **568k evals・3.8s（dock/n8 の約半コスト）** で達成。n=1 は pool が疎ゆえ margin を広げ（連鎖増）scale を
+    縮める（walk-off 抑制）のが最適。
+  - ノブ: `tpe_local_chain_margin`(dock 2.0/screen 4.0, ゲート幅=広いほど連鎖多) / `tpe_local_chain_scale`(dock 1.0=
+    Drift 幅/screen 0.75, <1.0 で変異幅縮小＝walk-off 抑制だが reach 減。n=3 は 1.0・n=1 は 0.75 が最適)。
+  - ライブラリ既定は `tpe_local_chain=0`(OFF)＝**K=0 は現行とビット一致**（再現性契約）。プリセットは CLI 層でのみ適用。
 - 品質は標的依存（深い漏斗の標的で良好、探索性の要る標的では drift に劣ることがある）。
 
 **速度重視のスクリーニング設定**（共有モードで独立 n_runs=8 相当を ~20–30% 短縮）:

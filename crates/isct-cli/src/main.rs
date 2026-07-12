@@ -52,7 +52,8 @@ enum Command {
         /// 低い=攻める(速度↑精度↓)。省略時は config の qvina_cos（既定 0.90）。
         #[arg(long)]
         qvina_cos: Option<f64>,
-        /// 探索アルゴリズムを上書き（standard=ドリフト鎖 / vina=Vina 忠実 MC / qvina2）。省略時は config の search。
+        /// 探索アルゴリズムを上書き（standard=ドリフト鎖 / vina=Vina 忠実 MC / qvina2 / tpe / tpe_fast=低予算
+        /// スクリーニング向けプリセット n_runs=1+局所チェーン）。省略時は config の search。
         #[arg(long, value_parser = parse_search_mode)]
         search: Option<config::SearchMode>,
         /// 乱数シードを上書き（省略時は config の seed）。ベンチマークの seed 振りに使う。
@@ -84,7 +85,8 @@ enum Command {
         /// ワーカスレッドを物理コアにピン留め（Linux。他 OS は no-op）。
         #[arg(long)]
         pin_threads: bool,
-        /// 探索アルゴリズムを上書き（standard=ドリフト鎖 / vina=Vina 忠実 MC / qvina2）。省略時は config の search。
+        /// 探索アルゴリズムを上書き（standard=ドリフト鎖 / vina=Vina 忠実 MC / qvina2 / tpe / tpe_fast=低予算
+        /// スクリーニング向けプリセット n_runs=1+局所チェーン）。省略時は config の search。
         #[arg(long, value_parser = parse_search_mode)]
         search: Option<config::SearchMode>,
     },
@@ -129,29 +131,42 @@ fn main() -> Result<()> {
     }
 }
 
-/// `--search` の値をパースする（standard|drift|vina|qvina2|tpe）。`drift` は `standard` の別名。
+/// `--search` の値をパースする（standard|drift|vina|qvina2|tpe|tpe_fast）。`drift` は `standard` の別名。
 fn parse_search_mode(s: &str) -> Result<config::SearchMode, String> {
     match s.to_ascii_lowercase().as_str() {
         "standard" | "drift" => Ok(config::SearchMode::Standard),
         "qvina2" => Ok(config::SearchMode::Qvina2),
         "vina" => Ok(config::SearchMode::Vina),
         "tpe" => Ok(config::SearchMode::Tpe),
-        other => Err(format!("unknown search mode '{other}' (standard|drift|vina|qvina2|tpe)")),
+        "tpe_fast" | "tpefast" => Ok(config::SearchMode::TpeFast),
+        other => Err(format!(
+            "unknown search mode '{other}' (standard|drift|vina|qvina2|tpe|tpe_fast)"
+        )),
     }
 }
 
-/// config の探索モード → 探索エンジンの `SearchKind`。
+/// config の探索モード → 探索エンジンの `SearchKind`。tpe_fast は tpe と同一アルゴリズム（プリセット差のみ）。
 fn search_kind(m: config::SearchMode) -> SearchKind {
     match m {
         config::SearchMode::Standard => SearchKind::Drift,
         config::SearchMode::Qvina2 => SearchKind::Qvina2,
         config::SearchMode::Vina => SearchKind::Vina,
-        config::SearchMode::Tpe => SearchKind::Tpe,
+        config::SearchMode::Tpe | config::SearchMode::TpeFast => SearchKind::Tpe,
     }
 }
 
 /// `[run]` config から `SearchParams` を構築する（dock・screen 共通）。`qvina_cos_override` は
 /// CLI `--qvina-cos`（dock のみ。screen は `None`）。`uniform_start` は grid バックエンドで true。
+/// TPE 局所チェーンの CLI プリセット（config で `tpe_local_chain*` を明示すると上書きされる）。
+/// dock（`search=tpe`）: n_runs=3 + K=15 で旧 n_runs=8 相当以上を低コスト達成（71.3% vs 70.9%, 時間 −21%。
+/// `docs/results.202607121032`）。fast（`search=tpe_fast` / screen 既定）: 低予算 n_runs=1 の最適設定
+/// K=15/margin=4.0/scale=0.75（71.3% を 568k evals・3.8s＝dock/n8 の約半コスト。n=1 は pool が疎ゆえ margin を
+/// 広げ〔連鎖を増やし〕scale を縮め〔walk-off 抑制〕るのが最適。`docs/results.202607121135`）。
+const TPE_DOCK_LOCAL_CHAIN: usize = 15;
+const TPE_FAST_LOCAL_CHAIN: usize = 15;
+const TPE_FAST_MARGIN: f64 = 4.0;
+const TPE_FAST_SCALE: f64 = 0.75;
+
 fn build_search_params(
     run: &config::RunOpts,
     center: Vec3,
@@ -159,13 +174,18 @@ fn build_search_params(
     mode: config::SearchMode,
     qvina_cos_override: Option<f64>,
     uniform_start: bool,
+    is_screen: bool,
 ) -> SearchParams {
     SearchParams {
         center,
         size,
         seed: run.seed,
-        // n_runs 未指定時はモード別既定（vina=8＝exhaustiveness 相当 / それ以外=60）。
-        n_runs: run.resolve_n_runs(mode),
+        // n_runs 未指定時: tpe は dock=3 / screen=1、tpe_fast=1、vina=8＝exhaustiveness、それ以外=60
+        // （局所チェーンで restart を代替し低コスト化）。config 明示値は resolve_n_runs が優先。
+        n_runs: match (mode, run.n_runs) {
+            (config::SearchMode::Tpe, None) if is_screen => 1,
+            _ => run.resolve_n_runs(mode),
+        },
         n_steps: run.n_steps,
         temp_init: run.temp_init,
         temp_final: run.temp_final,
@@ -182,6 +202,25 @@ fn build_search_params(
         // TPE ハイパーパラメータ。既定は TPEvina 準拠、EI 候補数と warmup 割合は config で上書き可（opt-in）。
         tpe: {
             let mut t = isct_dock::tpe::TpeParams::default();
+            // CLI プリセット: 局所チェーンを既定 ON（config `tpe_local_chain*` 明示で上書き）。ライブラリ既定は
+            // OFF(K=0) のままで CLI 層でのみ有効化（`docs/results.202607121032`,`.121135`）。tpe_fast と screen の
+            // tpe は共通の fast プリセット（n_runs=1 は上の n_runs 分岐で適用）、dock の tpe は K=15 のみ。
+            match mode {
+                config::SearchMode::TpeFast => {
+                    t.local_chain = TPE_FAST_LOCAL_CHAIN;
+                    t.local_chain_margin = TPE_FAST_MARGIN;
+                    t.local_chain_scale = TPE_FAST_SCALE;
+                }
+                config::SearchMode::Tpe if is_screen => {
+                    t.local_chain = TPE_FAST_LOCAL_CHAIN;
+                    t.local_chain_margin = TPE_FAST_MARGIN;
+                    t.local_chain_scale = TPE_FAST_SCALE;
+                }
+                config::SearchMode::Tpe => {
+                    t.local_chain = TPE_DOCK_LOCAL_CHAIN;
+                }
+                _ => {}
+            }
             if let Some(v) = run.tpe_ei_candidates {
                 t.ei_candidates = v;
             }
@@ -208,6 +247,15 @@ fn build_search_params(
             }
             if let Some(v) = run.tpe_coverage_weight {
                 t.coverage_weight = v;
+            }
+            if let Some(v) = run.tpe_local_chain {
+                t.local_chain = v;
+            }
+            if let Some(v) = run.tpe_local_chain_margin {
+                t.local_chain_margin = v;
+            }
+            if let Some(v) = run.tpe_local_chain_scale {
+                t.local_chain_scale = v;
             }
             t
         },
@@ -292,7 +340,7 @@ fn cmd_screen(
     let params = ScreenParams {
         center,
         size,
-        search: build_search_params(&cfg.run, center, size, mode, None, use_grid),
+        search: build_search_params(&cfg.run, center, size, mode, None, use_grid, true),
         prune_threshold: cfg.screen.prune_threshold,
         local_iters: cfg.screen.local_iters,
         use_grid,
@@ -409,7 +457,7 @@ fn cmd_dock(
         Scorer::new(&rec_scored, center, size)
     };
 
-    let mut params = build_search_params(&cfg.run, center, size, mode, qvina_cos, use_grid);
+    let mut params = build_search_params(&cfg.run, center, size, mode, qvina_cos, use_grid, false);
     warn_vina_exhaustiveness(params.kind, params.n_runs);
     // 診断トレース（--trace）: 全探索モード対応。--local-only は別経路（大域探索なし）のため無効。
     if let Some(path) = trace {
