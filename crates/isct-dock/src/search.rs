@@ -370,7 +370,7 @@ pub fn dock_constrained(
             per_run.iter().flat_map(|(_, _, t)| t.iter().cloned()).collect();
         // torsion 列 → ligand.pdbqt の回転結合(BRANCH) 対応をヘッダに載せる（外部ツールでの構造再生用）。
         let torsion_header = lig.torsion_trace_header(free_torsions);
-        write_trace(path, &all_trace, &torsion_header);
+        write_trace(path, &all_trace, params.center, params.size, &torsion_header);
     }
 
     // 全 run の代表を集約し、大域 RMSD クラスタリングで上位 polish_modes（≥ n_modes）モードへ絞る。
@@ -794,10 +794,22 @@ fn conf_generic(conf: &Conformation, root_pivot: Vec3, free_torsions: &[usize]) 
 }
 
 /// トレースを TSV で書き出す（失敗しても探索結果には影響させず警告のみ）。汎用列→アルゴリズム依存列の順。
-fn write_trace(path: &std::path::Path, records: &[TraceRecord], torsion_header: &[String]) {
+fn write_trace(
+    path: &std::path::Path,
+    records: &[TraceRecord],
+    center: Vec3,
+    size: Vec3,
+    torsion_header: &[String],
+) {
     use std::fmt::Write as _;
     let mut s = String::new();
     s.push_str("# search trace (all modes): per-step proposal and BFGS-optimized points. Coordinates are absolute.\n");
+    // 探索ボックス（config [box] と同義）: center=中心, size=各辺長(Å)。絶対座標の pos_* はこの箱内が探索範囲。
+    let _ = writeln!(
+        s,
+        "# BOX center {:.4} {:.4} {:.4} size {:.4} {:.4} {:.4}",
+        center.x, center.y, center.z, size.x, size.y, size.z
+    );
     s.push_str("# phase: MC=start/mutate/skip/bfgs, TPE=warmup/model/coverage/bfgs. energy=search objective (inter+intra, capped).\n");
     s.push_str("# greater_active=TPE model g(x) active (0/1), accepted=MC Metropolis accept (0/1), N/A is -.\n");
     // `torsions` 列（; 区切り）の各値が ligand.pdbqt のどの回転結合(BRANCH)に対応するか。順番は列と一致。

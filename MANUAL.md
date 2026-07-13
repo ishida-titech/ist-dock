@@ -145,6 +145,12 @@ output poses               : ligand_isct_out.pdbqt
 TPE の exploration 有効性、生成点→`bfgs` の energy 差で BFGS の寄与を可視化できる。
 `awk -F'\t' '$11=="mutate"{...}'` 等で解析。
 
+**探索ボックス（ヘッダ）**: ヘッダに探索ボックスも出力する（絶対座標 `pos_*` の探索範囲＝config `[box]` と同義）:
+```
+# BOX center 7.2880 6.2080 23.0460 size 18.0000 17.2500 18.7500
+```
+`center`=箱の中心、`size`=各辺長(Å)。
+
 **torsion → ligand.pdbqt 対応（ヘッダ）**: `torsions` 列は内部フラグメント木の順で、そのままでは外部ツールで
 構造再生できない。そこでヘッダに各列の対応を出力する:
 ```
