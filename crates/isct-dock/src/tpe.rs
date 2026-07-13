@@ -77,6 +77,15 @@ pub struct TpeParams {
     pub skip_local: bool,
     /// 局所探索スキップの勾配方向一致閾値（cosine, 既定 0.90＝`qvina_cos` と同値）。高いほど保守的（スキップ少）。
     pub skip_cos: f64,
+    /// **TORSDOF 条件付き局所チェーン抑制の閾値**（既定 0=OFF＝現行とビット一致）。`free_torsions.len() <
+    /// rigid_torsdof` のリガンドを「剛直」とみなし、局所チェーン歩数を `rigid_local_chain` に切替える。剛直・
+    /// 低自由度デコイで tpe_fast が Vina 関数の深い偽陽性極小を掘り当てて過小スコア化→EF1% を下げる問題
+    /// （`HANDOFF.ef1_diagnosis.md`）への対策。0 では実 ligand（n≥0）で `n<0` が常に偽＝抑制なし＝バイト不変。
+    pub rigid_torsdof: usize,
+    /// 剛直リガンド（`free_torsions.len() < rigid_torsdof`）で用いる局所チェーン歩数 K（既定 0）。通常 `local_chain`
+    /// より小さくし、0 なら剛直ではチェーン無効＝基本 BFGS のみで Vina 相当の探索深度に寄せる。`rigid_torsdof=0`
+    /// なら不使用。
+    pub rigid_local_chain: usize,
 }
 
 impl Default for TpeParams {
@@ -97,6 +106,8 @@ impl Default for TpeParams {
             local_chain_scale: 1.0,
             skip_local: false,
             skip_cos: 0.90,
+            rigid_torsdof: 0,
+            rigid_local_chain: 0,
         }
     }
 }

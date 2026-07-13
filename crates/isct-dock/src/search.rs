@@ -870,8 +870,16 @@ fn single_search_tpe_shared(
     let mut model: Option<tpe::TpeModel> = None;
     let mut since_rebuild = 0usize;
 
-    // 局所チェーン（tp.local_chain>0 で有効）: competitive 提案を Drift MC で精密化して MC の持続滞在を移植。
+    // 局所チェーン（chain_len>0 で有効）: competitive 提案を Drift MC で精密化して MC の持続滞在を移植。
     // best_e は「これまでの全提案の最良 energy」（ゲート基準）。既定 0 なら rng 消費ゼロ＝現行とビット一致。
+    // TORSDOF 条件付き抑制: 剛直リガンド（free torsion 数 < rigid_torsdof）はチェーン歩数を rigid_local_chain へ
+    // 切替える（剛直デコイの偽陽性深極小の掘りすぎを抑え EF1% を守る, `HANDOFF.ef1_diagnosis.md`）。rigid_torsdof=0
+    // なら n<0 が常に偽＝抑制なし＝現行とビット一致。free_torsions は per-call 固定なので先頭で確定。
+    let chain_len = if free_torsions.len() < tp.rigid_torsdof {
+        tp.rigid_local_chain
+    } else {
+        tp.local_chain
+    };
     let mut best_e = f64::INFINITY;
     let mut chain_delta: Vec<f64> = Vec::new();
     let chain_temp = params.temp_init;
@@ -979,10 +987,10 @@ fn single_search_tpe_shared(
         // 精密化。チェーンの最良ポーズを観測に採用し、各局所最小は pool へ。best_e は起動判定に前提案までの値を使う。
         let mut obs_conf = res.conf.clone();
         let mut obs_e = res.energy;
-        if tp.local_chain > 0 && phase != "warmup" && res.energy <= best_e + tp.local_chain_margin {
+        if chain_len > 0 && phase != "warmup" && res.energy <= best_e + tp.local_chain_margin {
             let mut cur_conf = res.conf.clone();
             let mut cur_e = res.energy;
-            for _ in 0..tp.local_chain {
+            for _ in 0..chain_len {
                 let mut trial = cur_conf.clone();
                 apply_mutation(
                     &mut trial, &mut rng, free_torsions,

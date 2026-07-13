@@ -222,6 +222,15 @@ pub struct RunOpts {
     /// 未指定なら 0.90。
     #[serde(default)]
     pub tpe_skip_cos: Option<f64>,
+    /// TORSDOF 条件付き局所チェーン抑制の閾値（`TpeParams.rigid_torsdof`）。`free_torsions.len() < これ` の
+    /// 剛直リガンドで局所チェーンを `tpe_rigid_local_chain` に切替える。0=OFF（既定・現行とビット一致）。剛直
+    /// デコイの過小スコア化（EF1% 低下）対策の opt-in。未指定なら 0。
+    #[serde(default)]
+    pub tpe_rigid_torsdof: Option<usize>,
+    /// 剛直リガンドで用いる局所チェーン歩数 K（`TpeParams.rigid_local_chain`）。通常 `tpe_local_chain` より小、
+    /// 0 で剛直はチェーン無効。`tpe_rigid_torsdof=0` なら不使用。未指定なら 0。
+    #[serde(default)]
+    pub tpe_rigid_local_chain: Option<usize>,
 }
 
 impl Default for RunOpts {
@@ -257,6 +266,8 @@ impl Default for RunOpts {
             tpe_local_chain_scale: None,
             tpe_skip_local: None,
             tpe_skip_cos: None,
+            tpe_rigid_torsdof: None,
+            tpe_rigid_local_chain: None,
         }
     }
 }

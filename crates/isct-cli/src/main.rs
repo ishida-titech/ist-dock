@@ -277,6 +277,12 @@ fn build_search_params(
             if let Some(v) = run.tpe_skip_cos {
                 t.skip_cos = v;
             }
+            if let Some(v) = run.tpe_rigid_torsdof {
+                t.rigid_torsdof = v;
+            }
+            if let Some(v) = run.tpe_rigid_local_chain {
+                t.rigid_local_chain = v;
+            }
             t
         },
         // トレースは dock 側で --tpe-trace 指定時のみ設定（screen では未使用）。

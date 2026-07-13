@@ -311,6 +311,12 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
   - ノブ: `tpe_local_chain_margin`(dock 2.0/screen 2.0, ゲート幅=広いほど連鎖多) / `tpe_local_chain_scale`(dock 1.0=
     Drift 幅/screen 0.75, <1.0 で変異幅縮小＝walk-off 抑制だが reach 減) / **`tpe_skip_local`**(dock false/screen true,
     局所探索スキップ) / **`tpe_skip_cos`**(0.90, スキップの勾配方向一致閾値・高いほど保守的＝スキップ少)。
+  - **TORSDOF 条件付き抑制（EF1% 対策・既定 OFF）**: `tpe_rigid_torsdof`(0=OFF) / `tpe_rigid_local_chain`(0)。
+    `free_torsions.len() < tpe_rigid_torsdof` の**剛直リガンド**で局所チェーンを `tpe_rigid_local_chain` へ切替える
+    （0=剛直はチェーン無効）。スクリーニングで剛直・低自由度デコイが Vina 関数の偽陽性深極小を掘り当てて過小
+    スコア化し early 濃縮(EF1%)を下げる問題（`HANDOFF.ef1_diagnosis.md`）への探索側対策。柔軟リガンド（アクティブ
+    に多い）は不変。剛直アクティブも抑制される active/decoy トレードオフのため既定 OFF・DUD-E で掃引推奨
+    （`rigid_torsdof∈{4,6,8}`×`rigid_local_chain∈{0,3,8}`。`docs/results.202607131021`）。
   - ライブラリ既定は `tpe_local_chain=0`(OFF) かつ `tpe_skip_local=false`＝**現行 tpe とビット一致**（再現性契約）。
     プリセット（chain / skip）は CLI 層でのみ適用。
 - 品質は標的依存（深い漏斗の標的で良好、探索性の要る標的では drift に劣ることがある）。
