@@ -214,13 +214,15 @@ auto 値はモード別（`auto_n_steps_for`：tpe=`auto_n_steps_tpe`）。
 | `local_chain_margin` | 2.0（既定） | **2.0** |
 | `local_chain_scale` | 1.0（既定） | **0.75**（walk-off 抑制） |
 | `skip_local` | false | **true** |
-| `rigid_torsdof` | 0（OFF） | 0（OFF, DUD-E 掃引で opt-in） |
+| `rigid_torsdof` | 0（OFF） | **6** |
+| `rigid_local_chain` | 0 | **0**（剛直はチェーン無効） |
 
 - **dock**: n_runs=3 + K=15。旧 n_runs=8 既定を精度同等以上・時間 −21% で達成（`docs/results.202607121032`）。
 - **screen/tpe_fast**: n_runs=1 + K=15 + skip + margin=2.0 + scale=0.75。低予算スクリーニング向け。skip で冗長
   basin の初期 BFGS を削り、margin=2.0 が精度中立の最速点（Astex24 eval −63%・wall −39%・成功非退行）。
-- **`rigid_torsdof` は両モードとも既定 OFF**（EF1% トレードオフ未検証。§5.3 の DUD-E 掃引で確定後にプリセット化を
-  ユーザ判断）。
+- **`rigid_torsdof`**: screen/tpe_fast は既定 **6**（+`rigid_local_chain=0`）、dock tpe は **0(OFF)**。剛直リガンドは
+  基本 BFGS で既に深極小へ届くため、抑制の主効果は速度（剛直で eval −30〜80%）で EF1% へは安全側の穏やかな寄与
+  （§5.3, `docs/findings.202607131037`）。EF1% の本格改善には基本探索側の抑制が次段候補。
 
 ---
 

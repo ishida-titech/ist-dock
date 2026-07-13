@@ -172,10 +172,19 @@ fn search_kind(m: config::SearchMode) -> SearchKind {
 /// margin=2.0 が精度中立の最適点（Astex24 seed42: skip+m2.0＝成功 19/24〔baseline 18 以上〕・meanAff −9.021
 /// 〔baseline −9.066 とほぼ同〕・eval −63%）。より攻めるなら m1.0（eval −76%・成功 18/24・meanAff −0.09）や
 /// 連鎖無効（eval −86%）。scale=0.75 は walk-off 抑制のため据え置き。`docs/results.20260713*`。
+/// fast はさらに **TORSDOF 条件付き局所チェーン抑制**（`HANDOFF.ef1_diagnosis.md`）を既定 ON:
+/// `free_torsions.len() < RIGID_TORSDOF(=6)` の剛直リガンドでチェーンを無効化（K=0）する。閾値 6 は DUD-E で
+/// active TORSDOF 中央値 10 vs decoy 5 の間＝decoy 中央値以下の剛直デコイのみ抑える設定。剛直リガンドは基本
+/// BFGS+共有モデルで既に深極小へ届くため、K=0 でも affinity はほぼ不変（雑音レベル）で eval −30〜80%＝剛直の
+/// 多いスクリーニングライブラリで大きな高速化。連鎖依存の剛直デコイのみスコアが浅く（Vina 相当へ）＝EF1% に
+/// 安全な方向（`docs/results.202607131021`,`.20260713*`）。剛直アクティブも僅かに抑制されるトレードオフのため
+/// dock（pose 精度優先）では OFF、fast/screen のみ既定 ON。config で上書き可。
 const TPE_DOCK_LOCAL_CHAIN: usize = 15;
 const TPE_FAST_LOCAL_CHAIN: usize = 15;
 const TPE_FAST_MARGIN: f64 = 2.0;
 const TPE_FAST_SCALE: f64 = 0.75;
+const TPE_FAST_RIGID_TORSDOF: usize = 6;
+const TPE_FAST_RIGID_LOCAL_CHAIN: usize = 0;
 
 fn build_search_params(
     run: &config::RunOpts,
@@ -223,12 +232,16 @@ fn build_search_params(
                     t.local_chain_margin = TPE_FAST_MARGIN;
                     t.local_chain_scale = TPE_FAST_SCALE;
                     t.skip_local = true;
+                    t.rigid_torsdof = TPE_FAST_RIGID_TORSDOF;
+                    t.rigid_local_chain = TPE_FAST_RIGID_LOCAL_CHAIN;
                 }
                 config::SearchMode::Tpe if is_screen => {
                     t.local_chain = TPE_FAST_LOCAL_CHAIN;
                     t.local_chain_margin = TPE_FAST_MARGIN;
                     t.local_chain_scale = TPE_FAST_SCALE;
                     t.skip_local = true;
+                    t.rigid_torsdof = TPE_FAST_RIGID_TORSDOF;
+                    t.rigid_local_chain = TPE_FAST_RIGID_LOCAL_CHAIN;
                 }
                 config::SearchMode::Tpe => {
                     t.local_chain = TPE_DOCK_LOCAL_CHAIN;
