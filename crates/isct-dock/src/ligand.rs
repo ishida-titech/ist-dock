@@ -68,6 +68,10 @@ pub struct LigandModel {
     /// フラグメント f（≥1）の部分木に属する **scored 原子インデックス**（torsion 勾配用）。
     scored_subtree: Vec<Vec<usize>>,
     n_torsions: usize,
+    /// 各フラグメントの回転結合(BRANCH)を ligand.pdbqt の記述で保持（root=None）。torsion k ↔ `bond_atoms[k+1]`。
+    /// `(親側 serial, 親側 name, 子側 serial, 子側 name)`＝BRANCH 行の 2 serial とその原子名。トレースヘッダで
+    /// `torsions` 列が pdbqt のどの回転結合に対応するかを示す用（探索計算では未使用）。
+    bond_atoms: Vec<Option<(u32, String, u32, String)>>,
 }
 
 impl LigandModel {
@@ -96,6 +100,22 @@ impl LigandModel {
             .collect();
 
         let bonds: Vec<Option<(usize, usize)>> = mol.fragments.iter().map(|f| f.bond).collect();
+
+        // 回転結合の pdbqt 記述（BRANCH の 2 serial ＋原子名）。トレースヘッダで torsion→pdbqt 対応を出す用。
+        let bond_atoms: Vec<Option<(u32, String, u32, String)>> = mol
+            .fragments
+            .iter()
+            .map(|f| {
+                f.bond.map(|(a0, a1)| {
+                    (
+                        mol.atoms[a0].serial,
+                        mol.atoms[a0].name.clone(),
+                        mol.atoms[a1].serial,
+                        mol.atoms[a1].name.clone(),
+                    )
+                })
+            })
+            .collect();
 
         let root_atoms = &mol.fragments[0].atoms;
         let root_pivot = root_atoms.iter().fold(Vec3::zeros(), |s, &i| s + ref_coords[i])
@@ -129,7 +149,29 @@ impl LigandModel {
             intra_pairs,
             scored_subtree,
             n_torsions: nf - 1,
+            bond_atoms,
         }
+    }
+
+    /// トレース `torsions` 列（`free_torsions` 順）の各 torsion が ligand.pdbqt のどの回転結合(BRANCH)に対応するかを
+    /// 示すヘッダ行を返す。列 i（1 始まり）→ フラグメント `free_torsions[i-1]+1` の BRANCH（親 serial-子 serial）。
+    /// 外部ツールが内部 torsion 順を pdbqt の回転結合へ対応付けて構造再生できるようにする。
+    pub fn torsion_trace_header(&self, free_torsions: &[usize]) -> Vec<String> {
+        free_torsions
+            .iter()
+            .enumerate()
+            .map(|(i, &t)| match self.bond_atoms.get(t + 1).and_then(|b| b.as_ref()) {
+                Some((ps, pn, cs, cn)) => format!(
+                    "# TORSION {} serials {}-{} atoms {}-{}",
+                    i + 1,
+                    ps,
+                    cs,
+                    pn.trim(),
+                    cn.trim()
+                ),
+                None => format!("# TORSION {} (unknown bond)", i + 1),
+            })
+            .collect()
     }
 
     /// 分子内エネルギー対象ペアを事前計算する。

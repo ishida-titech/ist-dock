@@ -135,7 +135,7 @@ output poses               : ligand_isct_out.pdbqt
 | `energy` | 汎用 | その点の探索目的値（inter+intra, hunt_cap 付, kcal/mol）。 |
 | `pos_x/y/z` | 汎用 | リガンド root 重心の**絶対**座標（Å）。 |
 | `rot_x/y/z` | 汎用 | **絶対**配向（scaled-axis, rad）。 |
-| `torsions` | 汎用 | free torsion の**絶対**角（rad, `;` 区切り）。 |
+| `torsions` | 汎用 | free torsion の**絶対**角（rad, `;` 区切り）。並び順はヘッダの `# TORSION k ...` に対応（下記）。 |
 | `phase` | 依存 | 生成源。MC(`standard`/`drift_qvina2`/`qvina2`/`vina`)=`start`/`mutate`/`skip`/`bfgs`、TPE=`warmup`/`model`/`coverage`/`bfgs`。 |
 | `greater_active` | 依存 | TPE `model` 行のみ 0/1（1=g(x) 活性＝観測 27 個以上で exploration 有効）。他は `-`。 |
 | `accepted` | 依存 | MC `bfgs` 行のみ Metropolis 受理 0/1。他は `-`。 |
@@ -144,6 +144,18 @@ output poses               : ligand_isct_out.pdbqt
 `model`（Parzen 大域サンプル）で**探索の広さ・動態の違い**を比較、`accepted` で MC の受理率、`greater_active` で
 TPE の exploration 有効性、生成点→`bfgs` の energy 差で BFGS の寄与を可視化できる。
 `awk -F'\t' '$11=="mutate"{...}'` 等で解析。
+
+**torsion → ligand.pdbqt 対応（ヘッダ）**: `torsions` 列は内部フラグメント木の順で、そのままでは外部ツールで
+構造再生できない。そこでヘッダに各列の対応を出力する:
+```
+# torsions column order maps to these ligand.pdbqt rotatable bonds:
+# TORSION 1 serials 7-11 atoms N7-C17
+# TORSION 2 serials 11-12 atoms C17-C18
+...
+```
+`TORSION k` が `torsions` 列の k 番目（1 始まり）に対応し、`serials A-B` は ligand.pdbqt の `BRANCH A B` 行
+（回転結合の 2 原子 serial）、`atoms` はその原子名。角度は参照（入力）ポーズからの絶対 torsion(rad)。これで
+各 torsion 値がどの回転結合の回転角かを一意に対応付けて構造を再生できる。
 
 ### 2.3 `screen` — ライブラリのスクリーニング
 

@@ -368,7 +368,9 @@ pub fn dock_constrained(
     if let Some(path) = &params.trace_path {
         let all_trace: Vec<TraceRecord> =
             per_run.iter().flat_map(|(_, _, t)| t.iter().cloned()).collect();
-        write_trace(path, &all_trace);
+        // torsion 列 → ligand.pdbqt の回転結合(BRANCH) 対応をヘッダに載せる（外部ツールでの構造再生用）。
+        let torsion_header = lig.torsion_trace_header(free_torsions);
+        write_trace(path, &all_trace, &torsion_header);
     }
 
     // 全 run の代表を集約し、大域 RMSD クラスタリングで上位 polish_modes（≥ n_modes）モードへ絞る。
@@ -792,12 +794,19 @@ fn conf_generic(conf: &Conformation, root_pivot: Vec3, free_torsions: &[usize]) 
 }
 
 /// トレースを TSV で書き出す（失敗しても探索結果には影響させず警告のみ）。汎用列→アルゴリズム依存列の順。
-fn write_trace(path: &std::path::Path, records: &[TraceRecord]) {
+fn write_trace(path: &std::path::Path, records: &[TraceRecord], torsion_header: &[String]) {
     use std::fmt::Write as _;
     let mut s = String::new();
     s.push_str("# search trace (all modes): per-step proposal and BFGS-optimized points. Coordinates are absolute.\n");
     s.push_str("# phase: MC=start/mutate/skip/bfgs, TPE=warmup/model/coverage/bfgs. energy=search objective (inter+intra, capped).\n");
     s.push_str("# greater_active=TPE model g(x) active (0/1), accepted=MC Metropolis accept (0/1), N/A is -.\n");
+    // `torsions` 列（; 区切り）の各値が ligand.pdbqt のどの回転結合(BRANCH)に対応するか。順番は列と一致。
+    // `serials A-B` は BRANCH 行の 2 原子 serial、`atoms` はその原子名。角度は参照ポーズからの絶対 torsion(rad)。
+    s.push_str("# torsions column order maps to these ligand.pdbqt rotatable bonds:\n");
+    for line in torsion_header {
+        s.push_str(line);
+        s.push('\n');
+    }
     s.push_str("run\tstep\tenergy\tpos_x\tpos_y\tpos_z\trot_x\trot_y\trot_z\ttorsions\tphase\tgreater_active\taccepted\n");
     let flag = |v: i8| match v {
         0 => "0",
