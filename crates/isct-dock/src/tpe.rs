@@ -70,6 +70,13 @@ pub struct TpeParams {
     /// 局所チェーンの変異幅スケール（既定 1.0＝Drift 幅と完全一致・ビット一致）。<1.0 で並進 ±2·scale Å・回転
     /// ±scale rad・torsion ±π·scale に縮小し、基内 dwelling（refine）寄りにして basin-hop（歩き去り）を抑える。
     pub local_chain_scale: f64,
+    /// **局所探索スキップ**（QuickVina2 相当, 既定 false=OFF＝現行とビット一致）。共有モードで各**非 warmup**
+    /// 提案の start を安価な勾配1回で判定し、近傍の既知斜面と勾配方向が一致（cos>`skip_cos`）＝同一 basin なら
+    /// 高価な初期 BFGS（提案あたり全 eval の ~78%）をスキップする。tpe_fast の律速（冗長 basin への再最適化）を
+    /// 削る。スキップ提案は BFGS/チェーン/pool/obs をすべて省く（既知 basin の極小は既に pool/obs に在る）。
+    pub skip_local: bool,
+    /// 局所探索スキップの勾配方向一致閾値（cosine, 既定 0.90＝`qvina_cos` と同値）。高いほど保守的（スキップ少）。
+    pub skip_cos: f64,
 }
 
 impl Default for TpeParams {
@@ -88,6 +95,8 @@ impl Default for TpeParams {
             local_chain: 0,
             local_chain_margin: 2.0,
             local_chain_scale: 1.0,
+            skip_local: false,
+            skip_cos: 0.90,
         }
     }
 }

@@ -213,6 +213,15 @@ pub struct RunOpts {
     /// basin-hop（歩き去り）を抑制。未指定なら 1.0。
     #[serde(default)]
     pub tpe_local_chain_scale: Option<f64>,
+    /// TPE 共有モードの局所探索スキップ（QuickVina2 相当, `TpeParams.skip_local`）。true で非 warmup 提案の
+    /// start を勾配1回で判定し、既知 basin なら初期 BFGS を省く。tpe_fast プリセットでは既定 ON。未指定なら
+    /// ライブラリ既定 false（＝現行 tpe とビット一致）。
+    #[serde(default)]
+    pub tpe_skip_local: Option<bool>,
+    /// 局所探索スキップの勾配方向一致閾値（`TpeParams.skip_cos`, cosine）。高いほど保守的（スキップ少）。
+    /// 未指定なら 0.90。
+    #[serde(default)]
+    pub tpe_skip_cos: Option<f64>,
 }
 
 impl Default for RunOpts {
@@ -246,6 +255,8 @@ impl Default for RunOpts {
             tpe_local_chain: None,
             tpe_local_chain_margin: None,
             tpe_local_chain_scale: None,
+            tpe_skip_local: None,
+            tpe_skip_cos: None,
         }
     }
 }

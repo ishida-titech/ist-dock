@@ -876,6 +876,13 @@ fn single_search_tpe_shared(
     let mut chain_delta: Vec<f64> = Vec::new();
     let chain_temp = params.temp_init;
 
+    // 局所探索スキップ（QuickVina2 相当, tp.skip_local で有効）: 非 warmup 提案の start を勾配1回で判定し、
+    // 近傍の既知斜面と勾配方向が一致する（同一 basin へ向かう）なら高価な初期 BFGS を省く。RNG 不使用＝決定論。
+    let mut skip_history = tp
+        .skip_local
+        .then(|| HistoryBuffer::new(QVinaParams::for_dofs(free_dofs.len(), tp.skip_cos)));
+    let mut skip_grad: Vec<f64> = Vec::new();
+
     // 診断トレース（trace 有効時のみ）。生成点のエネルギーは主カウンタを汚さない別 scratch で評価。
     let mut trace_rec: Vec<TraceRecord> = Vec::new();
     let trace_scratch = RefCell::new(EvalScratch::default());
@@ -927,6 +934,29 @@ fn single_search_tpe_shared(
             trace_rec.push(TraceRecord {
                 run: run_id, step: p, energy: se, pos, rot, tors, phase, greater, accepted: -1,
             });
+        }
+
+        // 局所探索スキップ（QuickVina2 相当）: 非 warmup 提案の start を勾配1回で判定。近傍の既知斜面と方向一致
+        // （同一 basin）なら初期 BFGS・チェーン・pool 挿入・obs 追加をすべて省いて次提案へ（既知 basin の極小は
+        // 既に pool/obs に在る）。判定用 value_grad は主スコアラで評価＝実 eval に計上（安価な BFGS 代替）。
+        if let Some(hist) = skip_history.as_mut() {
+            if phase != "warmup" {
+                let se = value_grad(&start, &mut skip_grad);
+                let dof = dof_vector(&start, free_dofs);
+                let g = project_grad(&skip_grad, free_dofs);
+                let significant = hist.is_new_well(&dof, &g);
+                hist.push(dof, g);
+                if !significant {
+                    if trace {
+                        let (pos, rot, tors) = conf_generic(&start, root_pivot, free_torsions);
+                        trace_rec.push(TraceRecord {
+                            run: run_id, step: p, energy: se, pos, rot, tors,
+                            phase: "skip", greater: -1, accepted: -1,
+                        });
+                    }
+                    continue;
+                }
+            }
         }
 
         let res = minimize_free(start, &value_grad, local_iters, free_dofs);

@@ -95,7 +95,7 @@ Estimated Free Energy of Binding         : -7.45678 kcal/mol
 | `-c, --config` | TOML 設定（§3）。探索ボックス必須。 |
 | `-o, --out` | 出力ポーズ PDBQT（既定: `<ligand>_isct_out.pdbqt`）。 |
 | `--local-only` | 診断用。大域探索せず入力ポーズから局所最適化のみ。 |
-| `--search <standard\|drift_qvina2\|qvina2\|vina\|tpe\|tpe_fast>` | 探索アルゴリズムを上書き（config `search` より優先）。`standard`(=`drift`)=ドリフト鎖 / `drift_qvina2`=ドリフト鎖＋局所探索スキップ（isct 独自, n_runs=60）/ `qvina2`=**本来の QuickVina2 相当**（Vina 忠実 MC＋スキップ, exhaustiveness=8）/ `vina`=Vina 忠実 MC（毎ステップ収束 BFGS）/ `tpe`=TPE（Parzen サンプリング探索, dock 既定 n_runs=3+局所チェーン K=15）/ `tpe_fast`=TPE 低予算プリセット（スクリーニング向け n_runs=1+K=15/margin=4.0/scale=0.75）。 |
+| `--search <standard\|drift_qvina2\|qvina2\|vina\|tpe\|tpe_fast>` | 探索アルゴリズムを上書き（config `search` より優先）。`standard`(=`drift`)=ドリフト鎖 / `drift_qvina2`=ドリフト鎖＋局所探索スキップ（isct 独自, n_runs=60）/ `qvina2`=**本来の QuickVina2 相当**（Vina 忠実 MC＋スキップ, exhaustiveness=8）/ `vina`=Vina 忠実 MC（毎ステップ収束 BFGS）/ `tpe`=TPE（Parzen サンプリング探索, dock 既定 n_runs=3+局所チェーン K=15）/ `tpe_fast`=TPE 低予算プリセット（スクリーニング向け n_runs=1+K=15/margin=2.0/scale=0.75+局所探索スキップ）。 |
 | `--trace <TSV>` | **診断用**: 探索の全ステップを TSV 出力（全モード対応, §2.2.1）。探索結果には無影響・決定論維持。`--local-only` では無効。 |
 | `--qvina-cos <f64>` | `search="drift_qvina2"`/`"qvina2"` 時の勾配方向一致閾値（cos）を上書き。高い=保守的(速度↓精度↑)、低い=攻める(速度↑精度↓)。省略時は config `qvina_cos`（既定 0.90）。 |
 
@@ -303,12 +303,16 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
   失敗を救済**（例 1lpz 8.15→1.8Å, aff −10.58/inter −14.60）。低 n_runs で独立 restart を代替し**省コスト化**する
   （`docs/results.202607121032`,`.121135`）。**CLI 既定プリセット**（config `tpe_local_chain*` / `n_runs` で上書き可）:
   - **dock**: `n_runs=3` + `tpe_local_chain=15`（margin 2.0, scale 1.0）。71.3%＝旧 n=8 既定(70.9%) を**時間 −21%** で上回る。
-  - **screen**: `n_runs=1` + `tpe_local_chain=15` + `tpe_local_chain_margin=4.0` + `tpe_local_chain_scale=0.75`。
-    71.3% を **568k evals・3.8s（dock/n8 の約半コスト）** で達成。n=1 は pool が疎ゆえ margin を広げ（連鎖増）scale を
-    縮める（walk-off 抑制）のが最適。
-  - ノブ: `tpe_local_chain_margin`(dock 2.0/screen 4.0, ゲート幅=広いほど連鎖多) / `tpe_local_chain_scale`(dock 1.0=
-    Drift 幅/screen 0.75, <1.0 で変異幅縮小＝walk-off 抑制だが reach 減。n=3 は 1.0・n=1 は 0.75 が最適)。
-  - ライブラリ既定は `tpe_local_chain=0`(OFF)＝**K=0 は現行とビット一致**（再現性契約）。プリセットは CLI 層でのみ適用。
+  - **screen / tpe_fast**: `n_runs=1` + `tpe_local_chain=15` + **`tpe_skip_local=true`** + `tpe_local_chain_margin=2.0`
+    + `tpe_local_chain_scale=0.75`。**局所探索スキップ（QuickVina2 相当）を既定 ON**にし冗長 basin への初期 BFGS を
+    省く（Astex24 seed42 で **eval −63%・wall −39%**・成功 19/24≥旧 18・meanAff 同等。`docs/results.202607130928`）。
+    skip はモデルを良 basin へ集中させるため、旧 margin=4.0 のままだと連鎖が過剰発火して逆に低速化する→margin=2.0 が
+    精度中立の最適点。攻めるなら margin=1.0（eval −76%・meanAff −0.09）や `tpe_local_chain=0`（連鎖無効・eval −86%）。
+  - ノブ: `tpe_local_chain_margin`(dock 2.0/screen 2.0, ゲート幅=広いほど連鎖多) / `tpe_local_chain_scale`(dock 1.0=
+    Drift 幅/screen 0.75, <1.0 で変異幅縮小＝walk-off 抑制だが reach 減) / **`tpe_skip_local`**(dock false/screen true,
+    局所探索スキップ) / **`tpe_skip_cos`**(0.90, スキップの勾配方向一致閾値・高いほど保守的＝スキップ少)。
+  - ライブラリ既定は `tpe_local_chain=0`(OFF) かつ `tpe_skip_local=false`＝**現行 tpe とビット一致**（再現性契約）。
+    プリセット（chain / skip）は CLI 層でのみ適用。
 - 品質は標的依存（深い漏斗の標的で良好、探索性の要る標的では drift に劣ることがある）。
 
 **速度重視のスクリーニング設定**（共有モードで独立 n_runs=8 相当を ~20–30% 短縮）:

@@ -55,7 +55,7 @@ enum Command {
         qvina_cos: Option<f64>,
         /// Override the search algorithm (standard=drift-chain / drift_qvina2=drift + local-search skip
         /// (isct-specific) / qvina2=faithful QuickVina2 (Vina MC + skip, exh=8) / vina=Vina-faithful MC /
-        /// tpe / tpe_fast=low-budget screening preset n_runs=1 + local chain). Defaults to config search.
+        /// tpe / tpe_fast=low-budget screening preset n_runs=1 + local chain + local-search skip). Defaults to config search.
         #[arg(long, value_parser = parse_search_mode)]
         search: Option<config::SearchMode>,
         /// Override the RNG seed (defaults to config seed). Used for seed sweeps in benchmarking.
@@ -90,7 +90,7 @@ enum Command {
         pin_threads: bool,
         /// Override the search algorithm (standard=drift-chain / drift_qvina2=drift + local-search skip
         /// (isct-specific) / qvina2=faithful QuickVina2 (Vina MC + skip, exh=8) / vina=Vina-faithful MC /
-        /// tpe / tpe_fast=low-budget screening preset n_runs=1 + local chain). Defaults to config search.
+        /// tpe / tpe_fast=low-budget screening preset n_runs=1 + local chain + local-search skip). Defaults to config search.
         #[arg(long, value_parser = parse_search_mode)]
         search: Option<config::SearchMode>,
     },
@@ -166,12 +166,15 @@ fn search_kind(m: config::SearchMode) -> SearchKind {
 /// CLI `--qvina-cos`（dock のみ。screen は `None`）。`uniform_start` は grid バックエンドで true。
 /// TPE 局所チェーンの CLI プリセット（config で `tpe_local_chain*` を明示すると上書きされる）。
 /// dock（`search=tpe`）: n_runs=3 + K=15 で旧 n_runs=8 相当以上を低コスト達成（71.3% vs 70.9%, 時間 −21%。
-/// `docs/results.202607121032`）。fast（`search=tpe_fast` / screen 既定）: 低予算 n_runs=1 の最適設定
-/// K=15/margin=4.0/scale=0.75（71.3% を 568k evals・3.8s＝dock/n8 の約半コスト。n=1 は pool が疎ゆえ margin を
-/// 広げ〔連鎖を増やし〕scale を縮め〔walk-off 抑制〕るのが最適。`docs/results.202607121135`）。
+/// `docs/results.202607121032`）。fast（`search=tpe_fast` / screen 既定）: 局所探索スキップ（QuickVina2 相当,
+/// `skip_local`）を既定 ON にして冗長 basin への初期 BFGS を削り、併せて chain gate を **margin=2.0** へ絞る。
+/// スキップはモデルを良 basin へ集中させるため、旧 margin=4.0 のままだと連鎖が過剰発火して逆に低速化する。
+/// margin=2.0 が精度中立の最適点（Astex24 seed42: skip+m2.0＝成功 19/24〔baseline 18 以上〕・meanAff −9.021
+/// 〔baseline −9.066 とほぼ同〕・eval −63%）。より攻めるなら m1.0（eval −76%・成功 18/24・meanAff −0.09）や
+/// 連鎖無効（eval −86%）。scale=0.75 は walk-off 抑制のため据え置き。`docs/results.20260713*`。
 const TPE_DOCK_LOCAL_CHAIN: usize = 15;
 const TPE_FAST_LOCAL_CHAIN: usize = 15;
-const TPE_FAST_MARGIN: f64 = 4.0;
+const TPE_FAST_MARGIN: f64 = 2.0;
 const TPE_FAST_SCALE: f64 = 0.75;
 
 fn build_search_params(
@@ -212,16 +215,20 @@ fn build_search_params(
             // CLI プリセット: 局所チェーンを既定 ON（config `tpe_local_chain*` 明示で上書き）。ライブラリ既定は
             // OFF(K=0) のままで CLI 層でのみ有効化（`docs/results.202607121032`,`.121135`）。tpe_fast と screen の
             // tpe は共通の fast プリセット（n_runs=1 は上の n_runs 分岐で適用）、dock の tpe は K=15 のみ。
+            // fast プリセットは局所探索スキップ（QuickVina2 相当）を既定 ON にし冗長 basin への初期 BFGS を削る
+            // （高速化, `docs/results.20260713*`）。dock の tpe は精度優先で OFF のまま。
             match mode {
                 config::SearchMode::TpeFast => {
                     t.local_chain = TPE_FAST_LOCAL_CHAIN;
                     t.local_chain_margin = TPE_FAST_MARGIN;
                     t.local_chain_scale = TPE_FAST_SCALE;
+                    t.skip_local = true;
                 }
                 config::SearchMode::Tpe if is_screen => {
                     t.local_chain = TPE_FAST_LOCAL_CHAIN;
                     t.local_chain_margin = TPE_FAST_MARGIN;
                     t.local_chain_scale = TPE_FAST_SCALE;
+                    t.skip_local = true;
                 }
                 config::SearchMode::Tpe => {
                     t.local_chain = TPE_DOCK_LOCAL_CHAIN;
@@ -263,6 +270,12 @@ fn build_search_params(
             }
             if let Some(v) = run.tpe_local_chain_scale {
                 t.local_chain_scale = v;
+            }
+            if let Some(v) = run.tpe_skip_local {
+                t.skip_local = v;
+            }
+            if let Some(v) = run.tpe_skip_cos {
+                t.skip_cos = v;
             }
             t
         },
