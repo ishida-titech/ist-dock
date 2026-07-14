@@ -86,6 +86,19 @@ pub struct TpeParams {
     /// より小さくし、0 なら剛直ではチェーン無効＝基本 BFGS のみで Vina 相当の探索深度に寄せる。`rigid_torsdof=0`
     /// なら不使用。
     pub rigid_local_chain: usize,
+    /// **n_steps（提案数）縮小スケールの最小値**（既定 1.0=OFF）。複雑さ連動の段階スケール
+    /// `step_scale(T) = min(1.0, rigid_step_scale + rigid_step_per_tors·T)`（T=`free_torsions.len()`）の下限＝
+    /// 最剛直（T=0）に適用する係数。低自由度ほど n=1 で収束済みゆえ削れる（`HANDOFF.regularization.md` §5.1）。
+    /// 1.0 で全 T が素通り＝現行とビット一致。共有モードでのみ有効（budget=n_runs×n_steps を縮小）。
+    pub rigid_step_scale: f64,
+    /// n_steps 縮小スケールの**段階ランプ勾配**（1 torsion あたりの増分, 既定 0.0）。`step_scale(T)` を T とともに
+    /// 1.0 へ線形復帰させる（`T ≥ (1−rigid_step_scale)/rigid_step_per_tors` で full）。低〜中自由度を緩やかに削り、
+    /// 高自由度（最適化不足が大）は full に保つ多段階化。0.0 だと全 T で `rigid_step_scale` 一律（=非推奨。柔軟も削れる）
+    /// ため、`rigid_step_scale<1.0` で使うときは正の勾配を設定すること。`rigid_step_scale>=1.0` なら全体 OFF。
+    pub rigid_step_per_tors: f64,
+    /// n_steps 縮小時の下限（既定 200）。`n_steps × step_scale(T)` がこれを下回らないよう clamp し、warmup と
+    /// 最低限の探索を確保する。`step_scale(T)>=1.0` なら不使用。
+    pub rigid_step_floor: usize,
 }
 
 impl Default for TpeParams {
@@ -108,6 +121,9 @@ impl Default for TpeParams {
             skip_cos: 0.90,
             rigid_torsdof: 0,
             rigid_local_chain: 0,
+            rigid_step_scale: 1.0,
+            rigid_step_per_tors: 0.0,
+            rigid_step_floor: 200,
         }
     }
 }

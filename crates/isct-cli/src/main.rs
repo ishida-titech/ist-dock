@@ -185,6 +185,14 @@ const TPE_FAST_MARGIN: f64 = 2.0;
 const TPE_FAST_SCALE: f64 = 0.75;
 const TPE_FAST_RIGID_TORSDOF: usize = 6;
 const TPE_FAST_RIGID_LOCAL_CHAIN: usize = 0;
+/// 提案数(n_steps)を自由度(TORSDOF)連動で多段階に縮小する係数。scale(T) = min(1.0, BASE + PER_TORS·T)。
+/// 剛直は n=1 で収束済み（`HANDOFF.regularization.md` §5.1）ゆえ提案数を大きく削り、低自由度でも段階的に削る
+/// （T=0 で 0.5→T=10 で 1.0＝柔軟は素通し）。二値(0.5/1.0)でなく連続ランプにすることで剛直と判定されない低自由度
+/// (T6–9)も安全に軽量化。Astex T3–10 スプレッド×複数 seed で **affinity 非退行（1lpz の seed 変動は full も同様
+/// ＝探索律速の seed 宝くじで系統退行なし）・eval 低〜中自由度で −8〜33%**（`docs/results.20260714*`）。BASE=0.3 相当
+/// まで下げると一部標的が収束失敗するため 0.5 が安全な最小。PER_TORS=0.05 で T≥10 が満額（柔軟は完全非影響）。
+const TPE_FAST_RIGID_STEP_SCALE: f64 = 0.5;
+const TPE_FAST_RIGID_STEP_PER_TORS: f64 = 0.05;
 
 fn build_search_params(
     run: &config::RunOpts,
@@ -234,6 +242,8 @@ fn build_search_params(
                     t.skip_local = true;
                     t.rigid_torsdof = TPE_FAST_RIGID_TORSDOF;
                     t.rigid_local_chain = TPE_FAST_RIGID_LOCAL_CHAIN;
+                    t.rigid_step_scale = TPE_FAST_RIGID_STEP_SCALE;
+                    t.rigid_step_per_tors = TPE_FAST_RIGID_STEP_PER_TORS;
                 }
                 config::SearchMode::Tpe if is_screen => {
                     t.local_chain = TPE_FAST_LOCAL_CHAIN;
@@ -242,6 +252,8 @@ fn build_search_params(
                     t.skip_local = true;
                     t.rigid_torsdof = TPE_FAST_RIGID_TORSDOF;
                     t.rigid_local_chain = TPE_FAST_RIGID_LOCAL_CHAIN;
+                    t.rigid_step_scale = TPE_FAST_RIGID_STEP_SCALE;
+                    t.rigid_step_per_tors = TPE_FAST_RIGID_STEP_PER_TORS;
                 }
                 config::SearchMode::Tpe => {
                     t.local_chain = TPE_DOCK_LOCAL_CHAIN;
@@ -295,6 +307,15 @@ fn build_search_params(
             }
             if let Some(v) = run.tpe_rigid_local_chain {
                 t.rigid_local_chain = v;
+            }
+            if let Some(v) = run.tpe_rigid_step_scale {
+                t.rigid_step_scale = v;
+            }
+            if let Some(v) = run.tpe_rigid_step_per_tors {
+                t.rigid_step_per_tors = v;
+            }
+            if let Some(v) = run.tpe_rigid_step_floor {
+                t.rigid_step_floor = v;
             }
             t
         },

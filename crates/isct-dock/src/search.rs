@@ -878,7 +878,22 @@ fn single_search_tpe_shared(
     // カバレッジ距離の角度スケール（rad→Å 換算）。1 rad の回転 ≈ 回転半径 Å の変位。
     let ang_scale = gyration_radius(&lig.reference_scored_positions()).max(1.0);
 
-    let budget = params.n_runs.max(1) * n_steps.max(1);
+    // 複雑さ連動の n_steps 縮小（軽量化）: 提案数を自由度 T=free_torsions.len() に単調連動して削る。低自由度ほど
+    // n=1 で収束済みゆえ削れる（`HANDOFF.regularization.md` §5.1）。段階スケール（多段階）:
+    //   step_scale(T) = min(1.0, rigid_step_scale + rigid_step_per_tors·T)
+    // 最剛直(T=0)=rigid_step_scale、T が増すごと per_tors ずつ増え、T≥(1−scale)/per_tors で 1.0（=full, 高自由度は
+    // 最適化不足ゆえ削らない）。rigid_step_scale>=1.0 で全 T が 1.0＝ビット不変。budget 縮小で warmup/freq も比例縮小。
+    let step_scale = if tp.rigid_step_scale >= 1.0 {
+        1.0
+    } else {
+        (tp.rigid_step_scale + tp.rigid_step_per_tors * free_torsions.len() as f64).min(1.0)
+    };
+    let n_steps_eff = if step_scale < 1.0 {
+        ((n_steps as f64 * step_scale) as usize).max(tp.rigid_step_floor)
+    } else {
+        n_steps
+    };
+    let budget = params.n_runs.max(1) * n_steps_eff.max(1);
     let warmup = ((budget as f64 * tp.startup_ratio) as usize).max(1);
     let freq = (budget.saturating_sub(warmup) / tp.density_reuse.max(1)).max(1);
     // リアンカー周期: 0=周期リアンカーなし（単一アンカーの共有探索, 推奨）。>0 で N 提案ごとに探索的 restart。

@@ -168,6 +168,16 @@ n_runs=8 相当へ到達させる（利得源は**観測共有**そのもの。`
   `rigid_torsdof∈{4,6,8}`×`rigid_local_chain∈{0,3,8}` を掃引して判定（`docs/results.202607131021`,
   [[tpe-fast-ef1-rigid-decoy]]）。
 
+**n_steps の自由度連動縮小（軽量化）— `rigid_step_scale` / `rigid_step_per_tors` / `rigid_step_floor`**: 剛直
+（TORSDOF≤4）は n=1 で既に収束する（`HANDOFF.regularization.md` §5.1）ため、`n_steps` が dof 線形で多提案（~1600）を
+回すのは浪費。提案数を `max(rigid_step_floor, n_steps×scale(T))`、`scale(T)=min(1.0, rigid_step_scale + rigid_step_per_tors·T)`
+（`T=free_torsions.len()`）へ多段階に縮小して `budget` を軽量化する（warmup/freq も比例縮小）。剛直を強く・低中自由度を
+緩く削り、高自由度（`T ≥ (1−scale)/per_tors`）は full へ復帰＝最適化不足を温存。`rigid_step_scale=1.0`（既定）で全 T が
+1.0＝ビット不変。**screen/tpe_fast は既定 BASE=0.5 / per_tors=0.05**（T0=0.50→T6=0.80→T≥10=1.0; affinity 非退行・eval を
+低中自由度で −8〜33%, `docs/results.202607141616`）。二値(0.5/1.0)から連続ランプ化し、剛直判定外の低自由度(T6–9)も安全に
+軽量化。BASE=0.3 まで下げると一部標的が収束失敗するため 0.5 が安全な最小、per_tors=0.0 だと全 T 一律 BASE＝柔軟も削れる
+（footgun）ため正の勾配必須。「複雑さ連動・予算配分」の剛直側先行分（柔軟側 K ランプは次段）。
+
 ---
 
 ## 6. パラメータ一覧（`TpeParams`, `tpe.rs`）
@@ -191,6 +201,9 @@ n_runs=8 相当へ到達させる（利得源は**観測共有**そのもの。`
 | `skip_cos` (`qvina_cos`◆相当) | スキップの勾配方向一致閾値 | **0.90** | `tpe_skip_cos` |
 | `rigid_torsdof` (—) | TORSDOF 条件付き抑制の閾値（§5.3, 0=OFF） | **0** | `tpe_rigid_torsdof` |
 | `rigid_local_chain` (—) | 剛直リガンドの K | **0** | `tpe_rigid_local_chain` |
+| `rigid_step_scale` (—) | n_steps 縮小ランプの BASE（1.0=OFF） | **1.0** | `tpe_rigid_step_scale` |
+| `rigid_step_per_tors` (—) | ランプ勾配（scale(T)=BASE+per_tors·T） | **0.0** | `tpe_rigid_step_per_tors` |
+| `rigid_step_floor` (—) | 縮小後 n_steps の下限 | **200** | `tpe_rigid_step_floor` |
 
 **drift 等と共有（◆）**: `chain_iters`(=35, `local_iters=0` 時の BFGS 反復) / `minimize_free`（BFGS） /
 `contact_start`（初期配置） / `hunt_cap`（curl） / `eval_value_grad`（スコア） / 集約・出力（`cluster_rmsd`=2.0,
@@ -216,13 +229,17 @@ auto 値はモード別（`auto_n_steps_for`：tpe=`auto_n_steps_tpe`）。
 | `skip_local` | false | **true** |
 | `rigid_torsdof` | 0（OFF） | **6** |
 | `rigid_local_chain` | 0 | **0**（剛直はチェーン無効） |
+| `rigid_step_scale` (BASE) | 1.0（OFF） | **0.5** |
+| `rigid_step_per_tors` (勾配) | 0.0（OFF） | **0.05**（n_steps 多段階縮小: T0=0.5→T≥10=1.0） |
 
 - **dock**: n_runs=3 + K=15。旧 n_runs=8 既定を精度同等以上・時間 −21% で達成（`docs/results.202607121032`）。
 - **screen/tpe_fast**: n_runs=1 + K=15 + skip + margin=2.0 + scale=0.75。低予算スクリーニング向け。skip で冗長
   basin の初期 BFGS を削り、margin=2.0 が精度中立の最速点（Astex24 eval −63%・wall −39%・成功非退行）。
-- **`rigid_torsdof`**: screen/tpe_fast は既定 **6**（+`rigid_local_chain=0`）、dock tpe は **0(OFF)**。剛直リガンドは
-  基本 BFGS で既に深極小へ届くため、抑制の主効果は速度（剛直で eval −30〜80%）で EF1% へは安全側の穏やかな寄与
-  （§5.3, `docs/findings.202607131037`）。EF1% の本格改善には基本探索側の抑制が次段候補。
+- **`rigid_torsdof`**: screen/tpe_fast は既定 **6**（+`rigid_local_chain=0` ＋ n_steps ランプ `rigid_step_scale=0.5`/
+  `rigid_step_per_tors=0.05`）、dock tpe は **0(OFF)**。剛直リガンドは基本 BFGS で既に深極小へ届くため、抑制の主効果は
+  速度（チェーン無効で eval −30〜80%、さらに n_steps 縮小で低中自由度 −8〜33%）で EF1% へは安全側の穏やかな寄与
+  （§5.3, `docs/findings.202607131037`,
+  `docs/results.202607141543`）。EF1% の本格改善には柔軟側の予算増（K ランプ）が次段候補。
 
 ---
 

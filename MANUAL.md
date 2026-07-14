@@ -337,6 +337,12 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
     ライブラリ既定 OFF。剛直リガンドは基本 BFGS で既に深極小へ届くため主効果は**速度**（剛直で eval −30〜80%）、
     EF1% へは安全側で穏やかに寄与。柔軟リガンド（アクティブに多い）は不変（`docs/results.202607131021`,
     `docs/findings.202607131037`）。
+  - **n_steps の自由度連動縮小（軽量化）**: `tpe_rigid_step_scale`(BASE, 1.0=OFF) / `tpe_rigid_step_per_tors`(勾配) /
+    `tpe_rigid_step_floor`(下限, 200)。剛直は n=1 で収束済みのため提案数を `scale(T)=min(1.0, BASE+per_tors·T)` 倍
+    （`T=free_torsions.len()`, floor で下限確保）へ多段階に縮小する。**screen/tpe_fast は既定 BASE=0.5/per_tors=0.05**
+    ＝ T0=0.50→T6=0.80→T≥10=1.0（剛直を強く・低中自由度(T6–9)を緩く削り・柔軟は満額）。affinity 非退行、eval を
+    低中自由度で −8〜33%（`docs/results.202607141616`）。`per_tors=0.0` だと全 T 一律 BASE＝柔軟も削れるため
+    `BASE<1.0` で使うときは正の勾配必須。dock tpe/ライブラリ既定 OFF。
   - ライブラリ既定は `tpe_local_chain=0`(OFF) かつ `tpe_skip_local=false`＝**現行 tpe とビット一致**（再現性契約）。
     プリセット（chain / skip）は CLI 層でのみ適用。
 - 品質は標的依存（深い漏斗の標的で良好、探索性の要る標的では drift に劣ることがある）。

@@ -231,6 +231,16 @@ pub struct RunOpts {
     /// 0 で剛直はチェーン無効。`tpe_rigid_torsdof=0` なら不使用。未指定なら 0。
     #[serde(default)]
     pub tpe_rigid_local_chain: Option<usize>,
+    /// n_steps 縮小の最小係数（`TpeParams.rigid_step_scale`, 最剛直に適用）。1.0=OFF（既定・ビット一致）。未指定なら 1.0。
+    #[serde(default)]
+    pub tpe_rigid_step_scale: Option<f64>,
+    /// n_steps 縮小の段階ランプ勾配（`TpeParams.rigid_step_per_tors`）。T≥rigid_torsdof で 1.0 へ線形復帰させ低〜中
+    /// 自由度も緩やかに削る。0.0 で従来の2段。未指定なら 0.0。
+    #[serde(default)]
+    pub tpe_rigid_step_per_tors: Option<f64>,
+    /// n_steps 縮小時の下限（`TpeParams.rigid_step_floor`, warmup 確保）。未指定なら 200。
+    #[serde(default)]
+    pub tpe_rigid_step_floor: Option<usize>,
 }
 
 impl Default for RunOpts {
@@ -268,6 +278,9 @@ impl Default for RunOpts {
             tpe_skip_cos: None,
             tpe_rigid_torsdof: None,
             tpe_rigid_local_chain: None,
+            tpe_rigid_step_scale: None,
+            tpe_rigid_step_per_tors: None,
+            tpe_rigid_step_floor: None,
         }
     }
 }
