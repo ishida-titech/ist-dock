@@ -53,9 +53,10 @@ enum Command {
         /// Defaults to config qvina_cos (default 0.90).
         #[arg(long)]
         qvina_cos: Option<f64>,
-        /// Override the search algorithm (standard=drift-chain / drift_qvina2=drift + local-search skip
-        /// (isct-specific) / qvina2=faithful QuickVina2 (Vina MC + skip, exh=8) / vina=Vina-faithful MC /
-        /// tpe / tpe_fast=low-budget screening preset n_runs=1 + local chain + local-search skip). Defaults to config search.
+        /// Override the search algorithm (tpe=default low-budget preset: shared TPE + local chain +
+        /// local-search skip + rigid lightening, n_runs=1 / standard=drift-chain / drift_qvina2=drift +
+        /// local-search skip (isct-specific) / qvina2=faithful QuickVina2 (Vina MC + skip, exh=8) /
+        /// vina=Vina-faithful MC). Defaults to config search (tpe).
         #[arg(long, value_parser = parse_search_mode)]
         search: Option<config::SearchMode>,
         /// Override the RNG seed (defaults to config seed). Used for seed sweeps in benchmarking.
@@ -88,9 +89,10 @@ enum Command {
         /// Pin worker threads to physical cores (Linux; no-op on other OSes).
         #[arg(long)]
         pin_threads: bool,
-        /// Override the search algorithm (standard=drift-chain / drift_qvina2=drift + local-search skip
-        /// (isct-specific) / qvina2=faithful QuickVina2 (Vina MC + skip, exh=8) / vina=Vina-faithful MC /
-        /// tpe / tpe_fast=low-budget screening preset n_runs=1 + local chain + local-search skip). Defaults to config search.
+        /// Override the search algorithm (tpe=default low-budget preset: shared TPE + local chain +
+        /// local-search skip + rigid lightening, n_runs=1 / standard=drift-chain / drift_qvina2=drift +
+        /// local-search skip (isct-specific) / qvina2=faithful QuickVina2 (Vina MC + skip, exh=8) /
+        /// vina=Vina-faithful MC). Defaults to config search (tpe).
         #[arg(long, value_parser = parse_search_mode)]
         search: Option<config::SearchMode>,
     },
@@ -135,77 +137,54 @@ fn main() -> Result<()> {
     }
 }
 
-/// `--search` の値をパースする（standard|drift|drift_qvina2|qvina2|vina|tpe|tpe_fast）。`drift` は
+/// `--search` の値をパースする（tpe|standard|drift|drift_qvina2|qvina2|vina）。`tpe` が既定。`drift` は
 /// `standard` の別名。`qvina2`=本来の QuickVina2 相当、`drift_qvina2`=ドリフト基盤の isct 独自版。
 fn parse_search_mode(s: &str) -> Result<config::SearchMode, String> {
     match s.to_ascii_lowercase().as_str() {
+        "tpe" => Ok(config::SearchMode::Tpe),
         "standard" | "drift" => Ok(config::SearchMode::Standard),
         "drift_qvina2" | "driftqvina2" => Ok(config::SearchMode::DriftQvina2),
         "qvina2" => Ok(config::SearchMode::Qvina2),
         "vina" => Ok(config::SearchMode::Vina),
-        "tpe" => Ok(config::SearchMode::Tpe),
-        "tpe_fast" | "tpefast" => Ok(config::SearchMode::TpeFast),
         other => Err(format!(
-            "unknown search mode '{other}' (standard|drift|drift_qvina2|qvina2|vina|tpe|tpe_fast)"
+            "unknown search mode '{other}' (tpe|standard|drift|drift_qvina2|qvina2|vina)"
         )),
     }
 }
 
-/// config の探索モード → 探索エンジンの `SearchKind`。tpe_fast は tpe と同一アルゴリズム（プリセット差のみ）。
+/// config の探索モード → 探索エンジンの `SearchKind`。
 fn search_kind(m: config::SearchMode) -> SearchKind {
     match m {
         config::SearchMode::Standard => SearchKind::Drift,
         config::SearchMode::DriftQvina2 => SearchKind::DriftQvina2,
         config::SearchMode::Qvina2 => SearchKind::Qvina2,
         config::SearchMode::Vina => SearchKind::Vina,
-        config::SearchMode::Tpe | config::SearchMode::TpeFast => SearchKind::Tpe,
+        config::SearchMode::Tpe => SearchKind::Tpe,
     }
 }
 
 /// `[run]` config から `SearchParams` を構築する（dock・screen 共通）。`qvina_cos_override` は
 /// CLI `--qvina-cos`（dock のみ。screen は `None`）。`uniform_start` は grid バックエンドで true。
-/// TPE 局所チェーンの CLI プリセット（config で `tpe_local_chain*` を明示すると上書きされる）。
-/// dock（`search=tpe`）: n_runs=3 + K=15 で旧 n_runs=8 相当以上を低コスト達成（71.3% vs 70.9%, 時間 −21%。
-/// `docs/results.202607121032`）。fast（`search=tpe_fast` / screen 既定）: 局所探索スキップ（QuickVina2 相当,
-/// `skip_local`）を既定 ON にして冗長 basin への初期 BFGS を削り、併せて chain gate を **margin=2.0** へ絞る。
-/// スキップはモデルを良 basin へ集中させるため、旧 margin=4.0 のままだと連鎖が過剰発火して逆に低速化する。
-/// margin=2.0 が精度中立の最適点（Astex24 seed42: skip+m2.0＝成功 19/24〔baseline 18 以上〕・meanAff −9.021
-/// 〔baseline −9.066 とほぼ同〕・eval −63%）。より攻めるなら m1.0（eval −76%・成功 18/24・meanAff −0.09）や
-/// 連鎖無効（eval −86%）。scale=0.75 は walk-off 抑制のため据え置き。`docs/results.20260713*`。
-/// fast はさらに **TORSDOF 条件付き局所チェーン抑制**（`HANDOFF.ef1_diagnosis.md`）を既定 ON:
-/// `free_torsions.len() < RIGID_TORSDOF(=6)` の剛直リガンドで局所チェーン歩数を `RIGID_LOCAL_CHAIN` へ切替える。
-/// 閾値 6 は DUD-E で active TORSDOF 中央値 10 vs decoy 5 の間＝decoy 中央値以下の剛直デコイのみ抑える設定。
-/// **当初は K=0（完全無効）だったが、全85標的では K=0 が剛直 native（1u4d/1ke5/1tow, T2-4）の pose を落とし −1.6pt
-/// 退行することが判明**（`docs/results.20260714*`。affinity＝スコアはほぼ中立だが RMSD が悪化＝旧「雑音レベル」は
-/// 小標本・スコアのみの過小評価）。K を掃引した結果 **K=8 で精度がフル回復（抑制無しと同等）しつつ eval は抑制無し比
-/// −13%**、しかも剛直チェーンは wall コストがほぼ無い（K0→K15 で wall +6% のみ）ため K=8 を既定に採用。EF1%/throughput
-/// 重視なら config で K=0 へ。dock（pose 精度優先）は抑制 OFF、fast/screen のみ既定 ON。
-const TPE_DOCK_LOCAL_CHAIN: usize = 15;
-const TPE_FAST_LOCAL_CHAIN: usize = 15;
-/// 局所チェーンゲート幅の skip 対象別分離。**skip 有効（剛直 T<`SKIP_TORSDOF`）は 2.0**（skip がモデルを集中させ
-/// 連鎖が過剰発火するため狭める）、**skip 無効（柔軟 T≥閾値）は 4.0**（過剰発火せず、広い margin で competitive basin
-/// を広く精密化して柔軟の精度を回収）。旧「skip 時は一律 margin=2.0 で精度非退行」は Astex24 小標本の誤りで、全85では
-/// 一律 2.0 が柔軟を巻き添えに −3.5pt 退行していた。分割で一律 4.0 相当の精度（70.2%）を eval −32% で達成
-/// （`docs/results.20260714*`）。
-const TPE_FAST_MARGIN: f64 = 2.0;
-const TPE_FAST_NONSKIP_MARGIN: f64 = 4.0;
-const TPE_FAST_SCALE: f64 = 0.75;
-const TPE_FAST_RIGID_TORSDOF: usize = 6;
-const TPE_FAST_RIGID_LOCAL_CHAIN: usize = 8;
-/// 局所探索スキップの TORSDOF ゲート閾値。`free_torsions.len() < 7` の剛直のみスキップし、中〜高自由度
-/// （T≥7）ではスキップ無効化＝初期 BFGS を省かない。スキップの精度コストは高DOF に集中する（native 盆地が難で
-/// 1回の BFGS 省略が native 消失に直結, `docs/findings.202607141756`）。skip 単一因子（旧基準に skip のみ追加）では
-/// 閾値 7 が中自由度 T7-8（1lpz/1mzc/2bm2）も保護し **70.5%（gate9=69.8%, 旧71.3%）・meanScore −9.1399 は旧より深く**・
-/// eval −12%（`docs/results.202607141810*`）。T<7 のスキップは温存＝速度と（剛直デコイ抑制で）DUD-E EF1% への寄与も保つ。
-const TPE_FAST_SKIP_TORSDOF: usize = 7;
-/// 提案数(n_steps)を自由度(TORSDOF)連動で多段階に縮小する係数。scale(T) = min(1.0, BASE + PER_TORS·T)。
-/// 剛直は n=1 で収束済み（`HANDOFF.regularization.md` §5.1）ゆえ提案数を大きく削り、低自由度でも段階的に削る
-/// （T=0 で 0.5→T=10 で 1.0＝柔軟は素通し）。二値(0.5/1.0)でなく連続ランプにすることで剛直と判定されない低自由度
-/// (T6–9)も安全に軽量化。**BASE=0.7 を採用**: `scale(T)=min(1.0, 0.7+0.05·T)` は **T=6 で満額**に戻る緩いランプで、
-/// 削るのは T<6 の剛直のみ＝そこは `RIGID_LOCAL_CHAIN`(K=8) が pose を補償するため、K=8＋ramp0.7 は精度非退行（むしろ
-/// +0.4pt）で eval −5%。BASE=0.5 は攻めすぎで単一因子 −2.4pt 退行したため 0.7 へ緩和（`docs/results.20260714*`）。
-const TPE_FAST_RIGID_STEP_SCALE: f64 = 0.7;
-const TPE_FAST_RIGID_STEP_PER_TORS: f64 = 0.05;
+///
+/// **tpe（既定モード）の CLI プリセット**（dock/screen 共通, n_runs=1。config で `tpe_*` を明示すると上書き）。
+/// 素の共有 TPE に以下を重畳し、標準 Astex85×10seed で Vina exh=8 に肉薄（68.8% vs 70.8%）を eval 20×・wall ~9×
+/// 軽く達成（`docs/results.202607151422`）。各因子は旧の小標本結論を全85で訂正して確定（`docs/results.202607141930`）:
+/// - 局所チェーン K=15（restart 代替）＋ **margin を skip 対象別に分離**: skip 有効（剛直 T<`SKIP_TORSDOF`）は 2.0
+///   （skip がモデルを集中させ連鎖が過剰発火するため狭める）、skip 無効（柔軟）は 4.0（広く精密化して精度回収）。
+///   旧「一律 2.0 で精度非退行」は Astex24 小標本の誤りで全85では柔軟巻き添え −3.5pt 退行。scale=0.75 は walk-off 抑制。
+/// - **局所探索スキップ**（QuickVina2 相当, `skip_local`）を TORSDOF ゲート付きで既定 ON: `T<SKIP_TORSDOF(=7)` の
+///   剛直のみスキップ（精度コストは高DOF に集中するため柔軟は温存, `docs/findings.202607141756`）。
+/// - **剛直の軽量化**: `T<RIGID_TORSDOF(=6)` の剛直で局所チェーンを `RIGID_LOCAL_CHAIN(=8)` に、n_steps を
+///   `scale(T)=min(1, 0.7+0.05·T)`（T=6 で満額）に縮小。K=0/ramp0.5 は剛直 native の pose を退行させるため K=8/ramp0.7。
+const TPE_LOCAL_CHAIN: usize = 15;
+const TPE_MARGIN: f64 = 2.0;
+const TPE_NONSKIP_MARGIN: f64 = 4.0;
+const TPE_SCALE: f64 = 0.75;
+const TPE_RIGID_TORSDOF: usize = 6;
+const TPE_RIGID_LOCAL_CHAIN: usize = 8;
+const TPE_SKIP_TORSDOF: usize = 7;
+const TPE_RIGID_STEP_SCALE: f64 = 0.7;
+const TPE_RIGID_STEP_PER_TORS: f64 = 0.05;
 
 fn build_search_params(
     run: &config::RunOpts,
@@ -214,18 +193,14 @@ fn build_search_params(
     mode: config::SearchMode,
     qvina_cos_override: Option<f64>,
     uniform_start: bool,
-    is_screen: bool,
 ) -> SearchParams {
     SearchParams {
         center,
         size,
         seed: run.seed,
-        // n_runs 未指定時: tpe は dock=3 / screen=1、tpe_fast=1、vina=8＝exhaustiveness、それ以外=60
-        // （局所チェーンで restart を代替し低コスト化）。config 明示値は resolve_n_runs が優先。
-        n_runs: match (mode, run.n_runs) {
-            (config::SearchMode::Tpe, None) if is_screen => 1,
-            _ => run.resolve_n_runs(mode),
-        },
+        // n_runs 未指定時: tpe=1（局所チェーンで restart 代替）、vina/qvina2=8＝exhaustiveness、それ以外=60。
+        // config 明示値は resolve_n_runs が優先。
+        n_runs: run.resolve_n_runs(mode),
         n_steps: run.n_steps,
         temp_init: run.temp_init,
         temp_final: run.temp_final,
@@ -242,40 +217,20 @@ fn build_search_params(
         // TPE ハイパーパラメータ。既定は TPEvina 準拠、EI 候補数と warmup 割合は config で上書き可（opt-in）。
         tpe: {
             let mut t = isct_dock::tpe::TpeParams::default();
-            // CLI プリセット: 局所チェーンを既定 ON（config `tpe_local_chain*` 明示で上書き）。ライブラリ既定は
-            // OFF(K=0) のままで CLI 層でのみ有効化（`docs/results.202607121032`,`.121135`）。tpe_fast と screen の
-            // tpe は共通の fast プリセット（n_runs=1 は上の n_runs 分岐で適用）、dock の tpe は K=15 のみ。
-            // fast プリセットは局所探索スキップ（QuickVina2 相当）を既定 ON にし冗長 basin への初期 BFGS を削る
-            // （高速化, `docs/results.20260713*`）。dock の tpe は精度優先で OFF のまま。
-            match mode {
-                config::SearchMode::TpeFast => {
-                    t.local_chain = TPE_FAST_LOCAL_CHAIN;
-                    t.local_chain_margin = TPE_FAST_MARGIN;
-                    t.nonskip_local_chain_margin = TPE_FAST_NONSKIP_MARGIN;
-                    t.local_chain_scale = TPE_FAST_SCALE;
-                    t.skip_local = true;
-                    t.skip_torsdof = TPE_FAST_SKIP_TORSDOF;
-                    t.rigid_torsdof = TPE_FAST_RIGID_TORSDOF;
-                    t.rigid_local_chain = TPE_FAST_RIGID_LOCAL_CHAIN;
-                    t.rigid_step_scale = TPE_FAST_RIGID_STEP_SCALE;
-                    t.rigid_step_per_tors = TPE_FAST_RIGID_STEP_PER_TORS;
-                }
-                config::SearchMode::Tpe if is_screen => {
-                    t.local_chain = TPE_FAST_LOCAL_CHAIN;
-                    t.local_chain_margin = TPE_FAST_MARGIN;
-                    t.nonskip_local_chain_margin = TPE_FAST_NONSKIP_MARGIN;
-                    t.local_chain_scale = TPE_FAST_SCALE;
-                    t.skip_local = true;
-                    t.skip_torsdof = TPE_FAST_SKIP_TORSDOF;
-                    t.rigid_torsdof = TPE_FAST_RIGID_TORSDOF;
-                    t.rigid_local_chain = TPE_FAST_RIGID_LOCAL_CHAIN;
-                    t.rigid_step_scale = TPE_FAST_RIGID_STEP_SCALE;
-                    t.rigid_step_per_tors = TPE_FAST_RIGID_STEP_PER_TORS;
-                }
-                config::SearchMode::Tpe => {
-                    t.local_chain = TPE_DOCK_LOCAL_CHAIN;
-                }
-                _ => {}
+            // CLI プリセット（tpe, dock/screen 共通）: 素の共有 TPE（ライブラリ既定は全機構 OFF）に局所チェーン・
+            // 局所探索スキップ・剛直軽量化を CLI 層で重畳（config `tpe_*` 明示で上書き）。詳細は `build_search_params`
+            // の doc（上）を参照。既定 tpe 以外のモードは素通し。
+            if mode == config::SearchMode::Tpe {
+                t.local_chain = TPE_LOCAL_CHAIN;
+                t.local_chain_margin = TPE_MARGIN;
+                t.nonskip_local_chain_margin = TPE_NONSKIP_MARGIN;
+                t.local_chain_scale = TPE_SCALE;
+                t.skip_local = true;
+                t.skip_torsdof = TPE_SKIP_TORSDOF;
+                t.rigid_torsdof = TPE_RIGID_TORSDOF;
+                t.rigid_local_chain = TPE_RIGID_LOCAL_CHAIN;
+                t.rigid_step_scale = TPE_RIGID_STEP_SCALE;
+                t.rigid_step_per_tors = TPE_RIGID_STEP_PER_TORS;
             }
             if let Some(v) = run.tpe_ei_candidates {
                 t.ei_candidates = v;
@@ -424,7 +379,7 @@ fn cmd_screen(
     let params = ScreenParams {
         center,
         size,
-        search: build_search_params(&cfg.run, center, size, mode, None, use_grid, true),
+        search: build_search_params(&cfg.run, center, size, mode, None, use_grid),
         prune_threshold: cfg.screen.prune_threshold,
         local_iters: cfg.screen.local_iters,
         use_grid,
@@ -541,7 +496,7 @@ fn cmd_dock(
         Scorer::new(&rec_scored, center, size)
     };
 
-    let mut params = build_search_params(&cfg.run, center, size, mode, qvina_cos, use_grid, false);
+    let mut params = build_search_params(&cfg.run, center, size, mode, qvina_cos, use_grid);
     warn_vina_exhaustiveness(params.kind, params.n_runs);
     // 診断トレース（--trace）: 全探索モード対応。--local-only は別経路（大域探索なし）のため無効。
     if let Some(path) = trace {

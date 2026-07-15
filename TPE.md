@@ -1,4 +1,8 @@
-# TPE 探索モード（`--search tpe` / `tpe_fast`）アルゴリズム仕様
+# TPE 探索モード（`--search tpe`, **既定**）アルゴリズム仕様
+
+> 2026-07-15 の整理で `tpe_fast` は `tpe` に統合（dock/screen 共通の単一プリセット, n_runs=1）、既定モードも
+> drift→**tpe** に変更。旧 `tpe_fast` 名は削除（`--search tpe` を使用）。以下の「tpe_fast」「dock/screen 別」の
+> 記述は統合前の履歴で、現在は単一の `tpe` プリセットに一本化されている。
 
 実装: `crates/isct-dock/src/tpe.rs`（Parzen モデル）と `crates/isct-dock/src/search.rs`（run 駆動）。
 移植元は **TPEvina-2.0**（PSOVina 派生, CBBio）。本書は括弧内に **TPEvina 側の変数名**を添える（例
@@ -219,23 +223,24 @@ n_runs=8 相当へ到達させる（利得源は**観測共有**そのもの。`
 `n_modes`=9, `polish_modes`=9, `polish_iters`=20, `dock_constrained`）。`n_steps` の config 欄は共有だが未指定時の
 auto 値はモード別（`auto_n_steps_for`：tpe=`auto_n_steps_tpe`）。
 
-**n_runs（`num_tasks`=`exhaustiveness`）**: TPE の未指定既定は **dock=3 / screen(=tpe/tpe_fast)=1**
-（`DEFAULT_N_RUNS_TPE=3`, `default_n_runs_for`）。共有モードでは n_runs は総予算 `budget=n_runs×n_steps` の係数。
-旧既定 8 は独立モード時代の値（局所チェーンが restart を代替し低 n_runs 化。[[tpe-local-chain-prototype]]）。
+**n_runs（`num_tasks`=`exhaustiveness`）**: TPE の未指定既定は **1**（dock/screen 共通, `DEFAULT_N_RUNS_TPE=1`,
+`default_n_runs_for`）。共有モードでは n_runs は総予算 `budget=n_runs×n_steps` の係数。局所チェーンが restart を
+代替し低 n_runs 化（[[tpe-local-chain-prototype]]）。より高精度が要るなら config で n_runs を上げる。
 
 ---
 
 ## 7. CLI 既定プリセット（`build_search_params`, `main.rs`）
 
-ライブラリ `TpeParams` 既定は全機構 OFF（基本 TPE）。CLI 層で **モード別プリセット**を適用（config で上書き可）。
+ライブラリ `TpeParams` 既定は全機構 OFF（基本 TPE）。CLI 層で **`tpe` プリセット**（dock/screen 共通）を適用
+（config で上書き可）。dock 列（旧 n_runs=3/K15 のみ）は 2026-07-15 の統合で廃止＝下記の単一プリセットに一本化。
 
-| | dock（`--search tpe`） | screen / `--search tpe_fast` |
+| ノブ | ライブラリ既定 | **tpe プリセット（`--search tpe`）** |
 |---|---|---|
-| `n_runs` | 3 | 1 |
-| `local_chain` (K) | 15 | 15 |
-| `local_chain_margin`（skip 有効側） | 2.0（既定） | **2.0** |
+| `n_runs` | — | **1** |
+| `local_chain` (K) | 0（OFF） | **15** |
+| `local_chain_margin`（skip 有効側） | 2.0 | **2.0** |
 | `nonskip_local_chain_margin`（skip 無効側） | 0.0（分離無効） | **4.0**（柔軟の精度回収） |
-| `local_chain_scale` | 1.0（既定） | **0.75**（walk-off 抑制） |
+| `local_chain_scale` | 1.0 | **0.75**（walk-off 抑制） |
 | `skip_local` | false | **true** |
 | `skip_torsdof` | 0（全適用） | **7**（T≥7 の中〜柔軟はスキップ無効化＝BFGS 温存） |
 | `rigid_torsdof` | 0（OFF） | **6** |
@@ -243,14 +248,13 @@ auto 値はモード別（`auto_n_steps_for`：tpe=`auto_n_steps_tpe`）。
 | `rigid_step_scale` (BASE) | 1.0（OFF） | **0.7**（T=6 で満額の緩ランプ, K=8 と両立） |
 | `rigid_step_per_tors` (勾配) | 0.0（OFF） | **0.05** |
 
-- **dock**: n_runs=3 + K=15。旧 n_runs=8 既定を精度同等以上・時間 −21% で達成（`docs/results.202607121032`）。
-- **screen/tpe_fast（2026-07-14 再設計, 標準 Astex85 で単一因子検証, `docs/results.202607141930`）**: n_runs=1 + K=15
-  + skip(gate7) + **margin 分割(skip対象2.0/非対象4.0)** + rigid_torsdof=6 + **rigid_local_chain=8** + **ramp scale=0.7**。
-  **plain preset で 70.6% / −9.0911 / 282,708 ev / 3.03s wall**（旧 K0/uniform2.0/ramp0.5 の 63.6% から +7.0pt）。
-  各因子の検証: margin 分割は柔軟の精度回収で eval −32%、K=8 は K=0(−1.6pt) の剛直 pose 退行をフル回復（wall +3%のみ）、
-  ramp0.7 は K=8 と両立し実質無償（+0.4pt/eval−5%）。**旧 docs の「margin2.0 精度非退行」「K0 は affinity 雑音」は
-  Astex24 小標本の誤りで全85では退行**（本 §7 の旧記述はこの再設計で更新）。
-- **`rigid_torsdof`**: screen/tpe_fast は既定 **6**、dock tpe は **0(OFF)**。旧知見「剛直の掘りすぎ主因は基本 BFGS で
+- **tpe プリセット（2026-07-14 再設計・07-15 統合, 標準 Astex85 で単一因子検証, `docs/results.202607141930`,
+  `.202607151422`）**: n_runs=1 + K=15 + skip(gate7) + **margin 分割(skip対象2.0/非対象4.0)** + rigid_torsdof=6
+  + **rigid_local_chain=8** + **ramp scale=0.7**。**標準 Astex85×10seed で 68.8% / −9.0757 / 284k ev / 3.04s wall**
+  ＝Vina exh=8(70.8%) に肉薄しつつ eval 20×・wall ~9× 軽量。各因子: margin 分割は柔軟の精度回収で eval −32%、
+  K=8 は K=0(−1.6pt) の剛直 pose 退行をフル回復（wall +3%のみ）、ramp0.7 は K=8 と両立し実質無償。**旧 docs の
+  「margin2.0 精度非退行」「K0 は affinity 雑音」は Astex24 小標本の誤りで全85では退行**（[[tpe-fast-preset-85-redesign]]）。
+- **`rigid_torsdof`**: tpe プリセットは既定 **6**、ライブラリ既定は **0(OFF)**。旧知見「剛直の掘りすぎ主因は基本 BFGS で
   チェーンは深さを足さない」は **affinity（スコア）には正しいが pose(RMSD) には効く**と補正（K0 で剛直 native 3標的が
   <2Å を外す）。EF1%/throughput 重視なら config で K=0 / margin 一律 2.0 / ramp0.5 へ。DUD-E EF1% は K=8・margin4.0・
   ramp0.7 が剛直抑制を緩めるため再測定が必要（ユーザ実施, [[tpe-fast-ef1-rigid-decoy]]）。

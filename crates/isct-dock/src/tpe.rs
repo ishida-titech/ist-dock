@@ -79,7 +79,7 @@ pub struct TpeParams {
     pub local_chain_scale: f64,
     /// **局所探索スキップ**（QuickVina2 相当, 既定 false=OFF＝現行とビット一致）。共有モードで各**非 warmup**
     /// 提案の start を安価な勾配1回で判定し、近傍の既知斜面と勾配方向が一致（cos>`skip_cos`）＝同一 basin なら
-    /// 高価な初期 BFGS（提案あたり全 eval の ~78%）をスキップする。tpe_fast の律速（冗長 basin への再最適化）を
+    /// 高価な初期 BFGS（提案あたり全 eval の ~78%）をスキップする。tpe プリセットの律速（冗長 basin への再最適化）を
     /// 削る。スキップ提案は BFGS/チェーン/pool/obs をすべて省く（既知 basin の極小は既に pool/obs に在る）。
     pub skip_local: bool,
     /// 局所探索スキップの勾配方向一致閾値（cosine, 既定 0.90＝`qvina_cos` と同値）。高いほど保守的（スキップ少）。
@@ -92,7 +92,7 @@ pub struct TpeParams {
     pub skip_torsdof: usize,
     /// **TORSDOF 条件付き局所チェーン抑制の閾値**（既定 0=OFF＝現行とビット一致）。`free_torsions.len() <
     /// rigid_torsdof` のリガンドを「剛直」とみなし、局所チェーン歩数を `rigid_local_chain` に切替える。剛直・
-    /// 低自由度デコイで tpe_fast が Vina 関数の深い偽陽性極小を掘り当てて過小スコア化→EF1% を下げる問題
+    /// 低自由度デコイで tpe が Vina 関数の深い偽陽性極小を掘り当てて過小スコア化→EF1% を下げる問題
     /// （`HANDOFF.ef1_diagnosis.md`）への対策。0 では実 ligand（n≥0）で `n<0` が常に偽＝抑制なし＝バイト不変。
     pub rigid_torsdof: usize,
     /// 剛直リガンド（`free_torsions.len() < rigid_torsdof`）で用いる局所チェーン歩数 K（既定 0）。通常 `local_chain`
