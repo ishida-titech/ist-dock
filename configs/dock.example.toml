@@ -1,7 +1,7 @@
 # dock.example.toml — `isct-dock dock` 用サンプル設定（注釈付き）
 #
 # 使い方:
-#   ./target/release/isct-dock dock <receptor.pdbqt> <ligand.pdbqt> --config configs/dock.example.toml
+#   ./target/release/isct-dock dock configs/dock.example.toml <receptor.pdbqt> <ligand.pdbqt>
 # CLI フラグ（--search / --qvina-cos / --out / --local-only）は config の対応値を上書きする。
 # 並列度は環境変数 RAYON_NUM_THREADS で制御（run 単位で並列。既定=全コア）。決定論: 同一 seed で結果ビット一致。
 

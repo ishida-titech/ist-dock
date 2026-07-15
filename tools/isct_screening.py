@@ -158,8 +158,8 @@ def main():
     lib_path.write_text("\n".join(parts))
 
     # screen 実行（1 プロセス・rayon 並列）。
-    cmd = [str(args.bin), "screen", str(receptor), str(lib_path),
-           "--config", str(cfg_path), "--out", str(out_path)]
+    cmd = [str(args.bin), "screen", str(cfg_path), str(receptor), str(lib_path),
+           "--out", str(out_path)]
     print(f"[isct_screening] 実行: {' '.join(cmd)}", flush=True)
     r = subprocess.run(cmd)
     if r.returncode != 0:

@@ -85,14 +85,14 @@ Estimated Free Energy of Binding         : -7.45678 kcal/mol
 ### 2.2 `dock` — 単一リガンドのドッキング
 
 ```sh
-./target/release/isct-dock dock <receptor.pdbqt> <ligand.pdbqt> --config <run.toml> [--out OUT.pdbqt] [--local-only] [--search MODE] [--trace TRACE.tsv]
+./target/release/isct-dock dock <run.toml> <receptor.pdbqt> <ligand.pdbqt> [--out OUT.pdbqt] [--local-only] [--search MODE] [--trace TRACE.tsv]
 ```
 
 | 引数 | 説明 |
 |---|---|
+| `run.toml` | TOML 設定（§3、位置引数・必須）。探索ボックス必須。 |
 | `receptor.pdbqt` | 受容体（剛体）。 |
 | `ligand.pdbqt` | リガンド。**入力座標は RMSD 基準（結晶ポーズ）としても使われる**。 |
-| `-c, --config` | TOML 設定（§3）。探索ボックス必須。 |
 | `-o, --out` | 出力ポーズ PDBQT（既定: `<ligand>_isct_out.pdbqt`）。 |
 | `--local-only` | 診断用。大域探索せず入力ポーズから局所最適化のみ。 |
 | `--search <tpe\|standard\|drift_qvina2\|qvina2\|vina>` | 探索アルゴリズムを上書き（config `search` より優先）。**`tpe`=既定**（共有 TPE＋局所チェーン＋局所探索スキップ＋剛直軽量化の低予算プリセット, n_runs=1。dock/screen 共通）/ `standard`(=`drift`)=ドリフト鎖 / `drift_qvina2`=ドリフト鎖＋局所探索スキップ（isct 独自, n_runs=60）/ `qvina2`=**本来の QuickVina2 相当**（Vina 忠実 MC＋スキップ, exhaustiveness=8）/ `vina`=Vina 忠実 MC（毎ステップ収束 BFGS）。 |
@@ -166,7 +166,7 @@ TPE の exploration 有効性、生成点→`bfgs` の energy 差で BFGS の寄
 ### 2.3 `screen` — ライブラリのスクリーニング
 
 ```sh
-./target/release/isct-dock screen <receptor.pdbqt> <library.toml|library.bin> --config <run.toml> \
+./target/release/isct-dock screen <run.toml> <receptor.pdbqt> <library.toml|library.bin> \
     [--out ranking.tsv] [--poses-out poses.pdbqt --top N] [--pin-threads] [--search MODE]
 ```
 

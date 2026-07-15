@@ -1,8 +1,8 @@
 # screen.example.toml — `isct-dock screen` 用サンプル設定（注釈付き）
 #
 # 使い方:
-#   ./target/release/isct-dock screen <receptor.pdbqt> <library.toml|library.bin> \
-#       --config configs/screen.example.toml --out ranking.tsv [--poses-out poses.pdbqt --top 100000]
+#   ./target/release/isct-dock screen configs/screen.example.toml <receptor.pdbqt> <library.toml|library.bin> \
+#       --out ranking.tsv [--poses-out poses.pdbqt --top 100000]
 # ライブラリは TOML マニフェスト（小・デバッグ）か pack 済みバイナリ（.bin。大規模・memmap streaming）。
 # 並列度は RAYON_NUM_THREADS（リガンド/クラスタ単位で並列）。大規模時は物理コア数を指定し --pin-threads も検討。
 

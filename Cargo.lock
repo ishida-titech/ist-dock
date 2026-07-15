@@ -267,7 +267,7 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "isct-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -282,7 +282,7 @@ dependencies = [
 
 [[package]]
 name = "isct-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "nalgebra",
  "rayon",
@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "isct-dock"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "isct-core",
  "isct-io",
@@ -307,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "isct-io"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "bincode",
  "isct-core",

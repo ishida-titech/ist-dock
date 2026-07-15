@@ -1,9 +1,10 @@
 //! isct-dock CLI。
 //!
 //! サブコマンド:
-//!   score  — 固定ポーズの Vina 互換スコア評価（M1。`vina --score_only` との一致ゲート）
-//!   dock   — 単一リガンドのドッキング（M2）
-//!   screen — クラスタライブラリのスクリーニング（M3〜）
+//!   score  — 固定ポーズの Vina 互換スコア評価（`vina --score_only` 相当）
+//!   dock   — 単一リガンドを探索してベストポーズを出力
+//!   screen — クラスタライブラリを一括ドッキングしてランキング出力
+//!   pack   — TOML マニフェスト＋PDBQT ライブラリを memmap バイナリに変換
 
 use std::path::PathBuf;
 
@@ -26,81 +27,89 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Evaluate the Vina-compatible score of a fixed pose (M1).
+    /// Score a fixed ligand pose with the Vina-compatible function (no search; matches `vina --score_only`).
+    #[command(about = "Score a fixed pose (no search)  [args: <RECEPTOR.pdbqt> <LIGAND.pdbqt>]")]
     Score {
-        /// Receptor PDBQT.
+        /// Receptor structure (rigid), PDBQT format.
+        #[arg(value_name = "RECEPTOR.pdbqt")]
         receptor: PathBuf,
-        /// Ligand PDBQT.
+        /// Ligand pose to score, PDBQT format (coordinates are used as-is).
+        #[arg(value_name = "LIGAND.pdbqt")]
         ligand: PathBuf,
     },
-    /// Dock a single ligand (M2).
+    /// Search for the best binding pose of a single ligand and write it out.
+    #[command(about = "Dock one ligand and write the best pose  [args: <CONFIG.toml> <RECEPTOR.pdbqt> <LIGAND.pdbqt>]")]
     Dock {
-        /// Receptor PDBQT.
-        receptor: PathBuf,
-        /// Ligand PDBQT (crystal pose; also used as the RMSD reference).
-        ligand: PathBuf,
-        /// TOML config (search box, seed, etc.).
-        #[arg(short, long)]
+        /// Run settings, TOML: search box (center/size), seed, search mode, etc.
+        #[arg(value_name = "CONFIG.toml")]
         config: PathBuf,
-        /// Output pose PDBQT (default: <ligand>_isct_out.pdbqt).
-        #[arg(short, long)]
+        /// Receptor structure (rigid), PDBQT format.
+        #[arg(value_name = "RECEPTOR.pdbqt")]
+        receptor: PathBuf,
+        /// Input ligand, PDBQT format. Its coordinates are also the reference pose for the reported RMSD.
+        #[arg(value_name = "LIGAND.pdbqt")]
+        ligand: PathBuf,
+        /// Where to write the best pose (PDBQT). Default: <ligand>_isct_out.pdbqt next to the input.
+        #[arg(short, long, value_name = "OUT.pdbqt")]
         out: Option<PathBuf>,
-        /// Diagnostic: skip global search and only run local optimization from the crystal (input) pose.
+        /// Diagnostic: skip the global search and only locally minimize the input pose (measures the local optimizer alone).
         #[arg(long)]
         local_only: bool,
-        /// Override the QuickVina2 (search="qvina2") gradient-direction agreement threshold (cos).
-        /// Higher = conservative (slower/more accurate), lower = aggressive (faster/less accurate).
-        /// Defaults to config qvina_cos (default 0.90).
+        /// Only for search=qvina2: gradient-direction agreement threshold (cos) that gates local-search skipping.
+        /// Higher = more conservative (slower, more accurate); lower = more aggressive. Default: config qvina_cos (0.90).
         #[arg(long)]
         qvina_cos: Option<f64>,
-        /// Override the search algorithm (tpe=default low-budget preset: shared TPE + local chain +
-        /// local-search skip + rigid lightening, n_runs=1 / standard=drift-chain / drift_qvina2=drift +
-        /// local-search skip (isct-specific) / qvina2=faithful QuickVina2 (Vina MC + skip, exh=8) /
-        /// vina=Vina-faithful MC). Defaults to config search (tpe).
+        /// Search algorithm. tpe (default): fast low-budget preset (shared TPE + local chain + skip + rigid lightening);
+        /// standard: drift-chain; drift_qvina2: drift + isct local-search skip; qvina2: faithful QuickVina2 (Vina MC + skip, exh=8);
+        /// vina: faithful AutoDock Vina MC. Overrides the config search field (default tpe).
         #[arg(long, value_parser = parse_search_mode)]
         search: Option<config::SearchMode>,
-        /// Override the RNG seed (defaults to config seed). Used for seed sweeps in benchmarking.
+        /// RNG seed override for reproducible runs (default: config seed). Vary it to sweep seeds when benchmarking.
         #[arg(long)]
         seed: Option<u64>,
-        /// Diagnostic: write every search step as TSV to this path (all search modes; generic columns
-        /// [run/step/energy/pos/rot/torsions] + algorithm-specific [phase/greater_active/accepted]).
-        /// Disabled with --local-only.
+        /// Diagnostic: dump every search step to this TSV path. Columns: run/step/energy/pos/rot/torsions plus
+        /// mode-specific phase/greater_active/accepted. Ignored with --local-only.
         #[arg(long)]
         trace: Option<PathBuf>,
     },
-    /// Screen a cluster library (M3).
+    /// Dock every ligand in a cluster library and write a ranking (batch screening).
+    #[command(about = "Screen a cluster library and rank it  [args: <CONFIG.toml> <RECEPTOR.pdbqt> <LIBRARY.toml>]")]
     Screen {
-        /// Receptor PDBQT.
-        receptor: PathBuf,
-        /// Cluster library manifest (TOML).
-        library: PathBuf,
-        /// TOML config (search box, seed, prune threshold, etc.).
-        #[arg(short, long)]
+        /// Run settings, TOML: search box (center/size), seed, prune threshold, search mode, etc.
+        #[arg(value_name = "CONFIG.toml")]
         config: PathBuf,
-        /// Output ranking TSV (default: ranking.tsv in the library's directory).
-        #[arg(short, long)]
+        /// Receptor structure (rigid), PDBQT format.
+        #[arg(value_name = "RECEPTOR.pdbqt")]
+        receptor: PathBuf,
+        /// Cluster library manifest (TOML) listing the ligand PDBQTs to screen.
+        #[arg(value_name = "LIBRARY.toml")]
+        library: PathBuf,
+        /// Where to write the ranking (TSV). Default: ranking.tsv in the library's directory.
+        #[arg(short, long, value_name = "OUT.tsv")]
         out: Option<PathBuf>,
-        /// Destination to write the top poses as multi-model PDBQT (no pose output if omitted).
-        #[arg(long)]
+        /// Optionally also write the top poses as a multi-model PDBQT here (omit to skip pose output).
+        #[arg(long, value_name = "POSES.pdbqt")]
         poses_out: Option<PathBuf>,
-        /// Number of top-ranked entries to write with --poses-out (default 100).
+        /// How many top-ranked ligands to include in --poses-out (default 100).
         #[arg(long, default_value_t = 100)]
         top: usize,
-        /// Pin worker threads to physical cores (Linux; no-op on other OSes).
+        /// Pin worker threads to physical cores for stabler timing (Linux only; no-op elsewhere).
         #[arg(long)]
         pin_threads: bool,
-        /// Override the search algorithm (tpe=default low-budget preset: shared TPE + local chain +
-        /// local-search skip + rigid lightening, n_runs=1 / standard=drift-chain / drift_qvina2=drift +
-        /// local-search skip (isct-specific) / qvina2=faithful QuickVina2 (Vina MC + skip, exh=8) /
-        /// vina=Vina-faithful MC). Defaults to config search (tpe).
+        /// Search algorithm. tpe (default): fast low-budget preset (shared TPE + local chain + skip + rigid lightening);
+        /// standard: drift-chain; drift_qvina2: drift + isct local-search skip; qvina2: faithful QuickVina2 (Vina MC + skip, exh=8);
+        /// vina: faithful AutoDock Vina MC. Overrides the config search field (default tpe).
         #[arg(long, value_parser = parse_search_mode)]
         search: Option<config::SearchMode>,
     },
-    /// Convert a TOML-manifest + PDBQT cluster library into a memmap binary (M4).
+    /// Convert a TOML-manifest + PDBQT cluster library into a single memmap binary for fast loading.
+    #[command(about = "Pack a cluster library into a memmap binary  [args: <MANIFEST.toml> <OUT.bin>]")]
     Pack {
-        /// Cluster library manifest (TOML).
+        /// Cluster library manifest (TOML) to pack.
+        #[arg(value_name = "MANIFEST.toml")]
         manifest: PathBuf,
-        /// Output binary (.bin).
+        /// Output binary path.
+        #[arg(value_name = "OUT.bin")]
         out: PathBuf,
     },
 }
@@ -599,7 +608,7 @@ fn cmd_dock(
     Ok(())
 }
 
-/// 固定ポーズの Vina 互換スコアを評価して出力する（M1）。
+/// 固定ポーズの Vina 互換スコアを評価して出力する。
 fn cmd_score(receptor: &PathBuf, ligand: &PathBuf) -> Result<()> {
     let rec = pdbqt::parse_file(receptor)
         .with_context(|| format!("failed to parse receptor: {}", receptor.display()))?;
@@ -614,39 +623,36 @@ fn cmd_score(receptor: &PathBuf, ligand: &PathBuf) -> Result<()> {
     let n_rot = lig.torsdof;
     let affinity = scoring::apply_torsion_correction(e_inter, lig.num_tors_vina());
 
-    println!("# isct-dock score (Vina-compatible)");
-    println!("receptor atoms (scored): {}", rec_atoms.len());
-    println!("ligand atoms   (scored): {}", lig_atoms.len());
+    // ファイル名のみ（パスは出さない）。
+    let base = |p: &PathBuf| {
+        p.file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.display().to_string())
+    };
+
+    // ヘッダ: バージョンと git 情報（同一バージョンでもソースを一意に識別できるよう埋め込む）。
+    println!(
+        "# isct-dock score  v{} (git {})",
+        env!("CARGO_PKG_VERSION"),
+        env!("ISCT_GIT_HASH")
+    );
+    println!("# Vina-compatible scoring function");
+    println!("Receptor : {}  ({} atoms scored)", base(receptor), rec_atoms.len());
+    println!("Ligand   : {}  ({} atoms scored)", base(ligand), lig_atoms.len());
     println!();
-    println!("term         raw_sum        weighted");
-    println!(
-        "gauss1     {:>12.5}  {:>12.5}",
-        terms.gauss1,
-        scoring::W_GAUSS1 * terms.gauss1
-    );
-    println!(
-        "gauss2     {:>12.5}  {:>12.5}",
-        terms.gauss2,
-        scoring::W_GAUSS2 * terms.gauss2
-    );
-    println!(
-        "repulsion  {:>12.5}  {:>12.5}",
-        terms.repulsion,
-        scoring::W_REPULSION * terms.repulsion
-    );
-    println!(
-        "hydrophob  {:>12.5}  {:>12.5}",
-        terms.hydrophobic,
-        scoring::W_HYDROPHOBIC * terms.hydrophobic
-    );
-    println!(
-        "hbond      {:>12.5}  {:>12.5}",
-        terms.hbond,
-        scoring::W_HBOND * terms.hbond
-    );
+    // 分子間項テーブル（列は空白区切りでパースしやすく整列）。
+    println!("{:<12} {:>12} {:>12}", "TERM", "RAW_SUM", "WEIGHTED");
+    let row = |name: &str, raw: f64, weight: f64| {
+        println!("{name:<12} {raw:>12.5} {:>12.5}", weight * raw);
+    };
+    row("Gauss1", terms.gauss1, scoring::W_GAUSS1);
+    row("Gauss2", terms.gauss2, scoring::W_GAUSS2);
+    row("Repulsion", terms.repulsion, scoring::W_REPULSION);
+    row("Hydrophobic", terms.hydrophobic, scoring::W_HYDROPHOBIC);
+    row("HBond", terms.hbond, scoring::W_HBOND);
     println!();
-    println!("Intermolecular energy (Ligand - Receptor): {e_inter:.5} kcal/mol");
-    println!("Ligand torsional DOF (TORSDOF)           : {n_rot}");
-    println!("Estimated Free Energy of Binding         : {affinity:.5} kcal/mol");
+    println!("Intermolecular energy (ligand-receptor) : {e_inter:.5} kcal/mol");
+    println!("Ligand torsional DOF (TORSDOF)          : {n_rot}");
+    println!("Estimated Free Energy of Binding        : {affinity:.5} kcal/mol");
     Ok(())
 }
