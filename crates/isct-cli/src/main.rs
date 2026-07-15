@@ -46,9 +46,13 @@ enum Command {
         /// Receptor structure (rigid), PDBQT format.
         #[arg(value_name = "RECEPTOR.pdbqt")]
         receptor: PathBuf,
-        /// Input ligand, PDBQT format. Its coordinates are also the reference pose for the reported RMSD.
+        /// Input ligand to dock (starting structure), PDBQT format.
         #[arg(value_name = "LIGAND.pdbqt")]
         ligand: PathBuf,
+        /// Reference native/crystal pose (PDBQT) of the same ligand for redocking RMSD.
+        /// When given, each output mode reports rmsd_to_native. Omit for prospective docking.
+        #[arg(long, value_name = "NATIVE.pdbqt")]
+        native: Option<PathBuf>,
         /// Where to write the best pose (PDBQT). Default: <ligand>_isct_out.pdbqt next to the input.
         #[arg(short, long, value_name = "OUT.pdbqt")]
         out: Option<PathBuf>,
@@ -57,11 +61,10 @@ enum Command {
         local_only: bool,
         /// Only for search=qvina2: gradient-direction agreement threshold (cos) that gates local-search skipping.
         /// Higher = more conservative (slower, more accurate); lower = more aggressive. Default: config qvina_cos (0.90).
-        #[arg(long)]
+        /// Minor/advanced option; hidden from --help.
+        #[arg(long, hide = true)]
         qvina_cos: Option<f64>,
-        /// Search algorithm. tpe (default): fast low-budget preset (shared TPE + local chain + skip + rigid lightening);
-        /// standard: drift-chain; drift_qvina2: drift + isct local-search skip; qvina2: faithful QuickVina2 (Vina MC + skip, exh=8);
-        /// vina: faithful AutoDock Vina MC. Overrides the config search field (default tpe).
+        /// Search algorithm: tpe (default) | drift | drift_qvina2 | qvina2 | vina. See MANUAL.md for details.
         #[arg(long, value_parser = parse_search_mode)]
         search: Option<config::SearchMode>,
         /// RNG seed override for reproducible runs (default: config seed). Vary it to sweep seeds when benchmarking.
@@ -96,9 +99,7 @@ enum Command {
         /// Pin worker threads to physical cores for stabler timing (Linux only; no-op elsewhere).
         #[arg(long)]
         pin_threads: bool,
-        /// Search algorithm. tpe (default): fast low-budget preset (shared TPE + local chain + skip + rigid lightening);
-        /// standard: drift-chain; drift_qvina2: drift + isct local-search skip; qvina2: faithful QuickVina2 (Vina MC + skip, exh=8);
-        /// vina: faithful AutoDock Vina MC. Overrides the config search field (default tpe).
+        /// Search algorithm: tpe (default) | drift | drift_qvina2 | qvina2 | vina. See MANUAL.md for details.
         #[arg(long, value_parser = parse_search_mode)]
         search: Option<config::SearchMode>,
     },
@@ -122,6 +123,7 @@ fn main() -> Result<()> {
         Command::Dock {
             receptor,
             ligand,
+            native,
             config,
             out,
             local_only,
@@ -130,7 +132,8 @@ fn main() -> Result<()> {
             seed,
             trace,
         } => cmd_dock(
-            &receptor, &ligand, &config, out.as_deref(), local_only, qvina_cos, search, seed, trace,
+            &receptor, &ligand, native.as_deref(), &config, out.as_deref(), local_only, qvina_cos,
+            search, seed, trace,
         ),
         Command::Screen {
             receptor,
@@ -146,25 +149,61 @@ fn main() -> Result<()> {
     }
 }
 
-/// `--search` の値をパースする（tpe|standard|drift|drift_qvina2|qvina2|vina）。`tpe` が既定。`drift` は
-/// `standard` の別名。`qvina2`=本来の QuickVina2 相当、`drift_qvina2`=ドリフト基盤の isct 独自版。
+/// 全コマンド共通のヘッダ。1 行目にソフト名＋バージョン＋git 情報（同一バージョンでもソースを一意識別）。
+/// コマンド名・概要は 2 行目に出す（ヘッダ 1 行目には出さない）。
+fn print_header(command_summary: &str) {
+    println!(
+        "# ISCT-Dock  v{} (git {})",
+        env!("CARGO_PKG_VERSION"),
+        env!("ISCT_GIT_HASH")
+    );
+    println!("# {command_summary}");
+}
+
+/// パス末尾のファイル名のみ（ディレクトリは出さない）。取得不能時はパス全体にフォールバック。
+fn file_base(p: &std::path::Path) -> String {
+    p.file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.display().to_string())
+}
+
+/// receptor / ligand の情報行（score・dock 共通の書式）。原子数は「採点対象の全原子数」で、
+/// dock が探索時に箱内へプルーニングする前の値（＝score と一致する）。
+fn print_molecules(receptor: &std::path::Path, receptor_atoms: usize, ligand: &std::path::Path, ligand_atoms: usize) {
+    println!("Receptor : {}  ({receptor_atoms} atoms scored)", file_base(receptor));
+    println!("Ligand   : {}  ({ligand_atoms} atoms scored)", file_base(ligand));
+}
+
+/// `--search` の値をパースする（tpe|drift|drift_qvina2|qvina2|vina）。`tpe` が既定。`standard` は
+/// `drift` の旧称（後方互換で受理）。詳細は MANUAL 参照。
 fn parse_search_mode(s: &str) -> Result<config::SearchMode, String> {
     match s.to_ascii_lowercase().as_str() {
         "tpe" => Ok(config::SearchMode::Tpe),
-        "standard" | "drift" => Ok(config::SearchMode::Standard),
+        "drift" | "standard" => Ok(config::SearchMode::Drift),
         "drift_qvina2" | "driftqvina2" => Ok(config::SearchMode::DriftQvina2),
         "qvina2" => Ok(config::SearchMode::Qvina2),
         "vina" => Ok(config::SearchMode::Vina),
         other => Err(format!(
-            "unknown search mode '{other}' (tpe|standard|drift|drift_qvina2|qvina2|vina)"
+            "unknown search mode '{other}' (tpe|drift|drift_qvina2|qvina2|vina)"
         )),
+    }
+}
+
+/// 探索モードの表示ラベル（`SearchKind` の Debug では TPE が "Tpe" になるため、頭字語は大文字で出す）。
+fn search_mode_label(kind: SearchKind) -> &'static str {
+    match kind {
+        SearchKind::Tpe => "TPE",
+        SearchKind::Drift => "Drift",
+        SearchKind::DriftQvina2 => "DriftQvina2",
+        SearchKind::Qvina2 => "Qvina2",
+        SearchKind::Vina => "Vina",
     }
 }
 
 /// config の探索モード → 探索エンジンの `SearchKind`。
 fn search_kind(m: config::SearchMode) -> SearchKind {
     match m {
-        config::SearchMode::Standard => SearchKind::Drift,
+        config::SearchMode::Drift => SearchKind::Drift,
         config::SearchMode::DriftQvina2 => SearchKind::DriftQvina2,
         config::SearchMode::Qvina2 => SearchKind::Qvina2,
         config::SearchMode::Vina => SearchKind::Vina,
@@ -356,6 +395,7 @@ fn cmd_pack(manifest: &PathBuf, out: &PathBuf) -> Result<()> {
     if !skipped.is_empty() {
         eprintln!("warning: skipped {} ligand(s) that could not be parsed", skipped.len());
     }
+    print_header("pack: cluster library -> memmap binary");
     println!("packed {} clusters -> {}", lib.clusters.len(), out.display());
     Ok(())
 }
@@ -399,18 +439,32 @@ fn cmd_screen(
     warn_vina_exhaustiveness(params.search.kind, params.search.n_runs);
 
     let is_binary = library_path.extension().is_some_and(|e| e == "bin");
-    eprintln!(
-        "screen: receptor(scored)={} atoms, library={} ({}), seed={}, runs={}, steps={}, mode={:?}, prune>{}, pin={}",
-        rec_scored.len(),
-        library_path.display(),
-        if is_binary { "binary/memmap" } else { "toml" },
-        params.search.seed,
-        params.search.n_runs,
-        params.search.n_steps,
-        params.search.kind,
-        params.prune_threshold,
-        pin_threads,
+    let lib_fmt = if is_binary { "binary/memmap" } else { "toml" };
+
+    // ヘッダ・入力・探索パラメータを screen 実行の前に出力する（dock と同形式）。結果は実行後にまとめて出す。
+    let c = cfg.r#box.center;
+    let sz = cfg.r#box.size;
+    print_header("screen: cluster-library screening (ISCT-Dock Phase 1-3)");
+    println!("Receptor : {}  ({} atoms scored)", file_base(receptor), rec_scored.len());
+    println!("Library  : {}  ({lib_fmt})", file_base(library_path));
+    println!();
+    println!("{:<30} : {}", "Search mode", search_mode_label(params.search.kind));
+    println!("{:<30} : {:?}", "Scoring backend", cfg.run.scoring);
+    println!("{:<30} : {:.3}, {:.3}, {:.3}", "Search box center (x,y,z)", c[0], c[1], c[2]);
+    println!("{:<30} : {:.3}, {:.3}, {:.3}", "Search box size (x,y,z)", sz[0], sz[1], sz[2]);
+    println!("{:<30} : {:.4}", "Prune threshold", params.prune_threshold);
+    println!("{:<30} : {}", "Runs", params.search.n_runs);
+    println!(
+        "{:<30} : {}",
+        "Steps per run",
+        if params.search.n_steps == 0 {
+            "auto (per-ligand)".to_string()
+        } else {
+            params.search.n_steps.to_string()
+        }
     );
+    println!("{:<30} : {}", "Seed", params.search.seed);
+    println!("{:<30} : {}", "Thread pinning", pin_threads);
 
     // TOML（in-RAM）か バイナリ（memmap streaming）かでソースを選び、汎用 screen を呼ぶ。
     // TOML は**寛容ロード**: 解釈不能なリガンド（未知原子・不正 PDBQT）は全体を止めずスキップして継続。
@@ -452,24 +506,28 @@ fn cmd_screen(
         );
     }
 
-    println!("# isct-dock screen (ISCT-Dock Phase 1-3, M3)");
-    println!("clusters total       : {}", report.n_clusters());
-    println!("clusters pruned       : {}", report.n_pruned_clusters());
-    println!("children skipped(prune): {}", report.n_skipped_children());
-    println!("ligands skipped(parse): {}", skipped.len());
-    println!("molecules scored      : {}", report.entries.len());
-    println!("ranking TSV           : {}", out_path.display());
+    // ここから結果（パラメータ類は上で出力済み）。ラベル幅はパラメータブロックと揃える。
+    println!();
+    println!("{:<30} : {}", "Clusters total", report.n_clusters());
+    println!("{:<30} : {}", "Clusters pruned", report.n_pruned_clusters());
+    println!("{:<30} : {}", "Children skipped (prune)", report.n_skipped_children());
+    println!("{:<30} : {}", "Ligands skipped (parse)", skipped.len());
+    println!("{:<30} : {}", "Molecules scored", report.entries.len());
+    // 出力ファイル情報は 1 行空けて区切る。
+    println!();
+    println!("{:<30} : {}", "Ranking TSV", out_path.display());
     if let Some(p) = poses_out {
-        println!("poses PDBQT (top {top}) : {}", p.display());
+        println!("{:<30} : {}", format!("Poses PDBQT (top {top})"), p.display());
     }
     Ok(())
 }
 
-/// 単一リガンドをボックスへドッキングする（M2）。
+/// 単一リガンドをボックスへドッキングする。
 #[allow(clippy::too_many_arguments)]
 fn cmd_dock(
     receptor: &PathBuf,
     ligand: &PathBuf,
+    native: Option<&std::path::Path>,
     config_path: &PathBuf,
     out: Option<&std::path::Path>,
     local_only: bool,
@@ -495,6 +553,25 @@ fn cmd_dock(
 
     let rec_scored = rec.scored_atoms();
     let lig = LigandModel::new(&lig_mol);
+
+    // --native 指定時のみ: 同一リガンドの参照（native/crystal）ポーズの重原子座標を RMSD 基準に使う。
+    // 入力 ligand は開始構造にすぎず、native 前提は置かない。
+    let native_ref: Option<Vec<Vec3>> = match native {
+        Some(path) => {
+            let nat_mol = pdbqt::parse_file(path)
+                .with_context(|| format!("failed to parse native: {}", path.display()))?;
+            let nat = LigandModel::new(&nat_mol);
+            let coords = nat.reference_scored_positions();
+            anyhow::ensure!(
+                coords.len() == lig.n_scored(),
+                "native pose has {} scored atoms but ligand has {}; they must be the same molecule",
+                coords.len(),
+                lig.n_scored()
+            );
+            Some(coords)
+        }
+        None => None,
+    };
 
     // スコアリング・バックエンド（direct=SIMD 直接 / grid=Vina グリッド）。
     let use_grid = cfg.run.scoring == config::Scoring::Grid;
@@ -526,17 +603,27 @@ fn cmd_dock(
     } else {
         params.n_steps
     };
-    eprintln!(
-        "docking: receptor(pruned)={} atoms, ligand={} heavy atoms, torsions={}, runs={}, steps={} ({}), mode={:?}, scoring={:?}",
-        scorer.receptor_atoms(),
-        lig.n_scored(),
-        lig.n_torsions(),
-        params.n_runs,
+    // まずヘッダ・入力分子・探索パラメータを（探索実行の前に）出力する。結果は探索後にまとめて出す。
+    let c = cfg.r#box.center;
+    let sz = cfg.r#box.size;
+    print_header("dock: single-ligand docking (Vina-compatible, RMSD clustering)");
+    print_molecules(receptor, rec_scored.len(), ligand, lig.n_scored());
+    println!();
+    println!("{:<30} : {}", "Search mode", search_mode_label(params.kind));
+    println!("{:<30} : {:?}", "Scoring backend", cfg.run.scoring);
+    println!("{:<30} : {:.3}, {:.3}, {:.3}", "Search box center (x,y,z)", c[0], c[1], c[2]);
+    println!("{:<30} : {:.3}, {:.3}, {:.3}", "Search box size (x,y,z)", sz[0], sz[1], sz[2]);
+    println!("{:<30} : {}", "Receptor atoms in box", scorer.receptor_atoms());
+    // 探索木の回転結合数（n_torsions＝BRANCH 数）で統一表示。ラベルは TORSDOF のまま（score と共通）。
+    println!("{:<30} : {}", "Ligand torsional DOF (TORSDOF)", lig.n_torsions());
+    println!("{:<30} : {}", "Runs", params.n_runs);
+    println!(
+        "{:<30} : {} ({})",
+        "Steps per run",
         eff_steps,
-        if params.n_steps == 0 { "auto" } else { "fixed" },
-        params.kind,
-        cfg.run.scoring,
+        if params.n_steps == 0 { "auto" } else { "fixed" }
     );
+    println!("{:<30} : {}", "Seed", cfg.run.seed);
 
     let (modes, evals) = if local_only {
         // 診断: 結晶（恒等）ポーズから局所最適化のみ。
@@ -552,7 +639,7 @@ fn cmd_dock(
     };
 
     let best = &modes[0];
-    // 内訳・RMSD は最良モードで。
+    // 内訳は最良モードで。
     let final_atoms = lig.scored_atoms(&best.conf);
     let e_inter = scorer.intermolecular(&final_atoms);
     let e_intra = lig.intramolecular(&final_atoms, f64::INFINITY);
@@ -561,8 +648,6 @@ fn cmd_dock(
     // num_tors は Vina 1.2 の実効回転結合数（末端基は 0.5, TORSDOF ではない）。
     let num_tors = lig_mol.num_tors_vina();
     let affinity = scoring::apply_torsion_correction(e_inter, num_tors);
-    let reference = lig.reference_scored_positions();
-    let rmsd = geometry::rmsd(&lig.scored_positions(&best.conf), &reference);
 
     // マルチモデル PDBQT 出力（Vina 流）: 各モードを MODEL/ENDMDL で包む。
     let mut out_text = String::new();
@@ -578,33 +663,44 @@ fn cmd_dock(
     });
     std::fs::write(&out_path, out_text)?;
 
-    println!("# isct-dock dock (Vina-compatible, RMSD clustering)");
-    println!("affinity (Vina, kcal/mol)  : {affinity:.4}");
-    println!("intermolecular energy      : {e_inter:.4} kcal/mol");
-    println!("intramolecular energy      : {e_intra:.4} kcal/mol");
+    // ここから結果（パラメータ類は上で出力済み）。
+    // ここから結果。ラベル幅はパラメータブロックと揃える。
+    println!();
+    println!("{:<30} : {:.4}", "Affinity (Vina, kcal/mol)", affinity);
+    println!("{:<30} : {:.4} kcal/mol", "Intermolecular energy", e_inter);
+    println!("{:<30} : {:.4} kcal/mol", "Intramolecular energy", e_intra);
     // モードの順位キーは inter（=affinity 基準）。目的関数値は inter+intra で別途表示（箱内 box=0）。
-    println!("total (objective)          : {:.4} kcal/mol", e_inter + e_intra);
-    println!("RMSD vs input(crystal) pose: {rmsd:.3} Å");
-    println!("search mode                : {:?}", params.kind);
+    println!("{:<30} : {:.4} kcal/mol", "Total (objective)", e_inter + e_intra);
     println!(
-        "energy evals               : {} ({} /run)",
+        "{:<30} : {} ({} /run)",
+        "Energy evals",
         evals,
         evals / params.n_runs.max(1) as u64
     );
-    println!("modes (RMSD-clustered)     : {}", modes.len());
+    println!("{:<30} : {}", "Modes (RMSD-clustered)", modes.len());
+    // --native 指定時のみ各モードに rmsd_to_native を併記。
     for (i, m) in modes.iter().enumerate() {
         let inter = scorer.intermolecular(&lig.scored_atoms(&m.conf));
         let aff = scoring::apply_torsion_correction(inter, num_tors);
-        let rm = geometry::rmsd(&lig.scored_positions(&m.conf), &reference);
-        println!(
-            "  mode {:2}  affinity={:8.4}  inter={:8.4}  rmsd_vs_crystal={:6.3} Å",
-            i + 1,
-            aff,
-            inter,
-            rm
-        );
+        match &native_ref {
+            Some(nat) => {
+                let rm = geometry::rmsd(&lig.scored_positions(&m.conf), nat);
+                println!(
+                    "  mode {:2}  affinity={:8.4}  inter={:8.4}  rmsd_to_native={:6.3} Å",
+                    i + 1,
+                    aff,
+                    inter,
+                    rm
+                );
+            }
+            None => {
+                println!("  mode {:2}  affinity={:8.4}  inter={:8.4}", i + 1, aff, inter);
+            }
+        }
     }
-    println!("output poses               : {}", out_path.display());
+    // 出力ファイル情報は 1 行空けて区切る。
+    println!();
+    println!("{:<30} : {}", "Output poses", out_path.display());
     Ok(())
 }
 
@@ -620,25 +716,12 @@ fn cmd_score(receptor: &PathBuf, ligand: &PathBuf) -> Result<()> {
 
     let terms = intermolecular_terms(&lig_atoms, &rec_atoms);
     let e_inter = terms.weighted_sum();
-    let n_rot = lig.torsdof;
+    // 表示は探索木の回転結合数（n_torsions＝BRANCH 数）で統一（dock と共通）。ラベルは TORSDOF のまま。
+    let n_rot = LigandModel::new(&lig).n_torsions();
     let affinity = scoring::apply_torsion_correction(e_inter, lig.num_tors_vina());
 
-    // ファイル名のみ（パスは出さない）。
-    let base = |p: &PathBuf| {
-        p.file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| p.display().to_string())
-    };
-
-    // ヘッダ: バージョンと git 情報（同一バージョンでもソースを一意に識別できるよう埋め込む）。
-    println!(
-        "# isct-dock score  v{} (git {})",
-        env!("CARGO_PKG_VERSION"),
-        env!("ISCT_GIT_HASH")
-    );
-    println!("# Vina-compatible scoring function");
-    println!("Receptor : {}  ({} atoms scored)", base(receptor), rec_atoms.len());
-    println!("Ligand   : {}  ({} atoms scored)", base(ligand), lig_atoms.len());
+    print_header("score: Vina-compatible scoring of a fixed pose (no search)");
+    print_molecules(receptor, rec_atoms.len(), ligand, lig_atoms.len());
     println!();
     // 分子間項テーブル（列は空白区切りでパースしやすく整列）。
     println!("{:<12} {:>12} {:>12}", "TERM", "RAW_SUM", "WEIGHTED");

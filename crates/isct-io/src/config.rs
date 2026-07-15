@@ -92,7 +92,7 @@ pub enum Scoring {
     Grid,
 }
 
-/// 探索モード。`standard`=ドリフト鎖 ILS（既定・決定論）/ `drift_qvina2`=ドリフト鎖に QuickVina2 の局所探索
+/// 探索モード。`drift`=ドリフト鎖 ILS（旧称 standard・決定論）/ `drift_qvina2`=ドリフト鎖に QuickVina2 の局所探索
 /// スキップを載せた isct 独自版（軽い per-run × best-of-60）/ `qvina2`=**本来の QuickVina2 相当**（Vina 忠実 MC＋
 /// 局所探索スキップ, exhaustiveness=8）/ `vina`=Vina 忠実 MC（毎ステップ収束まで BFGS。実装レベル差の切り分け用）。
 /// `qvinaw`（QuickVina-W: 協調 blind docking・非決定論）は後続フェーズ。
@@ -103,9 +103,10 @@ pub enum SearchMode {
     /// 局所チェーン・局所探索スキップ・TORSDOF 条件付き軽量化を載せた低予算プリセット（n_runs=1）。dock/screen 共通。
     #[default]
     Tpe,
-    /// ドリフト鎖 ILS（best-of-60）。旧既定。
-    Standard,
-    /// ドリフト鎖 ILS（`standard`）に QuickVina2 の局所探索スキップだけを載せた isct 独自版（軽い per-run ×
+    /// ドリフト鎖 ILS（best-of-60）。旧既定。旧称 `standard`（後方互換で受理）。
+    #[serde(alias = "standard")]
+    Drift,
+    /// ドリフト鎖 ILS（`drift`）に QuickVina2 の局所探索スキップだけを載せた isct 独自版（軽い per-run ×
     /// best-of-60, n_runs=60）。基盤が Vina でない点で本来の QuickVina2 とは別物（下記 `qvina2` が忠実版）。
     #[serde(rename = "drift_qvina2")]
     DriftQvina2,
@@ -121,7 +122,7 @@ pub struct RunOpts {
     #[serde(default = "default_seed")]
     pub seed: u64,
     /// 独立 run 数（探索の網羅性）。**未指定なら探索モード別の既定**（`resolve_n_runs`）:
-    /// tpe=1（局所チェーンで restart を代替）、vina/qvina2=8（exhaustiveness 相当）、standard/drift_qvina2=60
+    /// tpe=1（局所チェーンで restart を代替）、vina/qvina2=8（exhaustiveness 相当）、drift/drift_qvina2=60
     /// （軽い per-run を best-of-N）。明示指定すればモードに依らずその値を使う。
     #[serde(default)]
     pub n_runs: Option<usize>,
@@ -135,7 +136,7 @@ pub struct RunOpts {
     /// 退行しうる（実測: 0 で一部標的が退行、2 で全標的中立）。環境変数 `ISCT_GRID_MARGIN` で更に上書き可。
     #[serde(default = "default_grid_margin")]
     pub grid_margin: f64,
-    /// 探索モード（**既定: tpe**）。`standard`=drift 鎖 ILS、`vina`=Vina 忠実 MC、`qvina2`/`drift_qvina2` など。
+    /// 探索モード（**既定: tpe**）。`drift`=drift 鎖 ILS、`vina`=Vina 忠実 MC、`qvina2`/`drift_qvina2` など。
     #[serde(default)]
     pub search: SearchMode,
     /// QuickVina2 の勾配方向一致閾値（cos, 既定 0.95）。CLI `--qvina-cos` で上書き可。
@@ -344,7 +345,7 @@ const DEFAULT_N_RUNS_VINA: usize = 8;
 /// が restart を代替）。標準 Astex85×10seed で Vina exh=8 に肉薄（68.8% vs 70.8%）を eval 20×・wall ~9× 軽く達成
 /// （`docs/results.202607151422`）。より高精度が要るときは config で n_runs を上げる。
 const DEFAULT_N_RUNS_TPE: usize = 1;
-/// vina/tpe 以外（standard/qvina2）の未指定時 n_runs 既定。軽い per-run を best-of-N で回して精度を出す
+/// vina/tpe 以外（drift/qvina2）の未指定時 n_runs 既定。軽い per-run を best-of-N で回して精度を出す
 /// 水準（benzamidine 検証で複数シードが安定して RMSD<2Å）。
 const DEFAULT_N_RUNS_OTHER: usize = 60;
 
@@ -354,7 +355,7 @@ pub fn default_n_runs_for(mode: SearchMode) -> usize {
         // vina と本来の qvina2 は exhaustiveness=8（少数・高コスト run）。
         SearchMode::Vina | SearchMode::Qvina2 => DEFAULT_N_RUNS_VINA,
         SearchMode::Tpe => DEFAULT_N_RUNS_TPE,
-        // standard・drift_qvina2 は軽い per-run の best-of-60。
+        // drift・drift_qvina2 は軽い per-run の best-of-60。
         _ => DEFAULT_N_RUNS_OTHER,
     }
 }
@@ -414,7 +415,7 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.run.seed, 7);
         assert_eq!(cfg.run.n_runs, Some(5));
-        assert_eq!(cfg.run.resolve_n_runs(SearchMode::Standard), 5); // 明示値はモードに依らず優先
+        assert_eq!(cfg.run.resolve_n_runs(SearchMode::Drift), 5); // 明示値はモードに依らず優先
         assert_eq!(cfg.receptor.unwrap().pdbqt, "r.pdbqt");
     }
 
@@ -425,7 +426,7 @@ mod tests {
             toml::from_str("[box]\ncenter=[0,0,0]\nsize=[20,20,20]\n").unwrap();
         assert_eq!(cfg.run.n_runs, None);
         assert_eq!(cfg.run.resolve_n_runs(SearchMode::Vina), 8);
-        assert_eq!(cfg.run.resolve_n_runs(SearchMode::Standard), 60);
+        assert_eq!(cfg.run.resolve_n_runs(SearchMode::Drift), 60);
         assert_eq!(cfg.run.resolve_n_runs(SearchMode::Tpe), 1);
         assert_eq!(SearchMode::default(), SearchMode::Tpe); // 既定モードは tpe
     }

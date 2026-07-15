@@ -18,7 +18,7 @@ n_steps = 0          # 0 = サイズ/torsion 数から自動（モード別。--
 scoring = "grid"     # "grid" 推奨（既定ボックスの Scorer をクラスタ間で共有・再利用）
 # grid_margin = 2.0  # grid 探索ボックスの余白(Å, 既定 2.0)。小さいほど構築速・省メモリ（大規模で有効）だが
                      # 境界近傍の退行に注意。env ISCT_GRID_MARGIN で上書き可。
-search = "standard"  # "standard"（既定）/ "vina" / "qvina2" / "tpe"（Parzen 探索）。seed 探索に適用
+search = "drift"  # 探索モード: tpe（既定）/ drift / drift_qvina2 / qvina2 / vina。詳細は MANUAL.md。seed 探索に適用
 hunt_cap = 10.0      # 探索中の正エネルギー上限（1e9 で無効化）
 
 [screen]

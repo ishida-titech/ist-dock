@@ -95,7 +95,7 @@ Estimated Free Energy of Binding         : -7.45678 kcal/mol
 | `ligand.pdbqt` | リガンド。**入力座標は RMSD 基準（結晶ポーズ）としても使われる**。 |
 | `-o, --out` | 出力ポーズ PDBQT（既定: `<ligand>_isct_out.pdbqt`）。 |
 | `--local-only` | 診断用。大域探索せず入力ポーズから局所最適化のみ。 |
-| `--search <tpe\|standard\|drift_qvina2\|qvina2\|vina>` | 探索アルゴリズムを上書き（config `search` より優先）。**`tpe`=既定**（共有 TPE＋局所チェーン＋局所探索スキップ＋剛直軽量化の低予算プリセット, n_runs=1。dock/screen 共通）/ `standard`(=`drift`)=ドリフト鎖 / `drift_qvina2`=ドリフト鎖＋局所探索スキップ（isct 独自, n_runs=60）/ `qvina2`=**本来の QuickVina2 相当**（Vina 忠実 MC＋スキップ, exhaustiveness=8）/ `vina`=Vina 忠実 MC（毎ステップ収束 BFGS）。 |
+| `--search <tpe\|drift\|drift_qvina2\|qvina2\|vina>` | 探索アルゴリズムを上書き（config `search` より優先）。**`tpe`=既定**（共有 TPE＋局所チェーン＋局所探索スキップ＋剛直軽量化の低予算プリセット, n_runs=1。dock/screen 共通）/ `drift`=ドリフト鎖（旧称 `standard`, 後方互換で受理）/ `drift_qvina2`=ドリフト鎖＋局所探索スキップ（isct 独自, n_runs=60）/ `qvina2`=**本来の QuickVina2 相当**（Vina 忠実 MC＋スキップ, exhaustiveness=8）/ `vina`=Vina 忠実 MC（毎ステップ収束 BFGS）。 |
 | `--trace <TSV>` | **診断用**: 探索の全ステップを TSV 出力（全モード対応, §2.2.1）。探索結果には無影響・決定論維持。`--local-only` では無効。 |
 | `--qvina-cos <f64>` | `search="drift_qvina2"`/`"qvina2"` 時の勾配方向一致閾値（cos）を上書き。高い=保守的(速度↓精度↑)、低い=攻める(速度↑精度↓)。省略時は config `qvina_cos`（既定 0.90）。 |
 
@@ -123,7 +123,7 @@ output poses               : ligand_isct_out.pdbqt
 - `RMSD vs input` は最良モードの重原子 RMSD vs 入力ポーズ（再ドッキング検証用。対称性補正なし）。
 
 #### 2.2.1 探索トレース `--trace`（診断用・全モード対応）
-`--trace <TSV>` で探索の**全ステップ**を TSV 出力する（`standard`/`drift_qvina2`/`qvina2`/`vina`/`tpe` 全モード）。各ステップに
+`--trace <TSV>` で探索の**全ステップ**を TSV 出力する（`drift`/`drift_qvina2`/`qvina2`/`vina`/`tpe` 全モード）。各ステップに
 **生成点（BFGS 前）と `bfgs`（最適化後）の 2 行**。探索結果・決定論には無影響（トレースのエネルギー評価は別
 カウンタ・rng 不消費で、有無でスコアはビット一致）。`--local-only` では無効。列は**汎用情報→アルゴリズム依存情報**
 の順:
@@ -136,7 +136,7 @@ output poses               : ligand_isct_out.pdbqt
 | `pos_x/y/z` | 汎用 | リガンド root 重心の**絶対**座標（Å）。 |
 | `rot_x/y/z` | 汎用 | **絶対**配向（scaled-axis, rad）。 |
 | `torsions` | 汎用 | free torsion の**絶対**角（rad, `;` 区切り）。並び順はヘッダの `# TORSION k ...` に対応（下記）。 |
-| `phase` | 依存 | 生成源。MC(`standard`/`drift_qvina2`/`qvina2`/`vina`)=`start`/`mutate`/`skip`/`bfgs`、TPE=`warmup`/`model`/`coverage`/`bfgs`。 |
+| `phase` | 依存 | 生成源。MC(`drift`/`drift_qvina2`/`qvina2`/`vina`)=`start`/`mutate`/`skip`/`bfgs`、TPE=`warmup`/`model`/`coverage`/`bfgs`。 |
 | `greater_active` | 依存 | TPE `model` 行のみ 0/1（1=g(x) 活性＝観測 27 個以上で exploration 有効）。他は `-`。 |
 | `accepted` | 依存 | MC `bfgs` 行のみ Metropolis 受理 0/1。他は `-`。 |
 
@@ -232,7 +232,7 @@ python3 tools/isct_screening.py <receptor.pdbqt> <ligand_dir> \
 | `--clean` | off（保持） | **指定時のみ**中間ファイル（`run.toml`/`library.toml`）を削除。ランキング TSV は常に残す。 |
 | `--center X Y Z` | リガンド重心の平均 | 共有ボックス中心。省略時は対象リガンド群の重心平均を自動採用。 |
 | `--size S` | 22.5 | ボックス一辺（Å）。 |
-| `--search MODE` | `tpe` | 探索モード（`tpe`/`vina`/`drift`/`standard`/`drift_qvina2`/`qvina2`）。既定 `tpe` が低予算プリセット（n_runs=1+局所チェーン＋スキップ＋剛直軽量化）でスクリーニング推奨。 |
+| `--search MODE` | `tpe` | 探索モード（`tpe`/`drift`/`drift_qvina2`/`qvina2`/`vina`）。既定 `tpe` が低予算プリセット（n_runs=1+局所チェーン＋スキップ＋剛直軽量化）でスクリーニング推奨。 |
 | `--n_runs N` | モード既定 | 1 リガンドあたり独立 run 数（速度/精度トレード）。 |
 | `--prune_threshold T` | `1e9`（全件出力） | seed エネルギー > T を除外。ヒットのみ欲しければ `0.0` 等。 |
 | `--workdir` / `--out` / `--bin` | `./isct_screening_out` / `<workdir>/ranking.tsv` / `target/release/isct-dock` | 中間・出力・バイナリのパス。 |
@@ -273,7 +273,7 @@ size   = [20.0, 20.0, 20.0]      # ボックス寸法 [x,y,z] Å（必須）
 
 [run]
 seed     = 42
-n_runs   = 8                     # 省略可（未指定ならモード別既定: tpe=1, vina/qvina2=8, standard/drift_qvina2=60）
+n_runs   = 8                     # 省略可（未指定ならモード別既定: tpe=1, vina/qvina2=8, drift/drift_qvina2=60）
 scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "direct"）
 ```
 
@@ -282,11 +282,11 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
 | キー | 既定 | 説明 |
 |---|---|---|
 | `seed` | 42 | 乱数シード（決定論）。 |
-| `n_runs` | モード別（下記） | 独立 run 数（網羅性）。**未指定時の既定は探索モードで変わる**: `tpe`=1（dock/screen 共通・局所チェーンで restart 代替）、`vina`/`qvina2`=8、`standard`/`drift_qvina2`=60。`vina`・本来の `qvina2` の n_runs は AutoDock Vina の exhaustiveness に対応（Vina 既定=8）。`standard`(drift)/`drift_qvina2` は軽い run の best-of-N なので既定 60。明示指定すればモードに依らずその値を使う（vina で大きな値を指定すると Vina の n_runs/8 倍遅くなる）。**tpe は局所チェーンで restart を代替し低 n_runs 化**（標準 Astex85×10seed で Vina exh=8 に肉薄しつつ eval 20×・wall ~9× 軽量。`docs/results.202607151422`）。より高精度が要るなら config で `n_runs` を上げる。 |
+| `n_runs` | モード別（下記） | 独立 run 数（網羅性）。**未指定時の既定は探索モードで変わる**: `tpe`=1（dock/screen 共通・局所チェーンで restart 代替）、`vina`/`qvina2`=8、`drift`/`drift_qvina2`=60。`vina`・本来の `qvina2` の n_runs は AutoDock Vina の exhaustiveness に対応（Vina 既定=8）。`drift`/`drift_qvina2` は軽い run の best-of-N なので既定 60。明示指定すればモードに依らずその値を使う（vina で大きな値を指定すると Vina の n_runs/8 倍遅くなる）。**tpe は局所チェーンで restart を代替し低 n_runs 化**（標準 Astex85×10seed で Vina exh=8 に肉薄しつつ eval 20×・wall ~9× 軽量。`docs/results.202607151422`）。より高精度が要るなら config で `n_runs` を上げる。 |
 | `n_steps` | 0 | per-run の MC ステップ数。**0=自動**（可動原子数×torsion 上限で算出）。 |
 | `scoring` | `"direct"` | 探索の分子間評価。`"grid"`=Vina グリッド補間（高速・推奨）/ `"direct"`=直接原子間(SIMD)。 |
 | `grid_margin` | 2.0 | grid 探索ボックスの余白（Å）。探索中に原子が箱外へはみ出しても正しいグリッド値を引く緩衝。小さいほど**構築が速く省メモリ**だが、境界近傍のボーダーライン標的が退行しうる（実測: 0 で一部退行、2 で全標的 RMSD<2Å 中立）。環境変数 `ISCT_GRID_MARGIN` で更に上書き可（デバッグ用）。 |
-| `search` | `"tpe"` | 探索モード。**`"tpe"`=既定**（共有 TPE の低予算プリセット, n_runs=1+局所チェーン＋スキップ＋剛直軽量化, dock/screen 共通。下記）/ `"standard"`=ドリフト鎖 ILS（決定論・高速）/ `"drift_qvina2"`=ドリフト鎖＋局所探索スキップ（isct 独自, n_runs=60）/ `"qvina2"`=**本来の QuickVina2 相当**（Vina 忠実 MC＋局所探索スキップ, exhaustiveness=8）/ `"vina"`=Vina 忠実 MC（毎ステップ収束 BFGS）。`--search` で上書き可。 |
+| `search` | `"tpe"` | 探索モード。**`"tpe"`=既定**（共有 TPE の低予算プリセット, n_runs=1+局所チェーン＋スキップ＋剛直軽量化, dock/screen 共通。下記）/ `"drift"`=ドリフト鎖 ILS（旧称 standard・決定論・高速）/ `"drift_qvina2"`=ドリフト鎖＋局所探索スキップ（isct 独自, n_runs=60）/ `"qvina2"`=**本来の QuickVina2 相当**（Vina 忠実 MC＋局所探索スキップ, exhaustiveness=8）/ `"vina"`=Vina 忠実 MC（毎ステップ収束 BFGS）。`--search` で上書き可。 |
 | `qvina_cos` | 0.90 | `drift_qvina2`/`qvina2` の勾配方向一致閾値（cos）。低いほどスキップ多＝速度↑精度↓。`--qvina-cos` で上書き可。 |
 | `hunt_cap` | 10.0 | 探索中の正エネルギー上限（Vina curl）。激突ポーズの暴走を抑え深い極小へ抜けやすくする。`1e9` で無効化。polish は常に無効（authentic）。 |
 | `chain_iters` | 30 | ILS 各ステップの局所最適化反復（浅く保ち基底間をドリフト）。 |

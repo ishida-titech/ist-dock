@@ -21,7 +21,7 @@ n_steps = 0          # 各 run の MC ステップ数。0 = サイズ/torsion �
 scoring = "grid"     # "grid"（受容体を前計算グリッドで補間, 高速・推奨）/ "direct"（直接和）
 # grid_margin = 2.0  # grid 探索ボックスの余白(Å, 既定 2.0)。小さいほど構築が速く省メモリだが、境界近傍の
                      # ボーダーライン標的が退行しうる(実測: 0 で一部退行, 2 で全標的中立)。env ISCT_GRID_MARGIN で上書き可。
-search = "standard"  # "standard"=ドリフト鎖 ILS（既定・高速）/ "vina"=Vina 忠実 MC（毎ステップ収束 BFGS）/ "tpe"=TPE
+search = "drift"  # 探索モード: tpe（既定）/ drift / drift_qvina2 / qvina2 / vina。詳細は MANUAL.md
                      #  / "qvina2"=QuickVina2 相当の局所探索スキップ（opt-in 高速化）
 hunt_cap = 10.0      # 探索中の正エネルギー上限（Vina curl, 激突の暴走抑制）。1e9 で無効化。polish は常に無効
 # qvina_cos = 0.90   # search="qvina2" 時の勾配方向一致閾値（高=保守的/低=攻める）
