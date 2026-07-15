@@ -173,25 +173,38 @@ fn search_kind(m: config::SearchMode) -> SearchKind {
 /// 〔baseline −9.066 とほぼ同〕・eval −63%）。より攻めるなら m1.0（eval −76%・成功 18/24・meanAff −0.09）や
 /// 連鎖無効（eval −86%）。scale=0.75 は walk-off 抑制のため据え置き。`docs/results.20260713*`。
 /// fast はさらに **TORSDOF 条件付き局所チェーン抑制**（`HANDOFF.ef1_diagnosis.md`）を既定 ON:
-/// `free_torsions.len() < RIGID_TORSDOF(=6)` の剛直リガンドでチェーンを無効化（K=0）する。閾値 6 は DUD-E で
-/// active TORSDOF 中央値 10 vs decoy 5 の間＝decoy 中央値以下の剛直デコイのみ抑える設定。剛直リガンドは基本
-/// BFGS+共有モデルで既に深極小へ届くため、K=0 でも affinity はほぼ不変（雑音レベル）で eval −30〜80%＝剛直の
-/// 多いスクリーニングライブラリで大きな高速化。連鎖依存の剛直デコイのみスコアが浅く（Vina 相当へ）＝EF1% に
-/// 安全な方向（`docs/results.202607131021`,`.20260713*`）。剛直アクティブも僅かに抑制されるトレードオフのため
-/// dock（pose 精度優先）では OFF、fast/screen のみ既定 ON。config で上書き可。
+/// `free_torsions.len() < RIGID_TORSDOF(=6)` の剛直リガンドで局所チェーン歩数を `RIGID_LOCAL_CHAIN` へ切替える。
+/// 閾値 6 は DUD-E で active TORSDOF 中央値 10 vs decoy 5 の間＝decoy 中央値以下の剛直デコイのみ抑える設定。
+/// **当初は K=0（完全無効）だったが、全85標的では K=0 が剛直 native（1u4d/1ke5/1tow, T2-4）の pose を落とし −1.6pt
+/// 退行することが判明**（`docs/results.20260714*`。affinity＝スコアはほぼ中立だが RMSD が悪化＝旧「雑音レベル」は
+/// 小標本・スコアのみの過小評価）。K を掃引した結果 **K=8 で精度がフル回復（抑制無しと同等）しつつ eval は抑制無し比
+/// −13%**、しかも剛直チェーンは wall コストがほぼ無い（K0→K15 で wall +6% のみ）ため K=8 を既定に採用。EF1%/throughput
+/// 重視なら config で K=0 へ。dock（pose 精度優先）は抑制 OFF、fast/screen のみ既定 ON。
 const TPE_DOCK_LOCAL_CHAIN: usize = 15;
 const TPE_FAST_LOCAL_CHAIN: usize = 15;
+/// 局所チェーンゲート幅の skip 対象別分離。**skip 有効（剛直 T<`SKIP_TORSDOF`）は 2.0**（skip がモデルを集中させ
+/// 連鎖が過剰発火するため狭める）、**skip 無効（柔軟 T≥閾値）は 4.0**（過剰発火せず、広い margin で competitive basin
+/// を広く精密化して柔軟の精度を回収）。旧「skip 時は一律 margin=2.0 で精度非退行」は Astex24 小標本の誤りで、全85では
+/// 一律 2.0 が柔軟を巻き添えに −3.5pt 退行していた。分割で一律 4.0 相当の精度（70.2%）を eval −32% で達成
+/// （`docs/results.20260714*`）。
 const TPE_FAST_MARGIN: f64 = 2.0;
+const TPE_FAST_NONSKIP_MARGIN: f64 = 4.0;
 const TPE_FAST_SCALE: f64 = 0.75;
 const TPE_FAST_RIGID_TORSDOF: usize = 6;
-const TPE_FAST_RIGID_LOCAL_CHAIN: usize = 0;
+const TPE_FAST_RIGID_LOCAL_CHAIN: usize = 8;
+/// 局所探索スキップの TORSDOF ゲート閾値。`free_torsions.len() < 7` の剛直のみスキップし、中〜高自由度
+/// （T≥7）ではスキップ無効化＝初期 BFGS を省かない。スキップの精度コストは高DOF に集中する（native 盆地が難で
+/// 1回の BFGS 省略が native 消失に直結, `docs/findings.202607141756`）。skip 単一因子（旧基準に skip のみ追加）では
+/// 閾値 7 が中自由度 T7-8（1lpz/1mzc/2bm2）も保護し **70.5%（gate9=69.8%, 旧71.3%）・meanScore −9.1399 は旧より深く**・
+/// eval −12%（`docs/results.202607141810*`）。T<7 のスキップは温存＝速度と（剛直デコイ抑制で）DUD-E EF1% への寄与も保つ。
+const TPE_FAST_SKIP_TORSDOF: usize = 7;
 /// 提案数(n_steps)を自由度(TORSDOF)連動で多段階に縮小する係数。scale(T) = min(1.0, BASE + PER_TORS·T)。
 /// 剛直は n=1 で収束済み（`HANDOFF.regularization.md` §5.1）ゆえ提案数を大きく削り、低自由度でも段階的に削る
 /// （T=0 で 0.5→T=10 で 1.0＝柔軟は素通し）。二値(0.5/1.0)でなく連続ランプにすることで剛直と判定されない低自由度
-/// (T6–9)も安全に軽量化。Astex T3–10 スプレッド×複数 seed で **affinity 非退行（1lpz の seed 変動は full も同様
-/// ＝探索律速の seed 宝くじで系統退行なし）・eval 低〜中自由度で −8〜33%**（`docs/results.20260714*`）。BASE=0.3 相当
-/// まで下げると一部標的が収束失敗するため 0.5 が安全な最小。PER_TORS=0.05 で T≥10 が満額（柔軟は完全非影響）。
-const TPE_FAST_RIGID_STEP_SCALE: f64 = 0.5;
+/// (T6–9)も安全に軽量化。**BASE=0.7 を採用**: `scale(T)=min(1.0, 0.7+0.05·T)` は **T=6 で満額**に戻る緩いランプで、
+/// 削るのは T<6 の剛直のみ＝そこは `RIGID_LOCAL_CHAIN`(K=8) が pose を補償するため、K=8＋ramp0.7 は精度非退行（むしろ
+/// +0.4pt）で eval −5%。BASE=0.5 は攻めすぎで単一因子 −2.4pt 退行したため 0.7 へ緩和（`docs/results.20260714*`）。
+const TPE_FAST_RIGID_STEP_SCALE: f64 = 0.7;
 const TPE_FAST_RIGID_STEP_PER_TORS: f64 = 0.05;
 
 fn build_search_params(
@@ -238,8 +251,10 @@ fn build_search_params(
                 config::SearchMode::TpeFast => {
                     t.local_chain = TPE_FAST_LOCAL_CHAIN;
                     t.local_chain_margin = TPE_FAST_MARGIN;
+                    t.nonskip_local_chain_margin = TPE_FAST_NONSKIP_MARGIN;
                     t.local_chain_scale = TPE_FAST_SCALE;
                     t.skip_local = true;
+                    t.skip_torsdof = TPE_FAST_SKIP_TORSDOF;
                     t.rigid_torsdof = TPE_FAST_RIGID_TORSDOF;
                     t.rigid_local_chain = TPE_FAST_RIGID_LOCAL_CHAIN;
                     t.rigid_step_scale = TPE_FAST_RIGID_STEP_SCALE;
@@ -248,8 +263,10 @@ fn build_search_params(
                 config::SearchMode::Tpe if is_screen => {
                     t.local_chain = TPE_FAST_LOCAL_CHAIN;
                     t.local_chain_margin = TPE_FAST_MARGIN;
+                    t.nonskip_local_chain_margin = TPE_FAST_NONSKIP_MARGIN;
                     t.local_chain_scale = TPE_FAST_SCALE;
                     t.skip_local = true;
+                    t.skip_torsdof = TPE_FAST_SKIP_TORSDOF;
                     t.rigid_torsdof = TPE_FAST_RIGID_TORSDOF;
                     t.rigid_local_chain = TPE_FAST_RIGID_LOCAL_CHAIN;
                     t.rigid_step_scale = TPE_FAST_RIGID_STEP_SCALE;
@@ -293,6 +310,9 @@ fn build_search_params(
             if let Some(v) = run.tpe_local_chain_margin {
                 t.local_chain_margin = v;
             }
+            if let Some(v) = run.tpe_nonskip_local_chain_margin {
+                t.nonskip_local_chain_margin = v;
+            }
             if let Some(v) = run.tpe_local_chain_scale {
                 t.local_chain_scale = v;
             }
@@ -301,6 +321,9 @@ fn build_search_params(
             }
             if let Some(v) = run.tpe_skip_cos {
                 t.skip_cos = v;
+            }
+            if let Some(v) = run.tpe_skip_torsdof {
+                t.skip_torsdof = v;
             }
             if let Some(v) = run.tpe_rigid_torsdof {
                 t.rigid_torsdof = v;

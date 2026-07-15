@@ -149,10 +149,17 @@ n_runs=8 相当へ到達させる（利得源は**観測共有**そのもの。`
 **機構**: 既存の QuickVina2 スキップ（`qvina.rs` の `HistoryBuffer::is_new_well`）を共有ループに移植。**非 warmup**
 提案の start を**勾配1回**で判定し、近傍の既知斜面と勾配方向が一致（cos>`skip_cos`）＝同一 basin なら初期 BFGS・
 チェーン・pool・obs をすべて省いて次提案へ（既知 basin の極小は既に pool/obs に在る）。RNG 不使用＝決定論。
-- ノブ: `skip_local`(bool, 既定 false) / `skip_cos`(0.90, 高いほど保守的＝スキップ少)。
+- ノブ: `skip_local`(bool, 既定 false) / `skip_cos`(0.90, 高いほど保守的＝スキップ少) / `skip_torsdof`(TORSDOF
+  ゲート, 既定 0=全適用)。
 - **skip はモデルを集中させるため、chain の `margin` を再較正しないと連鎖が過剰発火して逆効果**。tpe_fast では
   `margin=4.0→2.0` に絞って両立（Astex24 で eval −63%・wall −39%・精度非退行。`docs/results.202607130928`,
   [[tpe-fast-local-search-skip]]）。
+- **skip の精度コストは柔軟(高DOF)側に集中**（発火は剛直で頻繁~20%・柔軟で稀~5% だが、柔軟は native 盆地が難で
+  稀な BFGS 省略が native 消失に直結。剛直は盆地が易・冗長でスキップ無害, `docs/findings.202607141756`）。
+  `skip_torsdof>0` で `free_torsions.len() ≥ 閾値` の中〜柔軟はスキップ無効化＝BFGS 温存。**tpe_fast は既定 7**（skip 単一
+  因子＝旧基準に skip のみ追加した検証で、閾値 7 が中自由度 T7-8 も保護し 70.5%（gate9=69.8%, 旧71.3%）・meanScore は旧より
+  深く・eval −12%, `docs/results.202607141810*`）。T<7 のスキップは温存＝速度と（剛直デコイ抑制で）DUD-E EF1% 寄与も保つ。
+  0 でゲート無し＝ビット不変。（全因子込みの現行プリセットでは skip の単一因子最適とゲート閾値の最適が干渉でずれうる点に注意。）
 
 ### 5.3 TORSDOF 条件付き局所チェーン抑制 — `rigid_torsdof` / `rigid_local_chain`
 **背景**: DUD-E 診断（`HANDOFF.ef1_diagnosis.md`）で tpe_fast の early 濃縮 EF1% 低下は**剛直・低 TORSDOF
@@ -195,10 +202,12 @@ n_runs=8 相当へ到達させる（利得源は**観測共有**そのもの。`
 | `reanchor_period` (—) | 共有モードのリアンカー周期（0=なし） | **0** | `tpe_reanchor_period` |
 | `coverage_weight` (—) | 未踏域カバレッジ重み（0=無効） | **0.0** | `tpe_coverage_weight` |
 | `local_chain` (—) | 局所チェーン歩数 K（§5.1, 0=OFF） | **0** | `tpe_local_chain` |
-| `local_chain_margin` (—) | チェーンのゲート幅 kcal | **2.0** | `tpe_local_chain_margin` |
+| `local_chain_margin` (—) | チェーンのゲート幅 kcal（skip 有効側） | **2.0** | `tpe_local_chain_margin` |
+| `nonskip_local_chain_margin` (—) | skip 無効側のゲート幅（0.0=分離無効） | **0.0** | `tpe_nonskip_local_chain_margin` |
 | `local_chain_scale` (—) | チェーンの変異幅スケール | **1.0** | `tpe_local_chain_scale` |
 | `skip_local` (—) | 局所探索スキップ（§5.2, QuickVina2 相当） | **false** | `tpe_skip_local` |
 | `skip_cos` (`qvina_cos`◆相当) | スキップの勾配方向一致閾値 | **0.90** | `tpe_skip_cos` |
+| `skip_torsdof` (—) | スキップの TORSDOF ゲート（`T<これ` のみスキップ, 0=全適用） | **0** | `tpe_skip_torsdof` |
 | `rigid_torsdof` (—) | TORSDOF 条件付き抑制の閾値（§5.3, 0=OFF） | **0** | `tpe_rigid_torsdof` |
 | `rigid_local_chain` (—) | 剛直リガンドの K | **0** | `tpe_rigid_local_chain` |
 | `rigid_step_scale` (—) | n_steps 縮小ランプの BASE（1.0=OFF） | **1.0** | `tpe_rigid_step_scale` |
@@ -224,22 +233,27 @@ auto 値はモード別（`auto_n_steps_for`：tpe=`auto_n_steps_tpe`）。
 |---|---|---|
 | `n_runs` | 3 | 1 |
 | `local_chain` (K) | 15 | 15 |
-| `local_chain_margin` | 2.0（既定） | **2.0** |
+| `local_chain_margin`（skip 有効側） | 2.0（既定） | **2.0** |
+| `nonskip_local_chain_margin`（skip 無効側） | 0.0（分離無効） | **4.0**（柔軟の精度回収） |
 | `local_chain_scale` | 1.0（既定） | **0.75**（walk-off 抑制） |
 | `skip_local` | false | **true** |
+| `skip_torsdof` | 0（全適用） | **7**（T≥7 の中〜柔軟はスキップ無効化＝BFGS 温存） |
 | `rigid_torsdof` | 0（OFF） | **6** |
-| `rigid_local_chain` | 0 | **0**（剛直はチェーン無効） |
-| `rigid_step_scale` (BASE) | 1.0（OFF） | **0.5** |
-| `rigid_step_per_tors` (勾配) | 0.0（OFF） | **0.05**（n_steps 多段階縮小: T0=0.5→T≥10=1.0） |
+| `rigid_local_chain` | 0 | **8**（剛直チェーンを中間 K へ＝pose 回復・K0 は −1.6pt） |
+| `rigid_step_scale` (BASE) | 1.0（OFF） | **0.7**（T=6 で満額の緩ランプ, K=8 と両立） |
+| `rigid_step_per_tors` (勾配) | 0.0（OFF） | **0.05** |
 
 - **dock**: n_runs=3 + K=15。旧 n_runs=8 既定を精度同等以上・時間 −21% で達成（`docs/results.202607121032`）。
-- **screen/tpe_fast**: n_runs=1 + K=15 + skip + margin=2.0 + scale=0.75。低予算スクリーニング向け。skip で冗長
-  basin の初期 BFGS を削り、margin=2.0 が精度中立の最速点（Astex24 eval −63%・wall −39%・成功非退行）。
-- **`rigid_torsdof`**: screen/tpe_fast は既定 **6**（+`rigid_local_chain=0` ＋ n_steps ランプ `rigid_step_scale=0.5`/
-  `rigid_step_per_tors=0.05`）、dock tpe は **0(OFF)**。剛直リガンドは基本 BFGS で既に深極小へ届くため、抑制の主効果は
-  速度（チェーン無効で eval −30〜80%、さらに n_steps 縮小で低中自由度 −8〜33%）で EF1% へは安全側の穏やかな寄与
-  （§5.3, `docs/findings.202607131037`,
-  `docs/results.202607141543`）。EF1% の本格改善には柔軟側の予算増（K ランプ）が次段候補。
+- **screen/tpe_fast（2026-07-14 再設計, 標準 Astex85 で単一因子検証, `docs/results.202607141930`）**: n_runs=1 + K=15
+  + skip(gate7) + **margin 分割(skip対象2.0/非対象4.0)** + rigid_torsdof=6 + **rigid_local_chain=8** + **ramp scale=0.7**。
+  **plain preset で 70.6% / −9.0911 / 282,708 ev / 3.03s wall**（旧 K0/uniform2.0/ramp0.5 の 63.6% から +7.0pt）。
+  各因子の検証: margin 分割は柔軟の精度回収で eval −32%、K=8 は K=0(−1.6pt) の剛直 pose 退行をフル回復（wall +3%のみ）、
+  ramp0.7 は K=8 と両立し実質無償（+0.4pt/eval−5%）。**旧 docs の「margin2.0 精度非退行」「K0 は affinity 雑音」は
+  Astex24 小標本の誤りで全85では退行**（本 §7 の旧記述はこの再設計で更新）。
+- **`rigid_torsdof`**: screen/tpe_fast は既定 **6**、dock tpe は **0(OFF)**。旧知見「剛直の掘りすぎ主因は基本 BFGS で
+  チェーンは深さを足さない」は **affinity（スコア）には正しいが pose(RMSD) には効く**と補正（K0 で剛直 native 3標的が
+  <2Å を外す）。EF1%/throughput 重視なら config で K=0 / margin 一律 2.0 / ramp0.5 へ。DUD-E EF1% は K=8・margin4.0・
+  ramp0.7 が剛直抑制を緩めるため再測定が必要（ユーザ実施, [[tpe-fast-ef1-rigid-decoy]]）。
 
 ---
 

@@ -922,9 +922,21 @@ fn single_search_tpe_shared(
 
     // 局所探索スキップ（QuickVina2 相当, tp.skip_local で有効）: 非 warmup 提案の start を勾配1回で判定し、
     // 近傍の既知斜面と勾配方向が一致する（同一 basin へ向かう）なら高価な初期 BFGS を省く。RNG 不使用＝決定論。
-    let mut skip_history = tp
-        .skip_local
+    // TORSDOF ゲート: skip_torsdof>0 のとき柔軟リガンド（free torsion 数 ≥ 閾値）ではスキップを無効化する
+    // （スキップの精度コストは高DOF に集中, `docs/findings.202607141756`）。0 では全リガンドに適用＝バイト不変。
+    // スキップは RNG 不使用ゆえ、無効化しても search の RNG ストリームは不変＝skip OFF と決定論的に一致。
+    let skip_active =
+        tp.skip_local && (tp.skip_torsdof == 0 || free_torsions.len() < tp.skip_torsdof);
+    let mut skip_history = skip_active
         .then(|| HistoryBuffer::new(QVinaParams::for_dofs(free_dofs.len(), tp.skip_cos)));
+    // 局所チェーン margin の skip 対象別分離: skip 有効側は `local_chain_margin`（狭・過剰発火抑制）、skip 無効側は
+    // `nonskip_local_chain_margin`（>0.0 で広・柔軟の精度回収）。0.0（既定）なら分離せず全リガンド local_chain_margin
+    // ＝ビット不変。margin はゲート閾値のみでゲート内は同一処理ゆえ RNG 消費に影響しない（skip OFF 側は決定論一致）。
+    let chain_margin = if tp.nonskip_local_chain_margin > 0.0 && !skip_active {
+        tp.nonskip_local_chain_margin
+    } else {
+        tp.local_chain_margin
+    };
     let mut skip_grad: Vec<f64> = Vec::new();
 
     // 診断トレース（trace 有効時のみ）。生成点のエネルギーは主カウンタを汚さない別 scratch で評価。
@@ -1023,7 +1035,7 @@ fn single_search_tpe_shared(
         // 精密化。チェーンの最良ポーズを観測に採用し、各局所最小は pool へ。best_e は起動判定に前提案までの値を使う。
         let mut obs_conf = res.conf.clone();
         let mut obs_e = res.energy;
-        if chain_len > 0 && phase != "warmup" && res.energy <= best_e + tp.local_chain_margin {
+        if chain_len > 0 && phase != "warmup" && res.energy <= best_e + chain_margin {
             let mut cur_conf = res.conf.clone();
             let mut cur_e = res.energy;
             for _ in 0..chain_len {

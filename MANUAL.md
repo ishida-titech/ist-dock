@@ -326,23 +326,32 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
     省く（Astex24 seed42 で **eval −63%・wall −39%**・成功 19/24≥旧 18・meanAff 同等。`docs/results.202607130928`）。
     skip はモデルを良 basin へ集中させるため、旧 margin=4.0 のままだと連鎖が過剰発火して逆に低速化する→margin=2.0 が
     精度中立の最適点。攻めるなら margin=1.0（eval −76%・meanAff −0.09）や `tpe_local_chain=0`（連鎖無効・eval −86%）。
-  - ノブ: `tpe_local_chain_margin`(dock 2.0/screen 2.0, ゲート幅=広いほど連鎖多) / `tpe_local_chain_scale`(dock 1.0=
+  - ノブ: `tpe_local_chain_margin`(dock 2.0/screen 2.0=skip 有効側, ゲート幅=広いほど連鎖多) /
+    **`tpe_nonskip_local_chain_margin`**(dock 0.0=分離無効/screen **4.0**, skip 無効リガンドの広ゲート＝柔軟の精度回収。
+    旧「skip 時は一律 margin=2.0 で精度非退行」は Astex24 小標本の誤りで全85では柔軟を巻き添えに −3.5pt 退行、剛直だけ
+    2.0・柔軟 4.0 の分割が正解, `docs/results.202607141930`) / `tpe_local_chain_scale`(dock 1.0=
     Drift 幅/screen 0.75, <1.0 で変異幅縮小＝walk-off 抑制だが reach 減) / **`tpe_skip_local`**(dock false/screen true,
-    局所探索スキップ) / **`tpe_skip_cos`**(0.90, スキップの勾配方向一致閾値・高いほど保守的＝スキップ少)。
+    局所探索スキップ) / **`tpe_skip_cos`**(0.90, スキップの勾配方向一致閾値・高いほど保守的＝スキップ少) /
+    **`tpe_skip_torsdof`**(dock 0=ゲート無し/screen **7**, `free_torsions.len() < これ` の剛直のみスキップし
+    中〜高自由度(T≥閾値)では無効化)。スキップの精度コストは高DOF に集中する（native 盆地が難で BFGS 省略が native 消失に
+    直結）ため中〜柔軟のみスキップを外し精度回収（skip 単一因子で T7-8/T9+ を保護, `docs/results.202607141810*`）。0=全適用で
+    ビット不変。
   - **TORSDOF 条件付き抑制**: `tpe_rigid_torsdof` / `tpe_rigid_local_chain`。`free_torsions.len() <
     tpe_rigid_torsdof` の**剛直リガンド**で局所チェーンを `tpe_rigid_local_chain` へ切替える（0=剛直はチェーン無効）。
     スクリーニングで剛直・低自由度デコイが Vina 関数の偽陽性深極小を掘り当てて過小スコア化し early 濃縮(EF1%)を
-    下げる問題（`HANDOFF.ef1_diagnosis.md`）への対策。**screen/tpe_fast は既定 `rigid_torsdof=6`+`rigid_local_chain=0`**
+    下げる問題（`HANDOFF.ef1_diagnosis.md`）への対策。**screen/tpe_fast は既定 `rigid_torsdof=6`+`rigid_local_chain=8`**
     （active TORSDOF 中央値10 vs decoy 5 の間で decoy 中央値以下のみ抑制）、**dock tpe は OFF**（pose 精度優先）、
-    ライブラリ既定 OFF。剛直リガンドは基本 BFGS で既に深極小へ届くため主効果は**速度**（剛直で eval −30〜80%）、
-    EF1% へは安全側で穏やかに寄与。柔軟リガンド（アクティブに多い）は不変（`docs/results.202607131021`,
-    `docs/findings.202607131037`）。
+    ライブラリ既定 OFF。**当初 K=0 だったが全85で剛直 native(1u4d/1ke5/1tow,T2-4)の pose を落とし −1.6pt 退行と判明**
+    （affinity＝スコアは中立だが RMSD 退行＝旧「雑音レベル」はスコアのみの小標本評価）。**K=8 で精度フル回復かつ剛直
+    チェーンは wall コストほぼ無し**（K0→K15 で wall +6%）ため K=8 採用。EF1%/throughput 重視は config で K=0 へ
+    （`docs/results.202607141930`）。
   - **n_steps の自由度連動縮小（軽量化）**: `tpe_rigid_step_scale`(BASE, 1.0=OFF) / `tpe_rigid_step_per_tors`(勾配) /
     `tpe_rigid_step_floor`(下限, 200)。剛直は n=1 で収束済みのため提案数を `scale(T)=min(1.0, BASE+per_tors·T)` 倍
-    （`T=free_torsions.len()`, floor で下限確保）へ多段階に縮小する。**screen/tpe_fast は既定 BASE=0.5/per_tors=0.05**
-    ＝ T0=0.50→T6=0.80→T≥10=1.0（剛直を強く・低中自由度(T6–9)を緩く削り・柔軟は満額）。affinity 非退行、eval を
-    低中自由度で −8〜33%（`docs/results.202607141616`）。`per_tors=0.0` だと全 T 一律 BASE＝柔軟も削れるため
-    `BASE<1.0` で使うときは正の勾配必須。dock tpe/ライブラリ既定 OFF。
+    （`T=free_torsions.len()`, floor で下限確保）へ多段階に縮小する。**screen/tpe_fast は既定 BASE=0.7/per_tors=0.05**
+    ＝ T0=0.70→**T=6 で満額 1.0**（削るのは T<6 の剛直のみ＝そこは `rigid_local_chain=8` のチェーンが pose を補償）。
+    K=8 と両立し実質無償（+0.4pt/eval−5%）。**BASE=0.5 は攻めすぎで単一因子 −2.4pt 退行**（低〜中DOF に分散,
+    1ke5/1lpz で深化損失）したため 0.7 へ緩和（`docs/results.202607141930`）。`per_tors=0.0` だと全 T 一律 BASE＝
+    柔軟も削れるため `BASE<1.0` で使うときは正の勾配必須。dock tpe/ライブラリ既定 OFF。
   - ライブラリ既定は `tpe_local_chain=0`(OFF) かつ `tpe_skip_local=false`＝**現行 tpe とビット一致**（再現性契約）。
     プリセット（chain / skip）は CLI 層でのみ適用。
 - 品質は標的依存（深い漏斗の標的で良好、探索性の要る標的では drift に劣ることがある）。

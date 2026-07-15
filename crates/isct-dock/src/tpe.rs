@@ -66,7 +66,14 @@ pub struct TpeParams {
     pub local_chain: usize,
     /// 局所チェーンのゲート幅（kcal, 既定 2.0）。提案の初期 BFGS energy が `best_so_far + margin` 以下のときのみ
     /// チェーンを起動する。native/decoy 双方の competitive basin を精密化しつつ激突提案には浪費しない＝コスト集中。
+    /// **skip が有効なリガンド**（`skip_active`）に適用する margin。skip はモデルを集中させ連鎖が過剰発火するため
+    /// 狭める（2.0）。skip 無効リガンドには `nonskip_local_chain_margin` を使い分ける。
     pub local_chain_margin: f64,
+    /// **skip が無効なリガンド**（柔軟 T≥`skip_torsdof` 等）に適用する局所チェーンゲート幅（既定 0.0=分離無効＝全
+    /// リガンドで `local_chain_margin` を使用＝ビット不変）。skip 無効側はモデルが集中せず過剰発火しないため、広い
+    /// margin（例 4.0）で competitive basin を広く精密化して柔軟リガンドの精度を回収できる。`>0.0` で `!skip_active`
+    /// のリガンドのみこの値へ切替（skip の margin 再較正が柔軟を巻き添えにする問題への対策, `docs/results.20260714*`）。
+    pub nonskip_local_chain_margin: f64,
     /// 局所チェーンの変異幅スケール（既定 1.0＝Drift 幅と完全一致・ビット一致）。<1.0 で並進 ±2·scale Å・回転
     /// ±scale rad・torsion ±π·scale に縮小し、基内 dwelling（refine）寄りにして basin-hop（歩き去り）を抑える。
     pub local_chain_scale: f64,
@@ -77,6 +84,12 @@ pub struct TpeParams {
     pub skip_local: bool,
     /// 局所探索スキップの勾配方向一致閾値（cosine, 既定 0.90＝`qvina_cos` と同値）。高いほど保守的（スキップ少）。
     pub skip_cos: f64,
+    /// **局所探索スキップの TORSDOF ゲート閾値**（既定 0=ゲート無し＝`skip_local` を全リガンドに適用で現行とビット
+    /// 一致）。`skip_torsdof>0` のとき、スキップは `free_torsions.len() < skip_torsdof` の剛直リガンドに限定し、
+    /// 柔軟リガンド（T≥閾値）では無効化する。スキップの精度コストは柔軟側に集中する（高DOF は native 盆地が難で
+    /// 初期 BFGS 省略が native 消失に直結。剛直は盆地が易・冗長でスキップ無害, `docs/findings.202607141756`）ため、
+    /// 剛直だけスキップして速度を保ちつつ柔軟の精度を回収する。0 では `T<0` を判定に使わず全適用＝バイト不変。
+    pub skip_torsdof: usize,
     /// **TORSDOF 条件付き局所チェーン抑制の閾値**（既定 0=OFF＝現行とビット一致）。`free_torsions.len() <
     /// rigid_torsdof` のリガンドを「剛直」とみなし、局所チェーン歩数を `rigid_local_chain` に切替える。剛直・
     /// 低自由度デコイで tpe_fast が Vina 関数の深い偽陽性極小を掘り当てて過小スコア化→EF1% を下げる問題
@@ -116,9 +129,11 @@ impl Default for TpeParams {
             coverage_weight: 0.0,
             local_chain: 0,
             local_chain_margin: 2.0,
+            nonskip_local_chain_margin: 0.0,
             local_chain_scale: 1.0,
             skip_local: false,
             skip_cos: 0.90,
+            skip_torsdof: 0,
             rigid_torsdof: 0,
             rigid_local_chain: 0,
             rigid_step_scale: 1.0,

@@ -206,9 +206,14 @@ pub struct RunOpts {
     /// competitive 提案を Drift MC で K 歩精密化＝MC の持続滞在を移植。未指定なら 0。
     #[serde(default)]
     pub tpe_local_chain: Option<usize>,
-    /// 局所チェーンのゲート幅（`TpeParams.local_chain_margin`, kcal）。未指定なら 2.0。
+    /// 局所チェーンのゲート幅（`TpeParams.local_chain_margin`, kcal）。skip 有効リガンドに適用。未指定なら 2.0。
     #[serde(default)]
     pub tpe_local_chain_margin: Option<f64>,
+    /// skip 無効リガンド用の局所チェーンゲート幅（`TpeParams.nonskip_local_chain_margin`）。0.0=分離無効（既定・
+    /// 全リガンド `tpe_local_chain_margin`＝ビット不変）。>0.0 で `!skip_active` のリガンドのみこの広い margin へ切替＝
+    /// 柔軟リガンドの精度回収。未指定なら 0.0。
+    #[serde(default)]
+    pub tpe_nonskip_local_chain_margin: Option<f64>,
     /// 局所チェーンの変異幅スケール（`TpeParams.local_chain_scale`）。1.0=Drift 幅（既定）、<1.0 で縮小し
     /// basin-hop（歩き去り）を抑制。未指定なら 1.0。
     #[serde(default)]
@@ -222,6 +227,11 @@ pub struct RunOpts {
     /// 未指定なら 0.90。
     #[serde(default)]
     pub tpe_skip_cos: Option<f64>,
+    /// 局所探索スキップの TORSDOF ゲート閾値（`TpeParams.skip_torsdof`）。`free_torsions.len() < これ` の剛直
+    /// リガンドのみスキップし、柔軟（T≥閾値）では無効化する。スキップの精度コストは高DOF に集中するため剛直側の
+    /// 安価なスキップだけ残す（`docs/findings.202607141756`）。0=ゲート無し（既定・現行とビット一致）。未指定なら 0。
+    #[serde(default)]
+    pub tpe_skip_torsdof: Option<usize>,
     /// TORSDOF 条件付き局所チェーン抑制の閾値（`TpeParams.rigid_torsdof`）。`free_torsions.len() < これ` の
     /// 剛直リガンドで局所チェーンを `tpe_rigid_local_chain` に切替える。0=OFF（既定・現行とビット一致）。剛直
     /// デコイの過小スコア化（EF1% 低下）対策の opt-in。未指定なら 0。
@@ -274,8 +284,10 @@ impl Default for RunOpts {
             tpe_local_chain: None,
             tpe_local_chain_margin: None,
             tpe_local_chain_scale: None,
+            tpe_nonskip_local_chain_margin: None,
             tpe_skip_local: None,
             tpe_skip_cos: None,
+            tpe_skip_torsdof: None,
             tpe_rigid_torsdof: None,
             tpe_rigid_local_chain: None,
             tpe_rigid_step_scale: None,
