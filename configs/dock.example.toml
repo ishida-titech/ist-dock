@@ -1,7 +1,7 @@
-# dock.example.toml — `isct-dock dock` 用サンプル設定（注釈付き）
+# dock.example.toml — `ist-dock dock` 用サンプル設定（注釈付き）
 #
 # 使い方:
-#   ./target/release/isct-dock dock configs/dock.example.toml <receptor.pdbqt> <ligand.pdbqt>
+#   ./target/release/ist-dock dock configs/dock.example.toml <receptor.pdbqt> <ligand.pdbqt>
 # CLI フラグ（--search / --qvina-cos / --out / --local-only）は config の対応値を上書きする。
 # 並列度は環境変数 RAYON_NUM_THREADS で制御（run 単位で並列。既定=全コア）。決定論: 同一 seed で結果ビット一致。
 
@@ -20,7 +20,7 @@ seed = 42            # 乱数シード（決定論。run ごとに seed から�
 n_steps = 0          # 各 run の MC ステップ数。0 = サイズ/torsion 数から自動（モード別）
 scoring = "grid"     # "grid"（受容体を前計算グリッドで補間, 高速・推奨）/ "direct"（直接和）
 # grid_margin = 2.0  # grid 探索ボックスの余白(Å, 既定 2.0)。小さいほど構築が速く省メモリだが、境界近傍の
-                     # ボーダーライン標的が退行しうる(実測: 0 で一部退行, 2 で全標的中立)。env ISCT_GRID_MARGIN で上書き可。
+                     # ボーダーライン標的が退行しうる(実測: 0 で一部退行, 2 で全標的中立)。env IST_GRID_MARGIN で上書き可。
 search = "drift"  # 探索モード: tpe（既定）/ drift / drift_qvina2 / qvina2 / vina。詳細は MANUAL.md
                      #  / "qvina2"=QuickVina2 相当の局所探索スキップ（opt-in 高速化）
 hunt_cap = 10.0      # 探索中の正エネルギー上限（Vina curl, 激突の暴走抑制）。1e9 で無効化。polish は常に無効

@@ -1,10 +1,20 @@
 # TPE 探索モード（`--search tpe`, **既定**）アルゴリズム仕様
 
 > 2026-07-15 の整理で `tpe_fast` は `tpe` に統合（dock/screen 共通の単一プリセット, n_runs=1）、既定モードも
-> drift→**tpe** に変更。旧 `tpe_fast` 名は削除（`--search tpe` を使用）。以下の「tpe_fast」「dock/screen 別」の
-> 記述は統合前の履歴で、現在は単一の `tpe` プリセットに一本化されている。
+> drift→**tpe** に変更。旧 `tpe_fast` 名は削除（`--search tpe` を使用）。
+>
+> **現在の単一 `tpe` プリセット既定値**（CLI 層で適用＝dock/screen 共通。config `tpe_*`/`n_runs` で上書き可。
+> ライブラリ既定 `TpeParams::default` は全機構 OFF で素の共有 TPE とビット一致）:
+> `n_runs=1` / `tpe_local_chain=15` / `tpe_local_chain_scale=0.75` / **`tpe_local_chain_margin=2.0`（skip 有効側）** /
+> **`tpe_nonskip_local_chain_margin=4.0`（skip 無効側）** / `tpe_skip_local=true` / `tpe_skip_cos=0.90` /
+> `tpe_skip_torsdof=7` / `tpe_rigid_torsdof=6` / `tpe_rigid_local_chain=8` / **`tpe_rigid_step_scale=0.7`** /
+> `tpe_rigid_step_per_tors=0.05` / `tpe_rigid_step_floor=200`。10seed 全85 で 68.8%/−9.0757/284k ev/3.04s wall
+> （`docs/results.202607151422`）。
+>
+> **以下 §5 の「tpe_fast」「dock は…/screen は…」の区別や、途中値（例 ramp BASE=0.5, skip margin 一律 2.0）は統合前の
+> 経緯記録**。現在は上記の単一プリセットに一本化されており、最終採用値は上のリストが正（本文の途中値は導出過程として残す）。
 
-実装: `crates/isct-dock/src/tpe.rs`（Parzen モデル）と `crates/isct-dock/src/search.rs`（run 駆動）。
+実装: `crates/ist-dock/src/tpe.rs`（Parzen モデル）と `crates/ist-dock/src/search.rs`（run 駆動）。
 移植元は **TPEvina-2.0**（PSOVina 派生, CBBio）。本書は括弧内に **TPEvina 側の変数名**を添える（例
 `warmup(start_search_num)`）。**drift 等と共有の変数は明記**する（◆）。
 
@@ -38,7 +48,7 @@
 > 「Tree-structured」は原論文（Bergstra 2011）の条件付き・階層的変数空間に由来。本実装は各次元を独立に
 > モデル化する簡略版（原 TPEvina も同様）。
 
-ISCT 版は探索全体を seed 付き `ChaCha8Rng` で駆動し**同一 seed でビット一致（決定論）**。TPEvina 原実装は
+IST 版は探索全体を seed 付き `ChaCha8Rng` で駆動し**同一 seed でビット一致（決定論）**。TPEvina 原実装は
 `random_device` シードで run 毎に非再現。
 
 ---
@@ -160,7 +170,7 @@ n_runs=8 相当へ到達させる（利得源は**観測共有**そのもの。`
   [[tpe-fast-local-search-skip]]）。
 - **skip の精度コストは柔軟(高DOF)側に集中**（発火は剛直で頻繁~20%・柔軟で稀~5% だが、柔軟は native 盆地が難で
   稀な BFGS 省略が native 消失に直結。剛直は盆地が易・冗長でスキップ無害, `docs/findings.202607141756`）。
-  `skip_torsdof>0` で `free_torsions.len() ≥ 閾値` の中〜柔軟はスキップ無効化＝BFGS 温存。**tpe_fast は既定 7**（skip 単一
+  `skip_torsdof>0` で `free_torsions.len() ≥ 閾値` の中〜柔軟はスキップ無効化＝BFGS 温存。**現行 `tpe` プリセットは既定 7**（skip 単一
   因子＝旧基準に skip のみ追加した検証で、閾値 7 が中自由度 T7-8 も保護し 70.5%（gate9=69.8%, 旧71.3%）・meanScore は旧より
   深く・eval −12%, `docs/results.202607141810*`）。T<7 のスキップは温存＝速度と（剛直デコイ抑制で）DUD-E EF1% 寄与も保つ。
   0 でゲート無し＝ビット不変。（全因子込みの現行プリセットでは skip の単一因子最適とゲート閾値の最適が干渉でずれうる点に注意。）
@@ -175,25 +185,28 @@ n_runs=8 相当へ到達させる（利得源は**観測共有**そのもの。`
 チェーンを弱める**（0 なら剛直はチェーン無効＝基本 BFGS のみで Vina 相当の探索深度へ寄せる）。柔軟リガンド
 （アクティブに多い）は不変。
 - ノブ: `rigid_torsdof`(閾値, 0=OFF＝`n<0` が常偽でビット不変) / `rigid_local_chain`(剛直時 K)。
-- **剛直アクティブも同様に抑制される active/decoy トレードオフ**のため**既定 OFF**。EF1% 改善の可否は DUD-E で
-  `rigid_torsdof∈{4,6,8}`×`rigid_local_chain∈{0,3,8}` を掃引して判定（`docs/results.202607131021`,
-  [[tpe-fast-ef1-rigid-decoy]]）。
+- **ライブラリ既定は OFF**（`rigid_torsdof=0`）だが、**現行 `tpe` プリセットは ON**（`rigid_torsdof=6`+`rigid_local_chain=8`;
+  active TORSDOF 中央値10 vs decoy 5 の間で decoy 中央値以下のみ抑制）。当初 K=0 だったが全85で剛直 native(1u4d/1ke5/1tow,
+  T2-4)の pose を −1.6pt 落とすと判明し **K=8 でフル回復**（剛直チェーンの wall コストはほぼ無し, `docs/results.202607141930`）。
+  **剛直アクティブも同様に抑制される active/decoy トレードオフ**があるため、EF1%/throughput 最優先なら config で
+  `tpe_rigid_local_chain=0` へ。EF1% 改善幅は DUD-E で掃引判定（[[tpe-fast-ef1-rigid-decoy]]）。
 
 **n_steps の自由度連動縮小（軽量化）— `rigid_step_scale` / `rigid_step_per_tors` / `rigid_step_floor`**: 剛直
 （TORSDOF≤4）は n=1 で既に収束する（`HANDOFF.regularization.md` §5.1）ため、`n_steps` が dof 線形で多提案（~1600）を
 回すのは浪費。提案数を `max(rigid_step_floor, n_steps×scale(T))`、`scale(T)=min(1.0, rigid_step_scale + rigid_step_per_tors·T)`
 （`T=free_torsions.len()`）へ多段階に縮小して `budget` を軽量化する（warmup/freq も比例縮小）。剛直を強く・低中自由度を
 緩く削り、高自由度（`T ≥ (1−scale)/per_tors`）は full へ復帰＝最適化不足を温存。`rigid_step_scale=1.0`（既定）で全 T が
-1.0＝ビット不変。**screen/tpe_fast は既定 BASE=0.5 / per_tors=0.05**（T0=0.50→T6=0.80→T≥10=1.0; affinity 非退行・eval を
-低中自由度で −8〜33%, `docs/results.202607141616`）。二値(0.5/1.0)から連続ランプ化し、剛直判定外の低自由度(T6–9)も安全に
-軽量化。BASE=0.3 まで下げると一部標的が収束失敗するため 0.5 が安全な最小、per_tors=0.0 だと全 T 一律 BASE＝柔軟も削れる
-（footgun）ため正の勾配必須。「複雑さ連動・予算配分」の剛直側先行分（柔軟側 K ランプは次段）。
+1.0＝ライブラリ既定＝ビット不変。**現行 `tpe` プリセットは BASE=0.7 / per_tors=0.05**（T0=0.70→**T=6 で満額 1.0**。
+削るのは T<6 の剛直のみ＝そこは `rigid_local_chain=8` のチェーンが pose を補償）。**当初 BASE=0.5 を検討したが単一因子で
+−2.4pt 退行（低〜中DOF に分散, 1ke5/1lpz で深化損失）と判明し 0.7 に緩和**（`docs/results.202607141930`。0.5 の初期評価
+`docs/results.202607141616` は小標本 affinity のみで pose 退行を見落としていた）。per_tors=0.0 だと全 T 一律 BASE＝柔軟も
+削れる（footgun）ため `BASE<1.0` で使うときは正の勾配必須。
 
 ---
 
 ## 6. パラメータ一覧（`TpeParams`, `tpe.rs`）
 
-| isct 変数 (TPEvina 名) | 意味 | 既定 | config キー |
+| ist 変数 (TPEvina 名) | 意味 | 既定 | config キー |
 |---|---|---|---|
 | `ei_candidates` (`sample_num`) | EI 用に lower から引く候補数 | **25** | `tpe_ei_candidates` |
 | `startup_ratio` (`start_search_num`) | warmup 比率（warmup=budget×これ） | **0.05** | `tpe_startup_ratio` |

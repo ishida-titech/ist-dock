@@ -1,0 +1,19 @@
+[package]
+name = "ist-dock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ist-core.workspace = true
+ist-io.workspace = true
+nalgebra.workspace = true
+thiserror.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+rayon.workspace = true
+log.workspace = true

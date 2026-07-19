@@ -8,4 +8,4 @@
 - `prepare_pdbqt.py` — RDKit/Meeko で受容体・リガンドを PDBQT 化（Vina と同条件）。
 - `cluster_library.py` — RDKit の MCS/Murcko で化合物を Scaffold クラスタリングし、
   代表分子（Seed）＋子分子（Children: コア差分）のツリーを構築。
-- `to_binary.py` — クラスタを isct-io が読むカスタムバイナリへ変換（スキーマは仕様 4.1）。
+- `to_binary.py` — クラスタを ist-io が読むカスタムバイナリへ変換（スキーマは仕様 4.1）。

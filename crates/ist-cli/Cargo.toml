@@ -1,0 +1,24 @@
+[package]
+name = "ist-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ist-dock"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+ist-core.workspace = true
+ist-io.workspace = true
+ist-dock.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+rayon.workspace = true
+core_affinity.workspace = true

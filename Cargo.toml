@@ -1,10 +1,10 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/isct-core",
-    "crates/isct-io",
-    "crates/isct-dock",
-    "crates/isct-cli",
+    "crates/ist-core",
+    "crates/ist-io",
+    "crates/ist-dock",
+    "crates/ist-cli",
 ]
 
 [workspace.package]
@@ -12,13 +12,13 @@ version = "1.0.0"
 edition = "2024"
 rust-version = "1.92"
 license = "Apache-2.0"
-repository = "https://github.com/ishida/isct-dock"
+repository = "https://github.com/ishida/ist-dock"
 
 [workspace.dependencies]
 # 内部クレート
-isct-core = { path = "crates/isct-core" }
-isct-io = { path = "crates/isct-io" }
-isct-dock = { path = "crates/isct-dock" }
+ist-core = { path = "crates/ist-core" }
+ist-io = { path = "crates/ist-io" }
+ist-dock = { path = "crates/ist-dock" }
 
 # 外部クレート（暫定。各クレートの Cargo.toml で必要なものだけ有効化する）
 nalgebra = { version = "0.33", features = ["serde-serialize"] }

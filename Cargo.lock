@@ -266,22 +266,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
-name = "isct-cli"
+name = "ist-cli"
 version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
  "core_affinity",
  "env_logger",
- "isct-core",
- "isct-dock",
- "isct-io",
+ "ist-core",
+ "ist-dock",
+ "ist-io",
  "log",
  "rayon",
 ]
 
 [[package]]
-name = "isct-core"
+name = "ist-core"
 version = "1.0.0"
 dependencies = [
  "nalgebra",
@@ -292,11 +292,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "isct-dock"
+name = "ist-dock"
 version = "1.0.0"
 dependencies = [
- "isct-core",
- "isct-io",
+ "ist-core",
+ "ist-io",
  "log",
  "nalgebra",
  "rand",
@@ -306,11 +306,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "isct-io"
+name = "ist-io"
 version = "1.0.0"
 dependencies = [
  "bincode",
- "isct-core",
+ "ist-core",
  "memmap2",
  "serde",
  "thiserror",

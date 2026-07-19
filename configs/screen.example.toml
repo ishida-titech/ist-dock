@@ -1,7 +1,7 @@
-# screen.example.toml — `isct-dock screen` 用サンプル設定（注釈付き）
+# screen.example.toml — `ist-dock screen` 用サンプル設定（注釈付き）
 #
 # 使い方:
-#   ./target/release/isct-dock screen configs/screen.example.toml <receptor.pdbqt> <library.toml|library.bin> \
+#   ./target/release/ist-dock screen configs/screen.example.toml <receptor.pdbqt> <library.toml|library.bin> \
 #       --out ranking.tsv [--poses-out poses.pdbqt --top 100000]
 # ライブラリは TOML マニフェスト（小・デバッグ）か pack 済みバイナリ（.bin。大規模・memmap streaming）。
 # 並列度は RAYON_NUM_THREADS（リガンド/クラスタ単位で並列）。大規模時は物理コア数を指定し --pin-threads も検討。
@@ -17,7 +17,7 @@ n_runs = 8           # seed ドッキングの独立 run 数（screen はリガ�
 n_steps = 0          # 0 = サイズ/torsion 数から自動（モード別。--search vina なら vina ステップ数）
 scoring = "grid"     # "grid" 推奨（既定ボックスの Scorer をクラスタ間で共有・再利用）
 # grid_margin = 2.0  # grid 探索ボックスの余白(Å, 既定 2.0)。小さいほど構築速・省メモリ（大規模で有効）だが
-                     # 境界近傍の退行に注意。env ISCT_GRID_MARGIN で上書き可。
+                     # 境界近傍の退行に注意。env IST_GRID_MARGIN で上書き可。
 search = "drift"  # 探索モード: tpe（既定）/ drift / drift_qvina2 / qvina2 / vina。詳細は MANUAL.md。seed 探索に適用
 hunt_cap = 10.0      # 探索中の正エネルギー上限（1e9 で無効化）
 
