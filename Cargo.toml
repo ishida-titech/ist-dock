@@ -12,7 +12,7 @@ version = "1.0.0"
 edition = "2024"
 rust-version = "1.92"
 license = "Apache-2.0"
-repository = "https://github.com/ishida/ist-dock"
+repository = "https://github.com/ishida-titech/ist-dock"
 
 [workspace.dependencies]
 # 内部クレート
