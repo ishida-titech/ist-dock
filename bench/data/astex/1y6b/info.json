@@ -1,0 +1,1 @@
+{"pdbid": "1y6b", "ligand": "AAX", "center": [-0.048, 30.207, 16.857], "box_size": [15.75, 20.25, 20.25], "heavy_atoms": 34, "torsdof": 8, "cofactors": [], "prep": "ADFRsuite prepare_receptor/prepare_ligand (\u88dc\u9175\u7d20\u30fb\u91d1\u5c5e\u542b\u3080)", "box_method": "ADFR padding=4.0 spacing=0.375 (per-ligand heavy-atom bbox)"}

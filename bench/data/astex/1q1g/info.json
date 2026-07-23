@@ -1,0 +1,1 @@
+{"pdbid": "1q1g", "ligand": "MTI", "center": [8.6, 4.927, 92.618], "box_size": [12.75, 16.5, 15.0], "heavy_atoms": 20, "torsdof": 5, "cofactors": ["IPA"], "prep": "ADFRsuite prepare_receptor/prepare_ligand (\u88dc\u9175\u7d20\u30fb\u91d1\u5c5e\u542b\u3080)", "box_method": "ADFR padding=4.0 spacing=0.375 (per-ligand heavy-atom bbox)"}

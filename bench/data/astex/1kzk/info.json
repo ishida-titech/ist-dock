@@ -1,0 +1,1 @@
+{"pdbid": "1kzk", "ligand": "JE2", "center": [19.796, -1.813, 17.121], "box_size": [20.25, 18.75, 15.75], "heavy_atoms": 41, "torsdof": 12, "cofactors": [], "prep": "ADFRsuite prepare_receptor/prepare_ligand (\u88dc\u9175\u7d20\u30fb\u91d1\u5c5e\u542b\u3080)", "box_method": "ADFR padding=4.0 spacing=0.375 (per-ligand heavy-atom bbox)"}

@@ -1,0 +1,47 @@
+REMARK  6 active torsions:
+REMARK  status: ('A' for Active; 'I' for Inactive)
+REMARK    1  A    between atoms: CG_2  and  CB_4 
+REMARK    2  A    between atoms: CB_4  and  CA_5 
+REMARK    3  A    between atoms: CA_5  and  C_6 
+REMARK    4  A    between atoms: CA_5  and  N_9 
+REMARK       I    between atoms: N_9  and  C11_11 
+REMARK    5  A    between atoms: C11_11  and  C10_13 
+REMARK    6  A    between atoms: C10_13  and  C3_14 
+ROOT
+HETATM    1  N   IAD A 801      48.321  28.178  12.798  1.00 19.86    -0.346 N 
+ATOM      2  HN  IAD A 801      49.193  28.707  12.794  1.00  0.00     0.163 HD
+HETATM    3  C11 IAD A 801      47.819  27.716  14.025  1.00 18.71     0.222 C 
+HETATM    4  O11 IAD A 801      46.819  27.024  14.088  1.00 19.03    -0.273 OA
+ENDROOT
+BRANCH   3   5
+HETATM    5  C10 IAD A 801      48.635  28.062  15.267  1.00 20.28     0.143 C 
+BRANCH   5   6
+HETATM    6  C3  IAD A 801      50.002  27.379  15.176  1.00 17.91    -0.022 A 
+HETATM    7  C9  IAD A 801      50.210  25.988  15.042  1.00 15.68    -0.001 A 
+HETATM    8  C8  IAD A 801      51.591  25.788  15.016  1.00 18.19     0.042 A 
+HETATM    9  C4  IAD A 801      49.327  24.911  14.969  1.00 14.92     0.014 A 
+HETATM   10  C7  IAD A 801      52.103  24.493  14.891  1.00 18.89     0.030 A 
+HETATM   11  N1  IAD A 801      52.218  27.015  15.178  1.00 17.53    -0.365 N 
+HETATM   12  C6  IAD A 801      51.235  23.421  14.796  1.00 16.61     0.002 A 
+HETATM   13  C5  IAD A 801      49.865  23.637  14.829  1.00 16.43     0.001 A 
+HETATM   14  C2  IAD A 801      51.255  28.014  15.299  1.00 16.84     0.097 A 
+ATOM     15  H1  IAD A 801      53.227  27.162  15.204  1.00  0.00     0.165 HD
+ENDBRANCH   5   6
+ENDBRANCH   3   5
+BRANCH   1  16
+HETATM   16  CA  IAD A 801      47.641  27.931  11.521  1.00 17.24     0.195 C 
+BRANCH  16  17
+HETATM   17  CB  IAD A 801      46.203  28.553  11.569  1.00 17.86     0.149 C 
+BRANCH  17  18
+HETATM   18  CG  IAD A 801      45.857  29.094  10.167  1.00 18.74     0.175 C 
+HETATM   19  OD2 IAD A 801      45.223  28.288   9.308  1.00 17.93    -0.648 OA
+HETATM   20  OD1 IAD A 801      46.151  30.331   9.870  1.00 20.69    -0.648 OA
+ENDBRANCH  17  18
+ENDBRANCH  16  17
+BRANCH  16  21
+HETATM   21  C   IAD A 801      48.505  28.579  10.443  1.00 18.38     0.197 C 
+HETATM   22  O1  IAD A 801      48.562  28.039   9.297  1.00 19.23    -0.646 OA
+HETATM   23  O   IAD A 801      49.241  29.661  10.756  1.00 18.25    -0.646 OA
+ENDBRANCH  16  21
+ENDBRANCH   1  16
+TORSDOF 6

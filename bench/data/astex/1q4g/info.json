@@ -1,0 +1,1 @@
+{"pdbid": "1q4g", "ligand": "BFL", "center": [26.579, 33.489, 201.697], "box_size": [12.0, 15.0, 16.5], "heavy_atoms": 17, "torsdof": 3, "cofactors": ["HEM"], "prep": "ADFRsuite prepare_receptor/prepare_ligand (\u88dc\u9175\u7d20\u30fb\u91d1\u5c5e\u542b\u3080)", "box_method": "ADFR padding=4.0 spacing=0.375 (per-ligand heavy-atom bbox)"}

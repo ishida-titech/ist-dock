@@ -1,0 +1,1 @@
+{"pdbid": "1n2j", "ligand": "PAF", "center": [32.656, 33.98, 47.537], "box_size": [11.25, 11.25, 13.5], "heavy_atoms": 10, "torsdof": 5, "cofactors": ["BAL"], "prep": "ADFRsuite prepare_receptor/prepare_ligand (\u88dc\u9175\u7d20\u30fb\u91d1\u5c5e\u542b\u3080)", "box_method": "ADFR padding=4.0 spacing=0.375 (per-ligand heavy-atom bbox)"}

@@ -1,0 +1,36 @@
+REMARK  4 active torsions:
+REMARK  status: ('A' for Active; 'I' for Inactive)
+REMARK    1  A    between atoms: C1_2  and  C2_4 
+REMARK    2  A    between atoms: C2_4  and  C3_5 
+REMARK    3  A    between atoms: C3_5  and  C4_6 
+REMARK    4  A    between atoms: C4_6  and  N5_7 
+ROOT
+HETATM    1  N5  CRZ A 501      21.033   4.335   2.146  1.00 18.31    -0.345 N 
+HETATM    2  C6  CRZ A 501      20.615   4.517   0.849  1.00 18.92     0.046 A 
+HETATM    3  C17 CRZ A 501      19.382   4.610   0.201  1.00 18.76     0.030 A 
+HETATM    4  C7  CRZ A 501      21.827   4.658   0.011  1.00 18.68     0.003 A 
+HETATM    5  C14 CRZ A 501      21.787   4.862  -1.362  1.00 19.32     0.014 A 
+HETATM    6  C15 CRZ A 501      20.519   4.952  -1.953  1.00 19.70     0.001 A 
+HETATM    7  C16 CRZ A 501      19.348   4.822  -1.188  1.00 19.71     0.002 A 
+HETATM    8  C8  CRZ A 501      22.960   4.525   0.906  1.00 19.26     0.003 A 
+HETATM    9  C9  CRZ A 501      22.398   4.321   2.256  1.00 19.29     0.046 A 
+HETATM   10  C10 CRZ A 501      23.306   4.174   3.311  1.00 19.90     0.030 A 
+HETATM   11  C13 CRZ A 501      24.329   4.570   0.641  1.00 19.71     0.014 A 
+HETATM   12  C12 CRZ A 501      25.183   4.405   1.738  1.00 18.65     0.001 A 
+HETATM   13  C11 CRZ A 501      24.677   4.215   3.032  1.00 19.16     0.002 A 
+ENDROOT
+BRANCH   1  14
+HETATM   14  C4  CRZ A 501      20.133   4.117   3.289  1.00 17.45     0.130 C 
+BRANCH  14  15
+HETATM   15  C3  CRZ A 501      19.838   5.404   4.081  1.00 14.32     0.031 C 
+BRANCH  15  16
+HETATM   16  C2  CRZ A 501      19.371   6.573   3.192  1.00 14.12     0.114 C 
+BRANCH  16  17
+HETATM   17  C1  CRZ A 501      17.928   6.424   2.761  1.00 16.20     0.172 C 
+HETATM   18  O19 CRZ A 501      17.408   7.229   2.002  1.00 16.47    -0.648 OA
+HETATM   19  O18 CRZ A 501      17.192   5.406   3.196  1.00 15.25    -0.648 OA
+ENDBRANCH  16  17
+ENDBRANCH  15  16
+ENDBRANCH  14  15
+ENDBRANCH   1  14
+TORSDOF 4

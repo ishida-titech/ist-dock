@@ -1,0 +1,1 @@
+{"pdbid": "1p2y", "ligand": "NCT", "center": [16.581, 13.026, 40.843], "box_size": [12.75, 12.75, 13.5], "heavy_atoms": 12, "torsdof": 1, "cofactors": ["HEM"], "prep": "ADFRsuite prepare_receptor/prepare_ligand (\u88dc\u9175\u7d20\u30fb\u91d1\u5c5e\u542b\u3080)", "box_method": "ADFR padding=4.0 spacing=0.375 (per-ligand heavy-atom bbox)"}

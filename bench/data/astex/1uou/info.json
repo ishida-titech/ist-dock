@@ -1,0 +1,1 @@
+{"pdbid": "1uou", "ligand": "CMU", "center": [-3.322, 2.336, 29.172], "box_size": [13.5, 12.75, 15.75], "heavy_atoms": 16, "torsdof": 2, "cofactors": [], "prep": "ADFRsuite prepare_receptor/prepare_ligand (\u88dc\u9175\u7d20\u30fb\u91d1\u5c5e\u542b\u3080)", "box_method": "ADFR padding=4.0 spacing=0.375 (per-ligand heavy-atom bbox)"}

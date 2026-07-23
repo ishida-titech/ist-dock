@@ -1,0 +1,59 @@
+REMARK  7 active torsions:
+REMARK  status: ('A' for Active; 'I' for Inactive)
+REMARK    1  A    between atoms: C4D_2  and  N4'_26 
+REMARK    2  A    between atoms: C6D_5  and  C8'_9 
+REMARK    3  A    between atoms: C8'_9  and  N9'_29 
+REMARK    4  A    between atoms: C1'_10  and  N9'_29 
+REMARK    5  A    between atoms: C3'_12  and  O3'_30 
+REMARK    6  A    between atoms: C4'_14  and  O4'_31 
+REMARK    7  A    between atoms: C5'_16  and  O5'_32 
+ROOT
+HETATM    1  C2D TQD A 187      -0.022  32.084   0.463  1.00  8.92     0.677 A 
+HETATM    2  C4D TQD A 187      -1.024  32.569   2.509  1.00 10.95     0.122 A 
+HETATM    3  C4A TQD A 187      -1.580  31.277   2.529  1.00 11.72     0.009 A 
+HETATM    4  C5D TQD A 187      -2.263  30.771   3.837  1.00 11.48     0.050 C 
+HETATM    5  C6D TQD A 187      -3.150  29.529   3.568  1.00 15.94     0.008 C 
+HETATM    6  C7' TQD A 187      -2.381  28.498   2.707  1.00 15.27     0.012 C 
+HETATM    7  C8  TQD A 187      -1.783  29.025   1.353  1.00 11.97     0.058 C 
+HETATM    8  C8A TQD A 187      -1.311  30.423   1.448  1.00 12.44     0.036 A 
+HETATM    9  N1' TQD A 187      -0.466  30.823   0.417  1.00  8.45    -0.195 N 
+ATOM     10  H1' TQD A 187      -0.199  30.187  -0.335  1.00  0.00     0.184 HD
+HETATM   11  N2' TQD A 187       0.843  32.374  -0.542  1.00  9.48    -0.234 N 
+ATOM     12 1H2' TQD A 187       1.002  31.718  -1.306  1.00  0.00     0.174 HD
+ATOM     13 2H2' TQD A 187       1.182  33.336  -0.507  1.00  0.00     0.174 HD
+HETATM   14  N3' TQD A 187      -0.237  32.971   1.496  1.00 10.62    -0.177 N 
+ATOM     15  H3' TQD A 187       0.186  33.899   1.492  1.00  0.00     0.185 HD
+ENDROOT
+BRANCH   5  16
+HETATM   16  C8' TQD A 187      -3.623  28.983   4.961  1.00 17.57     0.127 C 
+BRANCH  16  17
+HETATM   17  N9' TQD A 187      -4.626  27.920   4.832  1.00 18.93    -0.385 N 
+HETATM   18  C9' TQD A 187      -6.051  28.290   4.735  1.00 21.83     0.149 C 
+BRANCH  17  19
+HETATM   19  C1' TQD A 187      -4.243  26.559   4.780  1.00 20.11     0.035 A 
+HETATM   20  C2' TQD A 187      -5.138  25.647   4.258  1.00 20.45     0.069 A 
+HETATM   21  C3' TQD A 187      -4.855  24.284   4.178  1.00 21.91     0.106 A 
+HETATM   22  C4' TQD A 187      -3.660  23.846   4.656  1.00 22.23     0.135 A 
+HETATM   23  C5' TQD A 187      -2.712  24.734   5.180  1.00 21.78     0.106 A 
+HETATM   24  C6' TQD A 187      -3.011  26.089   5.258  1.00 18.49     0.069 A 
+BRANCH  21  25
+HETATM   25  O3' TQD A 187      -5.822  23.416   3.656  1.00 24.75    -0.353 OA
+HETATM   26  C3B TQD A 187      -7.011  23.884   3.029  1.00 23.09     0.210 C 
+ENDBRANCH  21  25
+BRANCH  22  27
+HETATM   27  O4' TQD A 187      -3.143  22.577   4.693  1.00 24.08    -0.351 OA
+HETATM   28  C4B TQD A 187      -2.557  22.092   3.483  1.00 24.64     0.210 C 
+ENDBRANCH  22  27
+BRANCH  23  29
+HETATM   29  O5' TQD A 187      -1.518  24.216   5.634  1.00 24.54    -0.353 OA
+HETATM   30  C5B TQD A 187      -0.457  25.133   6.006  1.00 26.22     0.210 C 
+ENDBRANCH  23  29
+ENDBRANCH  17  19
+ENDBRANCH  16  17
+ENDBRANCH   5  16
+BRANCH   2  31
+HETATM   31  N4' TQD A 187      -1.283  33.462   3.497  1.00  9.97    -0.385 N 
+ATOM     32 2H4' TQD A 187      -1.880  33.157   4.266  1.00  0.00     0.157 HD
+ATOM     33 1H4' TQD A 187      -0.880  34.399   3.482  1.00  0.00     0.157 HD
+ENDBRANCH   2  31
+TORSDOF 7

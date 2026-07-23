@@ -1,0 +1,47 @@
+REMARK  5 active torsions:
+REMARK  status: ('A' for Active; 'I' for Inactive)
+REMARK    1  A    between atoms: S5'_2  and  C5'_3 
+REMARK    2  A    between atoms: C5'_3  and  C4'_4 
+REMARK    3  A    between atoms: C2'_8  and  O2'_9 
+REMARK    4  A    between atoms: C3'_11  and  O3'_12 
+REMARK    5  A    between atoms: C1'_14  and  C9_15 
+ROOT
+HETATM    1  C4' MTI A 301       8.210   2.073  92.167  1.00 27.62     0.227 C 
+HETATM    2  N4' MTI A 301       7.245   3.096  91.751  1.00 25.15    -0.057 N 
+ATOM      3 1H4' MTI A 301       6.648   3.376  92.529  1.00  0.00     0.278 HD
+ATOM      4 2H4' MTI A 301       6.535   2.702  91.134  1.00  0.00     0.278 HD
+HETATM    5  C2' MTI A 301       9.356   3.778  90.852  1.00 23.32     0.184 C 
+HETATM    6  C3' MTI A 301       9.487   2.259  91.332  1.00 24.96     0.180 C 
+HETATM    7  C1' MTI A 301       7.887   4.253  91.140  1.00 23.11     0.254 C 
+ENDROOT
+BRANCH   7   8
+HETATM    8  C9  MTI A 301       7.712   5.468  92.115  1.00 22.00     0.019 A 
+HETATM    9  C8  MTI A 301       6.484   5.982  92.523  1.00 19.90     0.100 A 
+HETATM   10  N7  MTI A 301       6.541   7.001  93.341  1.00 19.57    -0.359 N 
+HETATM   11  C5  MTI A 301       7.892   7.227  93.532  1.00 20.23     0.128 A 
+ATOM     12  H7  MTI A 301       5.760   7.516  93.749  1.00  0.00     0.165 HD
+HETATM   13  C6  MTI A 301       8.566   8.233  94.335  1.00 20.90     0.275 A 
+HETATM   14  C4  MTI A 301       8.657   6.304  92.794  1.00 21.18     0.075 A 
+HETATM   15  O6  MTI A 301       8.027   9.102  95.027  1.00 21.37    -0.266 OA
+HETATM   16  N1  MTI A 301       9.996   8.159  94.286  1.00 21.65    -0.318 N 
+HETATM   17  C2  MTI A 301      10.716   7.209  93.533  1.00 20.52     0.184 A 
+ATOM     18  H1  MTI A 301      10.528   8.838  94.831  1.00  0.00     0.169 HD
+HETATM   19  N3  MTI A 301      10.074   6.251  92.765  1.00 22.24    -0.350 N 
+ATOM     20  H3  MTI A 301      10.584   5.557  92.218  1.00  0.00     0.166 HD
+ENDBRANCH   7   8
+BRANCH   5  21
+HETATM   21  O2' MTI A 301       9.704   3.935  89.430  1.00 23.06    -0.390 OA
+ATOM     22  H2' MTI A 301       9.626   4.838  89.145  1.00  0.00     0.210 HD
+ENDBRANCH   5  21
+BRANCH   1  23
+HETATM   23  C5' MTI A 301       8.442   2.227  93.669  1.00 29.72     0.109 C 
+BRANCH  23  24
+HETATM   24  S5' MTI A 301       9.169   0.752  94.440  1.00 36.62    -0.171 SA
+HETATM   25  CS  MTI A 301      10.060   1.493  95.806  1.00 34.32     0.089 C 
+ENDBRANCH  23  24
+ENDBRANCH   1  23
+BRANCH   6  26
+HETATM   26  O3' MTI A 301       9.477   1.323  90.174  1.00 25.41    -0.391 OA
+ATOM     27  H3' MTI A 301      10.266   1.438  89.658  1.00  0.00     0.210 HD
+ENDBRANCH   6  26
+TORSDOF 5

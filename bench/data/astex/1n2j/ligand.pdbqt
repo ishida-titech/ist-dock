@@ -1,0 +1,32 @@
+REMARK  5 active torsions:
+REMARK  status: ('A' for Active; 'I' for Inactive)
+REMARK    1  A    between atoms: C1_2  and  C2_4 
+REMARK    2  A    between atoms: C2_4  and  O3_5 
+REMARK    3  A    between atoms: C2_4  and  C3_7 
+REMARK    4  A    between atoms: C3_7  and  C6_10 
+REMARK    5  A    between atoms: C6_10  and  O4_11 
+ROOT
+HETATM    1  C2  PAF A1001      33.400  33.858  47.336  1.00 25.57     0.228 C 
+ENDROOT
+BRANCH   1   2
+HETATM    2  C1  PAF A1001      33.326  34.200  45.811  1.00 30.00     0.203 C 
+HETATM    3  O1  PAF A1001      33.320  33.200  44.973  1.00 30.62    -0.646 OA
+HETATM    4  O2  PAF A1001      33.248  35.378  45.442  1.00 36.52    -0.646 OA
+ENDBRANCH   1   2
+BRANCH   1   5
+HETATM    5  O3  PAF A1001      34.146  32.603  47.491  1.00 25.48    -0.384 OA
+ATOM      6  H3  PAF A1001      34.191  32.395  48.417  1.00  0.00     0.210 HD
+ENDBRANCH   1   5
+BRANCH   1   7
+HETATM    7  C3  PAF A1001      31.950  33.718  47.977  1.00 28.33     0.009 C 
+HETATM    8  C4  PAF A1001      31.166  35.023  47.855  1.00 25.98     0.020 C 
+HETATM    9  C5  PAF A1001      31.182  32.583  47.328  1.00 27.72     0.020 C 
+BRANCH   7  10
+HETATM   10  C6  PAF A1001      32.189  33.415  49.477  1.00 26.55     0.176 C 
+BRANCH  10  11
+HETATM   11  O4  PAF A1001      32.921  34.457  50.100  1.00 26.44    -0.400 OA
+ATOM     12  H4  PAF A1001      33.068  34.271  51.020  1.00  0.00     0.209 HD
+ENDBRANCH  10  11
+ENDBRANCH   7  10
+ENDBRANCH   1   7
+TORSDOF 5

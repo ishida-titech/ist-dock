@@ -1,0 +1,37 @@
+REMARK  5 active torsions:
+REMARK  status: ('A' for Active; 'I' for Inactive)
+REMARK    1  A    between atoms: N_1  and  CA_5 
+REMARK    2  A    between atoms: CA_5  and  C_6 
+REMARK    3  A    between atoms: CA_5  and  CB_8 
+REMARK    4  A    between atoms: CB_8  and  CG_9 
+REMARK    5  A    between atoms: CZ_14  and  OH_15 
+ROOT
+HETATM    1  CB  TYR A 952       7.592  29.661  16.488  1.00 13.65     0.082 C 
+ENDROOT
+BRANCH   1   2
+HETATM    2  CA  TYR A 952       6.854  28.331  16.296  1.00 15.57     0.287 C 
+BRANCH   2   3
+HETATM    3  N   TYR A 952       7.294  27.669  15.032  1.00 12.67    -0.065 N 
+ATOM      4  HN3 TYR A 952       6.762  26.821  14.836  1.00  0.00     0.275 HD
+ATOM      5  HN2 TYR A 952       7.028  28.203  14.205  1.00  0.00     0.275 HD
+ATOM      6  HN1 TYR A 952       8.298  27.493  15.069  1.00  0.00     0.275 HD
+ENDBRANCH   2   3
+BRANCH   2   7
+HETATM    7  C   TYR A 952       5.354  28.594  16.240  1.00 16.41     0.204 C 
+HETATM    8  O   TYR A 952       4.793  29.013  17.273  1.00 20.06    -0.646 OA
+HETATM    9  OXT TYR A 952       4.769  28.398  15.154  1.00 16.36    -0.646 OA
+ENDBRANCH   2   7
+ENDBRANCH   1   2
+BRANCH   1  10
+HETATM   10  CG  TYR A 952       9.097  29.537  16.475  1.00 15.34    -0.056 A 
+HETATM   11  CD1 TYR A 952       9.753  28.695  17.371  1.00 15.13     0.010 A 
+HETATM   12  CE1 TYR A 952      11.139  28.575  17.361  1.00 15.35     0.037 A 
+HETATM   13  CZ  TYR A 952      11.881  29.303  16.447  1.00 16.91     0.065 A 
+HETATM   14  CE2 TYR A 952      11.252  30.145  15.547  1.00 17.24     0.037 A 
+HETATM   15  CD2 TYR A 952       9.867  30.259  15.564  1.00 14.31     0.010 A 
+BRANCH  13  16
+HETATM   16  OH  TYR A 952      13.257  29.195  16.437  1.00 17.04    -0.361 OA
+ATOM     17  HH  TYR A 952      13.766  29.695  15.810  1.00  0.00     0.217 HD
+ENDBRANCH  13  16
+ENDBRANCH   1  10
+TORSDOF 5

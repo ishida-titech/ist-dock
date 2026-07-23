@@ -7,8 +7,14 @@ Cargo.lock.bak
 # 決定論を全員で維持。テンプレートは .cargo/config.toml.example として追跡する）。
 /.cargo/config.toml
 
-# bench 以下は追跡しない（検証スクリプト・データとも）
-/bench/
+# bench 以下は原則追跡しない（検証スクリプト・データとも）。
+# ただし Astex 標準セット（bench/data/astex）の入力データのみ含める。
+/bench/*
+!/bench/data/
+/bench/data/*
+!/bench/data/astex/
+# astex 内の再ドッキング生成物は含めない（再生成可能・stale）。
+/bench/data/astex/**/*_out.pdbqt
 
 # 作業メモ・移行ドキュメント・評価ログ・計画書（追跡しない。MANUAL.md のみ追跡）
 /FINDING.md

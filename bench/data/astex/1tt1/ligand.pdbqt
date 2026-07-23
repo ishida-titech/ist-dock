@@ -1,0 +1,34 @@
+REMARK  4 active torsions:
+REMARK  status: ('A' for Active; 'I' for Inactive)
+REMARK    1  A    between atoms: CA_7  and  C_13 
+REMARK    2  A    between atoms: CB_8  and  CB1_9 
+REMARK    3  A    between atoms: CB1_9  and  CG1_11 
+REMARK    4  A    between atoms: CG_10  and  CG2_12 
+ROOT
+HETATM    1  N   KAI A 998       2.169   0.504  24.198  1.00  9.82    -0.060 N 
+ATOM      2  HN1 KAI A 998       2.011   1.339  23.634  1.00  0.00     0.278 HD
+ATOM      3  HN2 KAI A 998       2.479  -0.114  23.448  1.00  0.00     0.278 HD
+HETATM    4  CD  KAI A 998       0.889   0.004  24.885  1.00  7.74     0.242 C 
+HETATM    5  CA  KAI A 998       3.187   0.701  25.216  1.00 10.15     0.291 C 
+HETATM    6  CB  KAI A 998       2.436   0.921  26.505  1.00  9.96     0.046 C 
+HETATM    7  CG  KAI A 998       1.362  -0.119  26.407  1.00 10.80     0.046 C 
+ENDROOT
+BRANCH   6   8
+HETATM    8  CB1 KAI A 998       1.805   2.382  26.735  1.00  9.19     0.121 C 
+BRANCH   8   9
+HETATM    9  CG1 KAI A 998       2.853   3.378  27.249  1.00  9.42     0.172 C 
+HETATM   10  OD1 KAI A 998       2.478   4.559  27.259  1.00 11.23    -0.648 OA
+HETATM   11  OD2 KAI A 998       3.975   2.961  27.613  1.00 10.22    -0.648 OA
+ENDBRANCH   8   9
+ENDBRANCH   6   8
+BRANCH   7  12
+HETATM   12  CG2 KAI A 998       0.261  -0.162  27.543  1.00 10.54    -0.087 C 
+HETATM   13  CD1 KAI A 998      -0.975  -0.087  27.182  1.00  9.48     0.014 C 
+HETATM   14  CD2 KAI A 998       0.702  -0.288  28.952  1.00  9.21     0.043 C 
+ENDBRANCH   7  12
+BRANCH   5  15
+HETATM   15  C   KAI A 998       4.255  -0.459  25.263  1.00 11.54     0.205 C 
+HETATM   16  O   KAI A 998       4.349  -1.140  24.218  1.00 10.29    -0.646 OA
+HETATM   17  OXT KAI A 998       4.932  -0.565  26.331  1.00 11.11    -0.646 OA
+ENDBRANCH   5  15
+TORSDOF 4

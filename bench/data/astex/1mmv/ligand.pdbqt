@@ -1,0 +1,53 @@
+REMARK  8 active torsions:
+REMARK  status: ('A' for Active; 'I' for Inactive)
+REMARK    1  A    between atoms: N_1  and  CA_5 
+REMARK    2  A    between atoms: CA_5  and  C_6 
+REMARK    3  A    between atoms: CA_5  and  CB_8 
+REMARK    4  A    between atoms: CB_8  and  CG_9 
+REMARK    5  A    between atoms: CG_9  and  CD_10 
+REMARK    6  A    between atoms: CD_10  and  NE_11 
+REMARK       I    between atoms: NE_11  and  CZ_13 
+REMARK       I    between atoms: CZ_13  and  NH1_14 
+REMARK    7  A    between atoms: NH1_14  and  C1_19 
+REMARK    8  A    between atoms: C1_19  and  C2_20 
+ROOT
+HETATM    1  CD  3AR A1785      11.238   1.292  24.388  1.00 30.56     0.138 C 
+ENDROOT
+BRANCH   1   2
+HETATM    2  NE  3AR A1785      12.471   0.445  24.412  1.00 25.30    -0.227 N 
+HETATM    3  CZ  3AR A1785      13.570   0.645  23.683  1.00 27.65     0.667 C 
+HETATM    4  NH2 3AR A1785      14.542  -0.209  23.846  1.00 23.73    -0.235 N 
+HETATM    5  NH1 3AR A1785      13.718   1.644  22.828  1.00 22.12    -0.227 N 
+ATOM      6 2HH2 3AR A1785      14.428  -0.979  24.505  1.00  0.00     0.174 HD
+ATOM      7 1HH2 3AR A1785      15.382  -0.056  23.289  1.00  0.00     0.174 HD
+ATOM      8  HH1 3AR A1785      13.300   2.555  23.020  1.00  0.00     0.177 HD
+ATOM      9  HE  3AR A1785      12.471  -0.357  25.042  1.00  0.00     0.177 HD
+BRANCH   5  10
+HETATM   10  C1  3AR A1785      14.499   1.422  21.588  1.00 23.47     0.137 C 
+BRANCH  10  11
+HETATM   11  C2  3AR A1785      14.168   2.530  20.560  1.00 24.10     0.016 C 
+HETATM   12  C3  3AR A1785      12.788   2.274  19.935  1.00 22.80     0.006 C 
+ENDBRANCH  10  11
+ENDBRANCH   5  10
+ENDBRANCH   1   2
+BRANCH   1  13
+HETATM   13  CG  3AR A1785      10.105   0.564  23.644  1.00 24.25     0.023 C 
+BRANCH  13  14
+HETATM   14  CB  3AR A1785      10.113  -0.980  23.836  1.00 25.05     0.045 C 
+BRANCH  14  15
+HETATM   15  CA  3AR A1785       9.066  -1.530  24.844  1.00 26.15     0.283 C 
+BRANCH  15  16
+HETATM   16  N   3AR A1785       9.484  -1.174  26.202  1.00 27.31    -0.065 N 
+ATOM     17  HN3 3AR A1785       8.852  -1.557  26.905  1.00  0.00     0.275 HD
+ATOM     18  HN2 3AR A1785      10.334  -1.666  26.477  1.00  0.00     0.275 HD
+ATOM     19  HN1 3AR A1785       9.585  -0.163  26.296  1.00  0.00     0.275 HD
+ENDBRANCH  15  16
+BRANCH  15  20
+HETATM   20  C   3AR A1785       8.915  -3.040  24.704  1.00 27.57     0.204 C 
+HETATM   21  O   3AR A1785       9.286  -3.817  25.589  1.00 25.27    -0.646 OA
+HETATM   22  OXT 3AR A1785       8.406  -3.446  23.646  1.00 27.00    -0.646 OA
+ENDBRANCH  15  20
+ENDBRANCH  14  15
+ENDBRANCH  13  14
+ENDBRANCH   1  13
+TORSDOF 8

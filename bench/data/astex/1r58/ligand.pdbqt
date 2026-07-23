@@ -1,0 +1,66 @@
+REMARK  10 active torsions:
+REMARK  status: ('A' for Active; 'I' for Inactive)
+REMARK    1  A    between atoms: C1_1  and  S4_4 
+REMARK    2  A    between atoms: S4_4  and  C5_5 
+REMARK    3  A    between atoms: C5_5  and  C6_6 
+REMARK    4  A    between atoms: C6_6  and  C7_7 
+REMARK    5  A    between atoms: C7_7  and  C9_12 
+REMARK    6  A    between atoms: C7_7  and  N8_8 
+REMARK    7  A    between atoms: C9_12  and  C11_15 
+REMARK    8  A    between atoms: C9_12  and  O10_13 
+REMARK       I    between atoms: C11_15  and  N13_17 
+REMARK    9  A    between atoms: N13_17  and  N14_19 
+REMARK       I    between atoms: N14_19  and  C15_21 
+REMARK   10  A    between atoms: C15_21  and  C17_23 
+ROOT
+HETATM    1  C11 AO5 A 501      18.592  28.424  17.742  1.00 21.08     0.267 C 
+HETATM    2  O12 AO5 A 501      17.639  27.859  17.239  1.00 19.87    -0.269 OA
+HETATM    3  N13 AO5 A 501      18.498  29.657  18.561  1.00 22.35    -0.265 N 
+ATOM      4  H13 AO5 A 501      19.350  30.058  18.954  1.00  0.00     0.190 HD
+ENDROOT
+BRANCH   1   5
+HETATM    5  C9  AO5 A 501      20.022  27.964  17.561  1.00 20.11     0.241 C 
+BRANCH   5   6
+HETATM    6  O10 AO5 A 501      20.038  26.541  17.562  1.00 19.77    -0.384 OA
+ATOM      7  H10 AO5 A 501      20.936  26.252  17.448  1.00  0.00     0.210 HD
+ENDBRANCH   5   6
+BRANCH   5   8
+HETATM    8  C7  AO5 A 501      20.612  28.546  16.217  1.00 19.68     0.222 C 
+BRANCH   8   9
+HETATM    9  N8  AO5 A 501      21.922  27.962  15.874  1.00 17.69    -0.072 N 
+ATOM     10  H83 AO5 A 501      22.584  28.070  16.642  1.00  0.00     0.274 HD
+ATOM     11  H82 AO5 A 501      21.872  26.944  15.842  1.00  0.00     0.274 HD
+ATOM     12  H81 AO5 A 501      22.303  28.338  15.006  1.00  0.00     0.274 HD
+ENDBRANCH   8   9
+BRANCH   8  13
+HETATM   13  C6  AO5 A 501      21.056  29.995  16.375  1.00 20.15     0.046 C 
+BRANCH  13  14
+HETATM   14  C5  AO5 A 501      20.810  30.763  15.085  1.00 21.46     0.076 C 
+BRANCH  14  15
+HETATM   15  S4  AO5 A 501      21.051  32.529  15.271  1.00 20.53    -0.165 SA
+BRANCH  15  16
+HETATM   16  C1  AO5 A 501      19.571  33.036  16.100  1.00 21.79     0.039 C 
+HETATM   17  C3  AO5 A 501      19.923  33.593  17.471  1.00 23.17     0.021 C 
+HETATM   18  C2  AO5 A 501      18.793  34.079  15.297  1.00 22.15     0.021 C 
+ENDBRANCH  15  16
+ENDBRANCH  14  15
+ENDBRANCH  13  14
+ENDBRANCH   8  13
+ENDBRANCH   5   8
+ENDBRANCH   1   5
+BRANCH   3  19
+HETATM   19  N14 AO5 A 501      17.215  30.315  18.820  1.00 23.97    -0.264 N 
+HETATM   20  C15 AO5 A 501      16.560  31.046  17.858  1.00 25.00     0.262 C 
+HETATM   21  O16 AO5 A 501      17.076  31.140  16.725  1.00 25.84    -0.267 OA
+ATOM     22  H14 AO5 A 501      16.794  30.228  19.745  1.00  0.00     0.190 HD
+BRANCH  20  23
+HETATM   23  C17 AO5 A 501      15.250  31.707  18.167  1.00 25.53    -0.006 A 
+HETATM   24  C18 AO5 A 501      14.571  31.731  19.506  1.00 25.97     0.040 A 
+HETATM   25  C19 AO5 A 501      13.261  32.435  19.649  1.00 26.18     0.010 A 
+HETATM   26  C20 AO5 A 501      12.626  33.107  18.477  1.00 25.57     0.047 A 
+HETATM   27  C21 AO5 A 501      13.316  33.065  17.175  1.00 25.54    -0.006 A 
+HETATM   28  C22 AO5 A 501      14.589  32.390  17.011  1.00 25.22     0.086 A 
+HETATM   29 CL23 AO5 A 501      12.648  33.809  15.787  1.00 23.64    -0.093 Cl
+ENDBRANCH  20  23
+ENDBRANCH   3  19
+TORSDOF 10
