@@ -309,7 +309,7 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
 | `seed` | 42 | 乱数シード（決定論）。 |
 | `n_runs` | モード別（下記） | 独立 run 数（網羅性）。**未指定時の既定は探索モードで変わる**: `tpe`=1（dock/screen 共通・局所チェーンで restart 代替）、`vina`/`qvina2`=8、`drift`/`drift_qvina2`=60。`vina`・本来の `qvina2` の n_runs は AutoDock Vina の exhaustiveness に対応（Vina 既定=8）。`drift`/`drift_qvina2` は軽い run の best-of-N なので既定 60。明示指定すればモードに依らずその値を使う（vina で大きな値を指定すると Vina の n_runs/8 倍遅くなる）。**tpe は局所チェーンで restart を代替し低 n_runs 化**（標準 Astex85×10seed で Vina exh=8 に肉薄しつつ eval 20×・wall ~9× 軽量。`docs/results.202607151422`）。より高精度が要るなら config で `n_runs` を上げる。 |
 | `n_steps` | 0 | per-run の MC ステップ数。**0=自動**（可動原子数×torsion 上限で算出）。 |
-| `scoring` | `"direct"` | 探索の分子間評価。`"grid"`=Vina グリッド補間（高速・推奨）/ `"direct"`=直接原子間(SIMD)。 |
+| `scoring` | `"grid"` | 探索の分子間評価。`"grid"`=Vina グリッド補間（高速・**既定**）/ `"direct"`=直接原子間(SIMD)。 |
 | `grid_margin` | 2.0 | grid 探索ボックスの余白（Å）。探索中に原子が箱外へはみ出しても正しいグリッド値を引く緩衝。小さいほど**構築が速く省メモリ**だが、境界近傍のボーダーライン標的が退行しうる（実測: 0 で一部退行、2 で全標的 RMSD<2Å 中立）。環境変数 `IST_GRID_MARGIN` で更に上書き可（デバッグ用）。 |
 | `search` | `"tpe"` | 探索モード。**`"tpe"`=既定**（共有 TPE の低予算プリセット, n_runs=1+局所チェーン＋スキップ＋剛直軽量化, dock/screen 共通。下記）/ `"drift"`=ドリフト鎖 ILS（旧称 standard・決定論・高速）/ `"drift_qvina2"`=ドリフト鎖＋局所探索スキップ（ist 独自, n_runs=60）/ `"qvina2"`=**本来の QuickVina2 相当**（Vina 忠実 MC＋局所探索スキップ, exhaustiveness=8）/ `"vina"`=Vina 忠実 MC（毎ステップ収束 BFGS）。`--search` で上書き可。 |
 | `qvina_cos` | 0.90 | `drift_qvina2`/`qvina2` の勾配方向一致閾値（cos）。低いほどスキップ多＝速度↑精度↓。`--qvina-cos` で上書き可。 |
@@ -321,6 +321,17 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
 | `cluster_rmsd` | 2.0 | ポーズ RMSD クラスタリング閾値（Å）。 |
 | `early_stop_patience` | 0 | 早期停止（0=無効）。収束ベース停止はハード標的を退行させうるため opt-in。 |
 | `temp_init` / `temp_final` | 1.0 / 1.0 | Metropolis 温度（既定は固定温度。`init>final` で焼きなまし=opt-in）。 |
+| `intra_14_scale` | 0.0 | リガンド分子内エネルギーで **1-4 ペア**（結合グラフ距離がちょうど 3）に掛ける係数。**0.0 = AutoDock Vina と同じ規則**（1-4 を数えない）。1.0 にすると 1-4 を 1-5 以降と同じ重みで数える。 |
+| `intra_15_scale` | 1.0 | 分子内エネルギーで **1-5 以降のペア**（距離 4 以上）に掛ける係数。**1.0 = AutoDock Vina と同じ。** |
+| `intra_14_repulsion_scale` | 0.0 | 1-4 ペアに**反発項だけ**を入れる係数（0.0 = 無効）。Vina の分子内項をそのまま 1-4 に入れると引力も一緒に入って折りたたみを促すため、立体障害だけを表現したいとき用。 |
+| `torsion_scale` | 0.0 | ねじれポテンシャルの係数（0.0 = 無効 ＝ AutoDock Vina と同じ）。sp2-sp3 単結合などの回転障壁を加える。 |
+| `torsion_sp2_sp3` | true | `torsion_scale > 0` のとき、sp2-sp3 単結合の規則を使うか。 |
+| `torsion_polish_only` | false | ねじれポテンシャルを最終精密化だけに掛けるか（探索中は掛けない）。 |
+| `rank_by_objective` | false | 候補の保持と最終順位を**全目的関数**（分子間＋箱の罰則＋分子内＋ねじれ）で付けるか。**既定 false** は AutoDock Vina と同じで、最終順位は分子間だけで付ける。 |
+| `metal_coord_radius` | 1.2 | 金属が**水素結合の受容原子**（N/O）と対になるときの実効半径（Å）。**1.2 = AutoDock Vina。** 4 つの組（Zn-N, Zn-O, 他の金属-N, 他の金属-O）だけに効き、炭素や硫黄など受容原子でない相手は 1.2 のまま。 |
+| `[run.metal_radii]` | 全組 1.2 | 組ごとに実効半径を指定する表（`zn_n` / `zn_o` / `zn_ndon` / `zn_s` / `zn_f` / `zn_c` / `zn_p` / `other_n` / `other_o` / `other_ndon` / `other_s` / `other_f` / `other_c` / `other_p`）。省略した欄は `metal_coord_radius` の値。受容原子でない相手に届くのはこの表だけ。 |
+| `metal_hbond` | true | 金属が関わるペアに水素結合項を入れるか。**true = AutoDock Vina。** false は切り分け用（反発だけを残す）。 |
+| `metal_hbond_all` | false | 金属が関わるペアで、相手の供与体／受容体の型付けを**見ずに**水素結合項を入れるか。false = AutoDock Vina。true にすると金属と窒素・酸素・硫黄・フッ素の組は型に依らず項を持つ（炭素・リン・重ハロゲンは対象外）。`[run.metal_radii]` の `zn_n = 0.70, zn_ndon = 0.70` と組で使う。 |
 
 #### `tpe` モード（TPE=Tree-structured Parzen Estimator）
 `--search tpe` / `search = "tpe"` で選択。TPEvina-2.0（PSOVina 派生）の TPE を移植したもの。各次元を

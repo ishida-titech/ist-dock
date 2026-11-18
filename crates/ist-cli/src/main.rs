@@ -36,6 +36,24 @@ enum Command {
         /// Ligand pose to score, PDBQT format (coordinates are used as-is).
         #[arg(value_name = "LIGAND.pdbqt")]
         ligand: PathBuf,
+        /// Scale for 1-4 intramolecular pairs (0 = AutoDock Vina rule, the default; 1 = same weight as 1-5+).
+        #[arg(long, default_value_t = 0.0)]
+        intra_14_scale: f64,
+        /// Scale for 1-5 intramolecular pairs (1 = AutoDock Vina, the default).
+        #[arg(long, default_value_t = 1.0)]
+        intra_15_scale: f64,
+        /// Scale for the explicit torsion potential (0 = off, the default).
+        #[arg(long, default_value_t = 0.0)]
+        torsion_scale: f64,
+        /// Scale for repulsion-only 1-4 intramolecular pairs (0 = off, the default).
+        #[arg(long, default_value_t = 0.0)]
+        intra_14_repulsion_scale: f64,
+        /// Effective metal radius for the four metal x H-bond-acceptor pairs only (Zn-N, Zn-O, other metal-N, other metal-O). Non-acceptor partners such as carbon or sulfur keep 1.2 regardless. 1.2 = AutoDock Vina, the default.
+        #[arg(long, default_value_t = ist_core::scoring::DEFAULT_METAL_COORD_RADIUS)]
+        metal_coord_radius: f64,
+        /// Per-pair metal radii, e.g. "zn_n=0.70,zn_o=1.2". Overrides --metal-coord-radius for the named pairs, and is the only way to reach non-acceptor pairs. Recommended setting: "zn_n=0.70" (zinc x acceptor nitrogen only).
+        #[arg(long, default_value = "")]
+        metal_radii: String,
     },
     /// Search for the best binding pose of a single ligand and write it out.
     #[command(about = "Dock one ligand and write the best pose  [args: <CONFIG.toml> <RECEPTOR.pdbqt> <LIGAND.pdbqt>]")]
@@ -119,7 +137,25 @@ fn main() -> Result<()> {
     env_logger::init();
     let cli = Cli::parse();
     match cli.command {
-        Command::Score { receptor, ligand } => cmd_score(&receptor, &ligand),
+        Command::Score {
+            receptor,
+            ligand,
+            intra_14_scale,
+            intra_15_scale,
+            torsion_scale,
+            intra_14_repulsion_scale,
+            metal_coord_radius,
+            metal_radii,
+        } => cmd_score(
+            &receptor,
+            &ligand,
+            intra_14_scale,
+            intra_15_scale,
+            torsion_scale,
+            intra_14_repulsion_scale,
+            metal_coord_radius,
+            &metal_radii,
+        ),
         Command::Dock {
             receptor,
             ligand,
@@ -259,6 +295,13 @@ fn build_search_params(
         polish_modes: run.polish_modes,
         early_stop_patience: run.early_stop_patience,
         uniform_start,
+        intra_14_scale: run.intra_14_scale,
+        intra_15_scale: run.intra_15_scale,
+        torsion_scale: run.torsion_scale,
+        intra_14_repulsion_scale: run.intra_14_repulsion_scale,
+        torsion_sp2_sp3: run.torsion_sp2_sp3,
+        torsion_polish_only: run.torsion_polish_only,
+        rank_by_objective: run.rank_by_objective,
         kind: search_kind(mode),
         qvina_cos: qvina_cos_override.unwrap_or(run.qvina_cos),
         hunt_cap: run.hunt_cap,
@@ -418,6 +461,15 @@ fn cmd_screen(
         .with_context(|| format!("failed to parse receptor: {}", receptor.display()))?;
     let cfg = config::load(config_path)
         .with_context(|| format!("failed to load config: {}", config_path.display()))?;
+    // 金属の配位時実効半径（config `[run] metal_coord_radius`、既定 1.2 ＝ Vina と同じ）。
+    // グリッドと分子内 LUT がこの値を焼き込むので、**構築より前に**書き込む必要がある。
+    ist_core::scoring::set_metal_radii(
+        cfg.run.metal_radii.resolve(cfg.run.metal_coord_radius),
+    );
+    // 対照実験の切り替え（config `[run] metal_hbond`、既定 true ＝ Vina と同じ）。
+    ist_core::scoring::set_metal_hbond(cfg.run.metal_hbond);
+    // 段 128 の門（config `[run] metal_hbond_all`、既定 false ＝ Vina と同じ）。
+    ist_core::scoring::set_metal_hbond_all(cfg.run.metal_hbond_all);
 
     let center = Vec3::new(cfg.r#box.center[0], cfg.r#box.center[1], cfg.r#box.center[2]);
     let size = Vec3::new(cfg.r#box.size[0], cfg.r#box.size[1], cfg.r#box.size[2]);
@@ -546,13 +598,33 @@ fn cmd_dock(
     if let Some(s) = seed {
         cfg.run.seed = s; // CLI --seed で config の seed を上書き
     }
+    // 金属の配位時実効半径（config `[run] metal_coord_radius`、既定 1.2 ＝ Vina と同じ）。
+    // グリッドと分子内 LUT がこの値を焼き込むので、**構築より前に**書き込む必要がある。
+    ist_core::scoring::set_metal_radii(
+        cfg.run.metal_radii.resolve(cfg.run.metal_coord_radius),
+    );
+    // 対照実験の切り替え（config `[run] metal_hbond`、既定 true ＝ Vina と同じ）。
+    ist_core::scoring::set_metal_hbond(cfg.run.metal_hbond);
+    // 段 128 の門（config `[run] metal_hbond_all`、既定 false ＝ Vina と同じ）。
+    ist_core::scoring::set_metal_hbond_all(cfg.run.metal_hbond_all);
     let mode = search.unwrap_or(cfg.run.search);
 
     let center = Vec3::new(cfg.r#box.center[0], cfg.r#box.center[1], cfg.r#box.center[2]);
     let size = Vec3::new(cfg.r#box.size[0], cfg.r#box.size[1], cfg.r#box.size[2]);
 
     let rec_scored = rec.scored_atoms();
-    let lig = LigandModel::new(&lig_mol);
+    let mut lig = LigandModel::new(&lig_mol);
+    // 分子内の 1-4 ペアの係数（config `[run] intra_14_scale`、既定 0.0 ＝ AutoDock Vina 互換）。
+    lig.set_intra_14_scale(cfg.run.intra_14_scale);
+    // 1-5 以降のペアの係数（config `[run] intra_15_scale`、既定 1.0 ＝ Vina と同じ）。
+    lig.set_intra_15_scale(cfg.run.intra_15_scale);
+    // ねじれポテンシャルの係数（config `[run] torsion_scale`、既定 0.0 ＝ 無効）。
+    lig.set_torsion_scale(cfg.run.torsion_scale);
+    // 1-4 の反発だけの項（config `[run] intra_14_repulsion_scale`、既定 0.0 ＝ 無効）。
+    lig.set_intra_14_repulsion_scale(cfg.run.intra_14_repulsion_scale);
+    lig.set_torsion_sp2_sp3(cfg.run.torsion_sp2_sp3);
+    lig.set_torsion_polish_only(cfg.run.torsion_polish_only);
+    lig.set_rank_by_objective(cfg.run.rank_by_objective);
 
     // --native 指定時のみ: 同一リガンドの参照（native/crystal）ポーズの重原子座標を RMSD 基準に使う。
     // 入力 ligand は開始構造にすぎず、native 前提は置かない。
@@ -593,11 +665,14 @@ fn cmd_dock(
         }
     }
 
+    // A-4: 探索するのは採点対象の重原子を動かす torsion だけ。ステップ数の自動決定も
+    // この本数で行う（`search::dock` が渡す `free_torsions` と一致させる）。
+    let n_tors_searched = lig.active_torsions().len();
     let eff_steps = if params.n_steps == 0 {
         auto_n_steps_for(
             params.kind,
             lig.n_scored(),
-            lig.n_torsions(),
+            n_tors_searched,
             params.tpe.step_ratio,
         )
     } else {
@@ -616,6 +691,14 @@ fn cmd_dock(
     println!("{:<30} : {}", "Receptor atoms in box", scorer.receptor_atoms());
     // 探索木の回転結合数（n_torsions＝BRANCH 数）で統一表示。ラベルは TORSDOF のまま（score と共通）。
     println!("{:<30} : {}", "Ligand torsional DOF (TORSDOF)", lig.n_torsions());
+    // A-4: 探索する torsion と、採点対象の重原子を動かさないため外した torsion の本数。
+    // **既定でも必ず出す。** 報告する親和性の除数（Vina の num_tors）は変えていない。
+    println!(
+        "{:<30} : {} searched, {} skipped (move no scored atom)",
+        "Torsions in search space",
+        n_tors_searched,
+        lig.n_null_torsions()
+    );
     println!("{:<30} : {}", "Runs", params.n_runs);
     println!(
         "{:<30} : {} ({})",
@@ -624,11 +707,104 @@ fn cmd_dock(
         if params.n_steps == 0 { "auto" } else { "fixed" }
     );
     println!("{:<30} : {}", "Seed", cfg.run.seed);
+    println!(
+        "{:<30} : {:.3} ({} pairs, {} 1-4 pairs)",
+        "Intra 1-4 scale",
+        lig.intra_14_scale(),
+        lig.n_intra_pairs(),
+        lig.n_intra_pairs_14()
+    );
+    // 順位キー。**既定でも必ず出す。**
+    println!(
+        "{:<30} : {}",
+        "Mode ranking key",
+        if cfg.run.rank_by_objective {
+            "full objective (inter + box + intra + torsion)"
+        } else {
+            "intermolecular (Vina; default)"
+        }
+    );
+    // 1-5 ペアの係数（段 105）。**既定でも必ず出す。**
+    println!(
+        "{:<30} : {:.3}  ({} pairs)",
+        "Intra 1-5 scale",
+        lig.intra_15_scale(),
+        lig.n_intra_pairs_15()
+    );
+    // B-1（1-4 の反発だけ）。**既定でも必ず出す。**
+    println!(
+        "{:<30} : {:.3}",
+        "Intra 1-4 repulsion scale",
+        lig.intra_14_repulsion_scale()
+    );
+    // 金属の配位時実効半径の表（段 110・115）。**既定でも必ず出す。**
+    {
+        let r = ist_core::scoring::metal_radii();
+        let n_zn = rec_scored
+            .iter()
+            .filter(|a| matches!(a.xs, ist_core::atom_types::XsType::MetalDZn))
+            .count();
+        let n_other = rec_scored
+            .iter()
+            .filter(|a| matches!(a.xs, ist_core::atom_types::XsType::MetalD))
+            .count();
+        println!(
+            "{:<30} : Zn-N {:.3}  Zn-O {:.3}  M-N {:.3}  M-O {:.3} A{}{}",
+            "Metal coord radii",
+            r.zn_n,
+            r.zn_o,
+            r.other_n,
+            r.other_o,
+            if r.is_vina_default() { "  (AutoDock Vina default)" } else { "" },
+            // 段 124 で増えた欄は、既定でないものだけ並べる（既定なら何も出ない）。
+            {
+                let x = r.non_default_extras();
+                if x.is_empty() { String::new() } else { format!("  [{x}]") }
+            }
+        );
+        println!(
+            "{:<30} : {} Zn, {} other metal{}{}",
+            "Metal atoms in receptor",
+            n_zn,
+            n_other,
+            if ist_core::scoring::metal_hbond() { "" } else { "  [metal H-bond OFF: control]" },
+            if ist_core::scoring::metal_hbond_all() {
+                "  [metal H-bond gate OPEN: coordination by element]"
+            } else {
+                ""
+            }
+        );
+    }
+    {
+        // ねじれポテンシャル（A-2）。**既定でも必ず出す**（係数 0 なら寄与 0 と明記する）。
+        let n_act = lig.torsion_terms().iter().filter(|t| t.is_active()).count();
+        let n_null = lig
+            .torsion_terms()
+            .iter()
+            .filter(|t| t.kind == ist_dock::torsion::TorsionKind::NoHeavyAtomMoves)
+            .count();
+        let _ = n_act;
+        println!(
+            "{:<30} : {:.3} ({} of {} torsions active, {} move no heavy atom; sp2-sp3 {}, {})",
+            "Torsion potential scale",
+            lig.torsion_scale(),
+            lig.n_torsions_active(),
+            lig.n_torsions(),
+            n_null,
+            if cfg.run.torsion_sp2_sp3 { "on" } else { "off" },
+            if cfg.run.torsion_polish_only { "polish only" } else { "search + polish" }
+        );
+    }
 
     let (modes, evals) = if local_only {
         // 診断: 結晶（恒等）ポーズから局所最適化のみ。
+        // **`score`（= 厳密分子間 + ボックス外罰則）を使う。** `intermolecular` は罰則を
+        // 含まない素の値なので、衝突した結晶ポーズ（正のエネルギー）から出発すると
+        // 「遠ざかる」が下り坂になり、箱外へ発散する（D-8。実測で最大 103.65 Å、
+        // 座標が PDBQT の 8 桁欄を溢れて arm 全体が落ちた）。罰則は二乗で C¹ なので
+        // 有限差分の最小化と整合する。2026-11-11 段 78。
         let objective = |c: &ist_dock::ligand::Conformation| {
-            scorer.intermolecular(&lig.scored_atoms(c))
+            scorer.score(&lig.scored_atoms(c))
         };
         let start = ist_dock::ligand::Conformation::identity(lig.n_torsions());
         let free = ist_dock::optimizer::all_dofs(start.dim());
@@ -704,8 +880,58 @@ fn cmd_dock(
     Ok(())
 }
 
+/// `--metal-radii "zn_n=0.70,zn_s=0.32"` を解析する。
+/// 土台は `--metal-coord-radius`（受容原子の 4 欄だけに効く。段 112〜114 の互換）。
+/// 段 124 で打ち消しの無い相手（`zn_ndon` など 10 欄）を追加した。
+fn parse_metal_radii(uniform: f64, spec: &str) -> Result<ist_core::scoring::MetalRadii> {
+    let mut r = ist_core::scoring::MetalRadii::acceptors_only(uniform);
+    for item in spec.split(',').map(str::trim).filter(|x| !x.is_empty()) {
+        let (k, v) = item
+            .split_once('=')
+            .with_context(|| format!("--metal-radii の項が 'key=value' でない: {item}"))?;
+        let x: f64 = v
+            .trim()
+            .parse()
+            .with_context(|| format!("--metal-radii の値が数値でない: {item}"))?;
+        match k.trim() {
+            "zn_n" => r.zn_n = x,
+            "zn_o" => r.zn_o = x,
+            "other_n" => r.other_n = x,
+            "other_o" => r.other_o = x,
+            // 段 124: 水素結合項が入らない相手（打ち消しの無い反発）。
+            "zn_ndon" => r.zn_ndon = x,
+            "zn_s" => r.zn_s = x,
+            "zn_f" => r.zn_f = x,
+            "zn_c" => r.zn_c = x,
+            "zn_p" => r.zn_p = x,
+            "other_ndon" => r.other_ndon = x,
+            "other_s" => r.other_s = x,
+            "other_f" => r.other_f = x,
+            "other_c" => r.other_c = x,
+            "other_p" => r.other_p = x,
+            other => anyhow::bail!(
+                "--metal-radii の未知の組 '{other}'（zn_n / zn_o / other_n / other_o / \
+                 zn_ndon / zn_s / zn_f / zn_c / zn_p / other_ndon / other_s / other_f / \
+                 other_c / other_p のいずれか）"
+            ),
+        }
+    }
+    Ok(r)
+}
+
 /// 固定ポーズの Vina 互換スコアを評価して出力する。
-fn cmd_score(receptor: &PathBuf, ligand: &PathBuf) -> Result<()> {
+fn cmd_score(
+    receptor: &PathBuf,
+    ligand: &PathBuf,
+    intra_14_scale: f64,
+    intra_15_scale: f64,
+    torsion_scale: f64,
+    intra_14_repulsion_scale: f64,
+    metal_coord_radius: f64,
+    metal_radii_spec: &str,
+) -> Result<()> {
+    // 金属の配位時実効半径の表（既定 1.2 ＝ Vina と同じ）。**採点より前に**書き込む。
+    ist_core::scoring::set_metal_radii(parse_metal_radii(metal_coord_radius, metal_radii_spec)?);
     let rec = pdbqt::parse_file(receptor)
         .with_context(|| format!("failed to parse receptor: {}", receptor.display()))?;
     let lig = pdbqt::parse_file(ligand)
@@ -716,9 +942,22 @@ fn cmd_score(receptor: &PathBuf, ligand: &PathBuf) -> Result<()> {
 
     let terms = intermolecular_terms(&lig_atoms, &rec_atoms);
     let e_inter = terms.weighted_sum();
-    // 表示は探索木の回転結合数（n_torsions＝BRANCH 数）で統一（dock と共通）。ラベルは TORSDOF のまま。
-    let n_rot = LigandModel::new(&lig).n_torsions();
-    let affinity = scoring::apply_torsion_correction(e_inter, lig.num_tors_vina());
+    // 回転結合数は 3 つの別物があるので**全部を別の名前で出す**（段 42 で取り違えたため）。
+    //   n_torsions  … 探索木の BRANCH 数（探索の自由度。dock と共通の表示）
+    //   TORSDOF     … PDBQT の TORSDOF 行の名目値
+    //   num_tors    … Vina 1.2 の実効回転結合数（**affinity の除数に使うのはこれ**）
+    let mut model = LigandModel::new(&lig);
+    model.set_intra_14_scale(intra_14_scale);
+    model.set_intra_15_scale(intra_15_scale);
+    model.set_torsion_scale(torsion_scale);
+    model.set_intra_14_repulsion_scale(intra_14_repulsion_scale);
+    let n_rot = model.n_torsions();
+    let num_tors = lig.num_tors_vina();
+    // 分子内エネルギー（上限なし＝厳密）。AutoDock Vina の `--score_only` の
+    // "(2) Final Total Internal Energy" と**定義が一致しているかを外から確かめるため**に出す
+    // （段 88。vina モードの忠実さの検証に使う）。採点そのものには影響しない。
+    let e_intra = model.intramolecular(&lig_atoms, f64::INFINITY);
+    let affinity = scoring::apply_torsion_correction(e_inter, num_tors);
 
     print_header("score: Vina-compatible scoring of a fixed pose (no search)");
     print_molecules(receptor, rec_atoms.len(), ligand, lig_atoms.len());
@@ -735,7 +974,58 @@ fn cmd_score(receptor: &PathBuf, ligand: &PathBuf) -> Result<()> {
     row("HBond", terms.hbond, scoring::W_HBOND);
     println!();
     println!("Intermolecular energy (ligand-receptor) : {e_inter:.5} kcal/mol");
-    println!("Ligand torsional DOF (TORSDOF)          : {n_rot}");
+    println!("Intramolecular energy (ligand internal) : {e_intra:.5} kcal/mol");
+    println!("Intra pairs (>=1-5 / 1-4)               : {} / {}",
+             model.n_intra_pairs(), model.n_intra_pairs_14());
+    println!("Intra 1-4 scale                         : {:.3}", model.intra_14_scale());
+    println!("Intra 1-5 scale                         : {:.3}", model.intra_15_scale());
+    println!("Intra 1-4 repulsion-only scale          : {:.3}",
+             model.intra_14_repulsion_scale());
+    // 金属の配位時実効半径（段 110）。**既定でも必ず出す。**
+    {
+        let is_metal = |x: &ist_core::scoring::ScoredAtom| {
+            ist_core::scoring::metal_is_zn(x.xs).is_some()
+        };
+        let n_metal_rec = rec_atoms.iter().filter(|a| is_metal(a)).count();
+        let n_metal_lig = lig_atoms.iter().filter(|a| is_metal(a)).count();
+        let n_zn = rec_atoms
+            .iter()
+            .chain(lig_atoms.iter())
+            .filter(|a| ist_core::scoring::metal_is_zn(a.xs) == Some(true))
+            .count();
+        let r = ist_core::scoring::metal_radii();
+        println!(
+            "Metal coord radii (A)                   : Zn-N {:.3}  Zn-O {:.3}  M-N {:.3}  M-O {:.3}{}{}",
+            r.zn_n, r.zn_o, r.other_n, r.other_o,
+            if r.is_vina_default() { "  (Vina default)" } else { "" },
+            {
+                let x = r.non_default_extras();
+                if x.is_empty() { String::new() } else { format!("  [{x}]") }
+            }
+        );
+        println!(
+            "Metal atoms                             : {} in receptor, {} in ligand ({} of them Zn)",
+            n_metal_rec, n_metal_lig, n_zn
+        );
+    }
+    // ねじれポテンシャル（A-2）。入力ポーズ＝参照ポーズなので torsion はすべて 0。
+    {
+        let conf = ist_dock::ligand::Conformation::identity(model.n_torsions());
+        let n_act = model.torsion_terms().iter().filter(|t| t.is_active()).count();
+        let n_null = model
+            .torsion_terms()
+            .iter()
+            .filter(|t| t.kind == ist_dock::torsion::TorsionKind::NoHeavyAtomMoves)
+            .count();
+        println!("Torsion potential energy                : {:.5} kcal/mol",
+                 model.torsional(&conf));
+        println!("Torsion potential scale                 : {:.3}", model.torsion_scale());
+        println!("Torsions active / total / null          : {n_act} / {} / {n_null}",
+                 model.n_torsions());
+    }
+    println!("Ligand rotatable bonds (n_torsions)     : {n_rot}");
+    println!("Ligand TORSDOF record                   : {}", lig.torsdof);
+    println!("Vina effective num_tors (affinity divisor): {num_tors}");
     println!("Estimated Free Energy of Binding        : {affinity:.5} kcal/mol");
     Ok(())
 }

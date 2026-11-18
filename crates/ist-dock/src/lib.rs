@@ -11,6 +11,7 @@ pub mod qvina;
 pub mod screen;
 pub mod search;
 pub mod tpe;
+pub mod torsion;
 
 /// クレート共通のエラー型。
 #[derive(Debug, thiserror::Error)]

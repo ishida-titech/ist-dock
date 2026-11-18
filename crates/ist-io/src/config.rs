@@ -145,6 +145,122 @@ pub struct RunOpts {
     /// 探索中の正エネルギー上限（Vina hunt_cap, 既定 10.0）。激突の暴走を抑える。大きい値（例 1e9）で無効化。
     #[serde(default = "default_hunt_cap")]
     pub hunt_cap: f64,
+    /// 分子内エネルギーで 1-4 ペア（結合グラフ距離 3）に掛ける係数。**既定 0.0 ＝ AutoDock Vina 互換**
+    /// （Vina は 1-4 を数えない）。1.0 で分子間と同じ重みで数える。
+    ///
+    /// 1-4 距離は結合長・結合角とねじれ角でほぼ決まるので、**1-4 の立体反発は実質的に粗いねじれ
+    /// ポテンシャルとして働く。** Vina にはねじれポテンシャルが無いため、ここで補えるようにしてある。
+    /// **値は未検証である**（段 89 時点。既定 0.0 以外で測った結果はまだ無い）。
+    #[serde(default)]
+    pub intra_14_scale: f64,
+    /// 1-5 ペアに掛ける係数。**既定 1.0 ＝ AutoDock Vina と同じ。**
+    ///
+    /// **段 105**: 1-5 距離は結合長・結合角とねじれ角 1〜2 本でほぼ決まるのに、Vina の表面距離
+    /// は炭素・窒素の半径を 1.8〜1.9 Å と置くので半径の和が 3.4〜3.8 Å になる。1-5 ペアが
+    /// syn 寄りに来ると r が 2.2〜3.2 Å まで下がって反発が立ち、**結晶リガンドそのものが
+    /// 最大 +2.08 kcal/mol の反発を受ける**（その中央 88% が 1-5 由来）。
+    /// 立体衝突ではなく結合でつながった原子の必然的な近さなので、0.0 で外せるようにした。
+    /// **ただし 1-5 の反発は粗いねじれポテンシャルとしても働いている可能性がある。**
+    #[serde(default = "default_one")]
+    pub intra_15_scale: f64,
+    /// 金属（XS 型 `MetalD`）が**水素結合の受容原子（N/O）と対になるとき**に使う実効半径（Å）。
+    /// **既定 1.2 ＝ AutoDock Vina と同じ**（`XsType::MetalD.radius()` と同値）。
+    ///
+    /// **段 110**: Vina の反発は `0.840245·d²` で上限なく伸びるのに、水素結合項は `d ≤ −0.7` で
+    /// `−0.587439` に飽和する。そのため**表面距離が −0.836 Å より短い接触は、水素結合が
+    /// 可能であっても必ず正味で罰則になる。** 亜鉛配位はこの領域にあり（Zn 1.2 ＋ N 1.8 = 3.0 に
+    /// 対して実距離の中央 1.93 Å → d = −1.07）、結晶ポーズが +0.375 kcal/mol 罰せられる。
+    /// 炭酸脱水酵素 II の結晶ポーズでは 85.9% のリガンドがこれで損をしている。
+    ///
+    /// 配位しない相手（炭素など）には 1.2 のまま適用されるので、立体の床は保たれる。
+    ///
+    /// **この値が触るのは受容原子の 4 欄だけ**（`MetalRadii::acceptors_only`）。段 124 で
+    /// 構造体が 14 欄に増えたが、供与体のみ窒素・硫黄・フッ素・炭素・リンの欄には
+    /// **波及させていない**。段 112 の実測（0.4 で 22.8% → 27.8%）は今も
+    /// `--metal-coord-radius 0.4` だけで再現できる。打ち消しの無い欄を動かすには
+    /// `metal_radii` で欄を名指しする必要がある。
+    ///
+    /// **段 112 で実測した。** 交差ドッキングの炭酸脱水酵素 II 439 リガンドで、
+    /// 0.4 のとき成功率 22.8% → 27.8%（+5.0 ポイント）、上位 1 位の対称補正 RMSD の中央が
+    /// 4.026 → 3.329 Å、35 勝 13 敗。推奨値は `ist_core::scoring::RECOMMENDED_METAL_COORD_RADIUS`。
+    ///
+    /// **連続的に調整するパラメータではない。** 0.0〜0.6 は台地で成績がほぼ変わらない。
+    /// 支配している量は「配位距離での反発が消えるか」だけで、報酬の深さは効かない
+    /// （段 112.2 の対照で確定）。詳細は `ist_core::scoring::DEFAULT_METAL_COORD_RADIUS`。
+    ///
+    /// **既定は Vina の 1.2 のまま変えていない** — 標本外（別の金属標的）での確認が
+    /// 済んでいないため。段 110.5 で立てた「0.97 以下」という値の根拠は実測で否定された。
+    #[serde(default = "default_metal_coord_radius")]
+    pub metal_coord_radius: f64,
+    /// **対照実験用**。金属が関わるペアの水素結合項を有効にするか。
+    /// **既定 true ＝ AutoDock Vina と同じ。**
+    ///
+    /// 段 112c: 金属の実効半径を下げると反発と水素結合が**同時に**動くので、どちらが
+    /// 効いたのか分からない。これは水素結合だけを外して反発を残す切り分けである。
+    /// 機能案ではないので、常用する設定ではない。
+    #[serde(default = "default_true")]
+    pub metal_hbond: bool,
+    /// 金属が関わるペアの水素結合項を、**相手の供与体／受容体の型付けに依らず**
+    /// 有効にするか（段 128 の提案）。既定 false ＝ AutoDock Vina と同じ。
+    ///
+    /// 金属への配位は水素結合ではないので、相手が水素を持つかどうかは配位を決めない。
+    /// Vina の「供与体 × 受容体」という門は金属配位に対しては誤ったモデルで、
+    /// その結果、供与体のみの窒素・硫黄・フッ素では反発を打ち消すものが無く、
+    /// 必要な実効半径が 0.22〜0.47 という極端な値になっていた（段 124 の表）。
+    ///
+    /// この旗を立てると、金属と窒素・酸素・硫黄・フッ素の組は型に依らず
+    /// 水素結合項を持つ。**新しいパラメータを 1 つも増やさずに**
+    /// 硫黄・フッ素・供与体のみ窒素の罰則が消える
+    /// （段 128.2: 亜鉛–硫黄 +0.661 → +0.073、他の金属–フッ素 +0.411 → −0.176、
+    /// 亜鉛–供与体のみ窒素 +0.853 → +0.266）。
+    /// 炭素は対象外（金属が疎水性炭素を引き寄せるのを防ぐ）。
+    ///
+    /// 残る罰則は亜鉛–窒素だけで、そこは `metal_radii` の
+    /// `zn_n = 0.70, zn_ndon = 0.70`（＝ `scoring::STAGE128_RADII`）と組で使う。
+    #[serde(default)]
+    pub metal_hbond_all: bool,
+    /// 金属の配位時実効半径を**組ごとに**指定する（段 115・116）。
+    /// 省略した欄は `metal_coord_radius` の値（既定 1.2 ＝ AutoDock Vina）になる。
+    ///
+    /// 段 115 の全数調査（PDB 7,786 構造・配位 24,692 件）で、受容原子を相手にする 10 組の
+    /// 最適半径が 0.65〜1.15 Å にばらつき、**単一の値では足りない**と分かった。
+    /// 既定で正味が罰則になるのは **Zn–N だけ**（配位距離 2.034 Å、正味 +0.196、62%）。
+    ///
+    /// 推奨は `ist_core::scoring::RECOMMENDED_METAL_RADII` ＝ `zn_n = 0.70` のみ。
+    /// 段 124 で 5 欄（`zn_ndon` 0.22・`zn_s` 0.32・`other_s` 0.39・`other_f` 0.47 を追加）に
+    /// 広げたが、段 125.10 の標本外確認で利得が再現せず（選定に使っていない 6 標的で
+    /// 通算 1 勝 6 敗）、`zn_n` だけに差し戻した。広げた表は `STAGE124_RADII` に残してある。
+    /// 残り 3 組を未測定のまま変えると、段 114 で実測した害（結晶ポーズの悪化）を入れる危険がある。
+    #[serde(default)]
+    pub metal_radii: MetalRadiiConfig,
+    /// ねじれポテンシャル（A-2）全体に掛ける係数。**既定 0.0 ＝ 無効（AutoDock Vina と同じ）。**
+    ///
+    /// UFF（Rappé ら 1992）の一般ねじれ則のうち、**Astex 85 標的の結晶リガンドで検証を通った
+    /// 2 種だけ**（sp3–sp3 と sp2–sp3）を評価する。詳細と検証の数字は
+    /// `ist_dock::torsion::TorsionKind::is_crystal_validated`。
+    /// 必要な情報は元素と混成だけなので PDBQT から自己完結に決まり、リガンドごとの前処理費用は 0。
+    #[serde(default)]
+    pub torsion_scale: f64,
+    /// 1-4 ペアに**反発項だけ**を入れる係数（B-1）。**既定 0.0 ＝ 無効（AutoDock Vina と同じ）。**
+    ///
+    /// `intra_14_scale` とは独立。1-4 に Vina の分子内項をそのまま入れると引力も一緒に入って
+    /// 折りたたみを促すが（段 90・92.1）、反発だけなら立体障害だけを表現できる。
+    /// ビアリールのねじれはオルト位の立体反発で決まり、オルトの重原子どうしは 1-4 なので、
+    /// 既定の Vina ではその反発が存在しない（段 95.2）。**追加パラメータは無い。**
+    #[serde(default)]
+    pub intra_14_repulsion_scale: f64,
+    /// sp2–sp3（6 回対称）のねじれ規則を使うか。**既定 true。** 段 98.8 の案 (a) の検証用。
+    #[serde(default = "default_true")]
+    pub torsion_sp2_sp3: bool,
+    /// ねじれ項を最終の polish（代表ポーズの精密化と順位付け）だけで使うか。**既定 false。**
+    /// 大域探索中はねじれ項なしで動く。段 98.8 の案 (c)。
+    #[serde(default)]
+    pub torsion_polish_only: bool,
+    /// 候補の保持と最終の順位を**全目的関数**（分子間＋箱の罰則＋水＋分子内＋ねじれ）で付けるか。
+    /// **既定 false**: 従来どおり候補保持は分子間＋箱の罰則＋水、最終順位は Vina の分子間だけ。
+    /// 段 101 で既存出力の並べ替えにより +15 / +9 の兆候が出たので、エンジンで確かめるための設定。
+    #[serde(default)]
+    pub rank_by_objective: bool,
     /// 焼きなまし温度の初期値（高温で誤基脱出）。
     #[serde(default = "default_temp_init")]
     pub temp_init: f64,
@@ -263,6 +379,17 @@ impl Default for RunOpts {
             search: SearchMode::default(),
             qvina_cos: default_qvina_cos(),
             hunt_cap: default_hunt_cap(),
+            intra_14_scale: 0.0,
+            intra_15_scale: 1.0,
+            metal_coord_radius: ist_core::scoring::DEFAULT_METAL_COORD_RADIUS,
+            metal_hbond: true,
+            metal_hbond_all: false,
+            metal_radii: MetalRadiiConfig::default(),
+            torsion_scale: 0.0,
+            intra_14_repulsion_scale: 0.0,
+            torsion_sp2_sp3: true,
+            torsion_polish_only: false,
+            rank_by_objective: false,
             temp_init: default_temp_init(),
             temp_final: default_temp_final(),
             chain_iters: default_chain_iters(),
@@ -430,4 +557,90 @@ mod tests {
         assert_eq!(cfg.run.resolve_n_runs(SearchMode::Tpe), 1);
         assert_eq!(SearchMode::default(), SearchMode::Tpe); // 既定モードは tpe
     }
+}
+
+/// `[run.metal_radii]` の設定。省略した欄は `metal_coord_radius` の値になる。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetalRadiiConfig {
+    /// 亜鉛が窒素の受容原子と対になるときの実効半径（Å）。
+    pub zn_n: Option<f64>,
+    /// 亜鉛が酸素の受容原子と対になるとき。
+    pub zn_o: Option<f64>,
+    /// 亜鉛以外の金属が窒素の受容原子と対になるとき。
+    pub other_n: Option<f64>,
+    /// 亜鉛以外の金属が酸素の受容原子と対になるとき。
+    pub other_o: Option<f64>,
+    // 段 124: 水素結合項が入らない相手。詳細は `ist_core::scoring::MetalRadii`。
+    /// 亜鉛が供与体のみの窒素（AutoDock 型 `N`）と対になるとき。
+    pub zn_ndon: Option<f64>,
+    /// 亜鉛が硫黄と対になるとき。
+    pub zn_s: Option<f64>,
+    /// 亜鉛がフッ素と対になるとき。
+    pub zn_f: Option<f64>,
+    /// 亜鉛が炭素と対になるとき。
+    pub zn_c: Option<f64>,
+    /// 亜鉛がリンと対になるとき。
+    pub zn_p: Option<f64>,
+    /// 亜鉛以外の金属が供与体のみの窒素と対になるとき。
+    pub other_ndon: Option<f64>,
+    /// 亜鉛以外の金属が硫黄と対になるとき。
+    pub other_s: Option<f64>,
+    /// 亜鉛以外の金属がフッ素と対になるとき。
+    pub other_f: Option<f64>,
+    /// 亜鉛以外の金属が炭素と対になるとき。
+    pub other_c: Option<f64>,
+    /// 亜鉛以外の金属がリンと対になるとき。
+    pub other_p: Option<f64>,
+}
+
+impl MetalRadiiConfig {
+    /// `metal_coord_radius`（全組に効く値）を土台に、指定された欄だけ上書きした表を作る。
+    pub fn resolve(&self, uniform: f64) -> ist_core::scoring::MetalRadii {
+        let mut r = ist_core::scoring::MetalRadii::acceptors_only(uniform);
+        if let Some(x) = self.zn_n {
+            r.zn_n = x;
+        }
+        if let Some(x) = self.zn_o {
+            r.zn_o = x;
+        }
+        if let Some(x) = self.other_n {
+            r.other_n = x;
+        }
+        if let Some(x) = self.other_o {
+            r.other_o = x;
+        }
+        for (slot, x) in [
+            (&mut r.zn_ndon, self.zn_ndon),
+            (&mut r.zn_s, self.zn_s),
+            (&mut r.zn_f, self.zn_f),
+            (&mut r.zn_c, self.zn_c),
+            (&mut r.zn_p, self.zn_p),
+            (&mut r.other_ndon, self.other_ndon),
+            (&mut r.other_s, self.other_s),
+            (&mut r.other_f, self.other_f),
+            (&mut r.other_c, self.other_c),
+            (&mut r.other_p, self.other_p),
+        ] {
+            if let Some(v) = x {
+                *slot = v;
+            }
+        }
+        r
+    }
+}
+
+/// serde の既定値 `1.2`（金属の配位時実効半径。`ist_core::scoring` の既定値と同一）。
+fn default_metal_coord_radius() -> f64 {
+    ist_core::scoring::DEFAULT_METAL_COORD_RADIUS
+}
+
+/// serde の既定値 `1.0`（`#[serde(default = "default_one")]` 用）。
+fn default_one() -> f64 {
+    1.0
+}
+
+/// serde の既定値 `true`（`#[serde(default = "default_true")]` 用）。
+fn default_true() -> bool {
+    true
 }
