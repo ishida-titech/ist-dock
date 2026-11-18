@@ -627,8 +627,14 @@ fn cmd_dock(
 
     let (modes, evals) = if local_only {
         // 診断: 結晶（恒等）ポーズから局所最適化のみ。
+        //
+        // **`score`（＝厳密な分子間 ＋ 箱外罰則）を使う。** `intermolecular` は罰則を
+        // 含まない素の値なので、原子が衝突した結晶ポーズ（正のエネルギー）から
+        // 出発すると「受容体から遠ざかる」方向が下り坂になり、箱の外へ発散する。
+        // 実測で最大 103.65 Å 動き、座標が PDBQT の 8 桁欄を溢れて出力が壊れた。
+        // 罰則は二乗で C¹ 連続なので、有限差分の最小化と整合する。
         let objective = |c: &ist_dock::ligand::Conformation| {
-            scorer.intermolecular(&lig.scored_atoms(c))
+            scorer.score(&lig.scored_atoms(c))
         };
         let start = ist_dock::ligand::Conformation::identity(lig.n_torsions());
         let free = ist_dock::optimizer::all_dofs(start.dim());
