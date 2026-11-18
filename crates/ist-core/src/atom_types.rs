@@ -84,8 +84,12 @@ pub enum AdType {
     PolarH,
     /// 非極性水素（H/HS の一部）。スコアでは無視。
     NonpolarH,
-    /// 金属（Mg/Zn/Ca/Mn/Fe/…）。Vina では Met_D（ドナー）。
+    /// 金属（Mg/Ca/Mn/Fe/… 亜鉛以外）。Vina では Met_D（ドナー）。
     Metal,
+    /// 亜鉛。Vina は金属を 1 種類にまとめるが、段 115 で**既定の半径で罰則になるのは
+    /// 亜鉛–窒素配位だけ**と分かったので分けた。XS 型は `MetalDZn`（半径・ドナー性は
+    /// `MetalD` と同一）なので、**既定では AutoDock Vina と同じ挙動**。
+    MetalZn,
     /// ケイ素（`Si`）。Vina/AutoDock の Si。疎水性・H 結合なしで炭素より大きい半径（XS 2.1Å）。
     Silicon,
     /// AutoDock 水和ドッキングの水擬原子（`W`）。Vina 同様**スコアから除外**（相互作用ゼロ）。
@@ -148,6 +152,8 @@ fn fallback_ad_type(s: &str) -> Result<AdType, CoreError> {
         "B" => AdType::C,
         // ケイ素（保険。通常は exact 一致するが元素推定経路でも拾う）。
         "Si" => AdType::Silicon,
+        // 亜鉛は別型（段 115）。
+        "Zn" => AdType::MetalZn,
         // 金属・遷移金属・ランタノイド等 → Met_D。
         m if is_metal_symbol(m) => AdType::Metal,
         _ => return Err(CoreError::UnknownAtomType(s.to_string())),
@@ -191,7 +197,10 @@ impl AdType {
             "W" => AdType::Water,
             "HD" => AdType::PolarH,
             "H" | "HS" => AdType::NonpolarH,
-            "Mg" | "MG" | "Mn" | "MN" | "Zn" | "ZN" | "Ca" | "CA" | "Fe" | "FE" | "Cu"
+            // 亜鉛だけ別型にする（段 115 で、既定の半径で罰則になるのは亜鉛–窒素配位だけと
+            // 分かったため。XS 半径・ドナー性は他の金属と同じ 1.2・ドナーで、既定の挙動は変わらない）。
+            "Zn" | "ZN" => AdType::MetalZn,
+            "Mg" | "MG" | "Mn" | "MN" | "Ca" | "CA" | "Fe" | "FE" | "Cu"
             | "CU" | "Na" | "K" | "Hg" | "HG" | "Ni" | "NI" | "Co" | "CO" | "Cd"
             | "CD" | "V" | "MO" => AdType::Metal,
             _ if is_glue_carbon(s) => AdType::C,
@@ -215,7 +224,7 @@ impl AdType {
             AdType::Br => Element::Br,
             AdType::I => Element::I,
             AdType::PolarH | AdType::NonpolarH => Element::H,
-            AdType::Metal => Element::Metal,
+            AdType::Metal | AdType::MetalZn => Element::Metal,
             AdType::Silicon => Element::Si,
             // 水擬原子は採点除外だが元素は酸素（水和水）。covalent 距離外に置かれるため結合検出に影響しない。
             AdType::Water => Element::O,
@@ -255,11 +264,17 @@ pub enum XsType {
     MetalD,
     /// ケイ素（Vina 1.2 の `XS_TYPE_Si`）。半径 2.2Å・疎水非該当・H 結合なし＝立体項のみ寄与。
     Silicon,
+    /// 亜鉛（ドナー扱い）。**Vina は金属を 1 種類にまとめているが、段 115 の全数調査で
+    /// 既定の半径 1.2 で正味が罰則になるのは亜鉛–窒素配位だけ**（24,692 件の配位のうち
+    /// 受容原子を相手にする 10 組で、罰則になるのは Zn–N のみ）と分かったので分けた。
+    /// 半径・ドナー性・疎水性は `MetalD` と同一なので、**既定では AutoDock Vina と同じ挙動**。
+    /// 違いが出るのは `scoring::MetalRadii` の亜鉛の欄を既定から変えたときだけ。
+    MetalDZn,
 }
 
 impl XsType {
     /// XS 型の総数（グリッドの「型→マップ」配列サイズ）。`index()` は 0..COUNT を返す。
-    pub const COUNT: usize = 18;
+    pub const COUNT: usize = 19;
 
     /// 全 XS 型（`index()` 昇順）。テーブル構築などで型を走査するのに使う。
     pub const ALL: [XsType; Self::COUNT] = [
@@ -281,6 +296,7 @@ impl XsType {
         XsType::Iodine,
         XsType::MetalD,
         XsType::Silicon,
+        XsType::MetalDZn,
     ];
 
     /// 0..COUNT の連続インデックス（グリッドマップの添字）。
@@ -301,7 +317,7 @@ impl XsType {
             Chlorine => 1.8,
             Bromine => 2.0,
             Iodine => 2.2,
-            MetalD => 1.2,
+            MetalD | MetalDZn => 1.2,
             // ケイ素の XS 半径。Vina 1.2 `atom_constants.h` の xs_radius に一致（2.2Å）。
             Silicon => 2.2,
         }
@@ -317,7 +333,7 @@ impl XsType {
     /// 水素結合ドナーか。
     pub fn is_donor(self) -> bool {
         use XsType::*;
-        matches!(self, NitrogenD | NitrogenDA | OxygenD | OxygenDA | MetalD)
+        matches!(self, NitrogenD | NitrogenDA | OxygenD | OxygenDA | MetalD | MetalDZn)
     }
 
     /// 水素結合アクセプタか。
@@ -378,6 +394,7 @@ pub fn assign_xs_type(ad: AdType, bonded_to_hetero: bool, has_polar_h: bool) -> 
         AdType::Br => Bromine,
         AdType::I => Iodine,
         AdType::Metal => MetalD,
+        AdType::MetalZn => MetalDZn,
         AdType::Silicon => Silicon,
         // 水素・グルーダミー・水擬原子はスコアから除外（幾何には残るが相互作用しない）。
         AdType::PolarH | AdType::NonpolarH | AdType::Glue | AdType::Water => return None,
@@ -447,8 +464,13 @@ mod tests {
         // Si は heteroatom（Vina `ad_is_heteroatom`）＝隣接炭素を C_P 化する。
         assert!(Element::Si.is_heteroatom());
         // COUNT/ALL/index が整合（グリッド・LUT の添字健全性）。
+        // 段 115 で `MetalDZn` を**末尾に**足したので、既存の型の index は変わっていない。
+        // 不変条件は「ALL の並び順 ＝ index」であり、個別の型の位置を固定しない。
         assert_eq!(XsType::ALL.len(), XsType::COUNT);
-        assert_eq!(XsType::Silicon.index(), XsType::COUNT - 1);
+        for (i, t) in XsType::ALL.iter().enumerate() {
+            assert_eq!(t.index(), i, "{t:?} の index が ALL の位置と違う");
+        }
+        assert_eq!(XsType::MetalDZn.index(), XsType::COUNT - 1);
     }
 
     #[test]

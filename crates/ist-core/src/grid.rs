@@ -14,18 +14,8 @@ use wide::f64x4;
 
 use crate::atom_types::XsType;
 use crate::geometry::Vec3;
-use crate::scoring::{ScoredAtom, CUTOFF};
+use crate::scoring::{pair_factors, pair_sum_radii, ScoredAtom, CUTOFF};
 use crate::scoring_simd::probe_energy_f64x4;
-
-/// bool → f64 フラグ（1.0/0.0）。スキャッタ SIMD のペア係数用。
-#[inline]
-fn flag64(b: bool) -> f64 {
-    if b {
-        1.0
-    } else {
-        0.0
-    }
-}
 
 /// 1 つのリガンド XS 型に対する 3D エネルギーマップ（f32、行優先 [ix + nx*(iy + ny*iz)]）。
 #[derive(Debug, Clone)]
@@ -192,10 +182,6 @@ impl VinaGrid {
         let sp = self.spacing;
         let cutoff2 = CUTOFF * CUTOFF;
         // プローブ型（格子の対象 XS 型）のスカラ属性。
-        let p_radius = t.radius();
-        let p_hydro = flag64(t.is_hydrophobic());
-        let p_donor = flag64(t.is_donor());
-        let p_acceptor = flag64(t.is_acceptor());
         let receptor = &self.receptor;
         let mut data = vec![0.0f32; nx * ny * nz];
         data.par_chunks_mut(nx * ny).enumerate().for_each(|(iz, slice)| {
@@ -209,10 +195,10 @@ impl VinaGrid {
                 if rxy2 <= 0.0 {
                     continue; // この z はこの原子のカットオフ球外
                 }
-                let a_radius = a.xs.radius();
-                let a_hydro = flag64(a.xs.is_hydrophobic());
-                let a_donor = flag64(a.xs.is_donor());
-                let a_acceptor = flag64(a.xs.is_acceptor());
+                // 半径の和はここで決める（金属が受容原子と対になるときの差し替えを含む。段 110）。
+                let sum_radii = pair_sum_radii(t, a.xs);
+                // 疎水・水素結合のペア係数も scoring 側で決める（金属の対照切り替えを含む）。
+                let (hyd_pair, hb_pair) = pair_factors(t, a.xs);
                 let rxy = rxy2.sqrt();
                 let iy_lo = (((ay - rxy - oy) / sp).floor() as isize).max(0);
                 let iy_hi = (((ay + rxy - oy) / sp).ceil() as isize).min(ny as isize - 1);
@@ -235,8 +221,7 @@ impl VinaGrid {
                         let x0 = ox + ix as f64 * sp;
                         let pxv = f64x4::new([x0, x0 + sp, x0 + 2.0 * sp, x0 + 3.0 * sp]);
                         let vals = probe_energy_f64x4(
-                            pxv, py, pz, p_radius, p_hydro, p_donor, p_acceptor, ax, ay, az,
-                            a_radius, a_hydro, a_donor, a_acceptor,
+                            pxv, py, pz, sum_radii, hyd_pair, hb_pair, ax, ay, az,
                         )
                         .to_array();
                         // カットオフ外レーンは 0。ix_hi を超えるレーンは書かない（範囲外・OOB 防止）。

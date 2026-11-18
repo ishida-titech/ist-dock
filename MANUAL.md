@@ -328,6 +328,10 @@ scoring  = "grid"                # ★ 速度のため grid 推奨（既定は "
 | `torsion_sp2_sp3` | true | `torsion_scale > 0` のとき、sp2-sp3 単結合の規則を使うか。 |
 | `torsion_polish_only` | false | ねじれポテンシャルを最終精密化だけに掛けるか（探索中は掛けない）。 |
 | `rank_by_objective` | false | 候補の保持と最終順位を**全目的関数**（分子間＋箱の罰則＋分子内＋ねじれ）で付けるか。**既定 false** は AutoDock Vina と同じで、最終順位は分子間だけで付ける。 |
+| `metal_coord_radius` | 1.2 | 金属が**水素結合の受容原子**（N/O）と対になるときの実効半径（Å）。**1.2 = AutoDock Vina。** 4 つの組（Zn-N, Zn-O, 他の金属-N, 他の金属-O）だけに効き、炭素や硫黄など受容原子でない相手は 1.2 のまま。 |
+| `[run.metal_radii]` | 全組 1.2 | 組ごとに実効半径を指定する表（`zn_n` / `zn_o` / `zn_ndon` / `zn_s` / `zn_f` / `zn_c` / `zn_p` / `other_n` / `other_o` / `other_ndon` / `other_s` / `other_f` / `other_c` / `other_p`）。省略した欄は `metal_coord_radius` の値。受容原子でない相手に届くのはこの表だけ。 |
+| `metal_hbond` | true | 金属が関わるペアに水素結合項を入れるか。**true = AutoDock Vina。** false は切り分け用（反発だけを残す）。 |
+| `metal_hbond_all` | false | 金属が関わるペアで、相手の供与体／受容体の型付けを**見ずに**水素結合項を入れるか。false = AutoDock Vina。true にすると金属と窒素・酸素・硫黄・フッ素の組は型に依らず項を持つ（炭素・リン・重ハロゲンは対象外）。`[run.metal_radii]` の `zn_n = 0.70, zn_ndon = 0.70` と組で使う。 |
 
 #### `tpe` モード（TPE=Tree-structured Parzen Estimator）
 `--search tpe` / `search = "tpe"` で選択。TPEvina-2.0（PSOVina 派生）の TPE を移植したもの。各次元を
