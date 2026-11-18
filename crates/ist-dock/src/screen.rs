@@ -227,19 +227,28 @@ fn process_cluster(
     sp.size = size;
 
     // Phase 1: seed ドッキング＋一括棄却（コアを剛体に保つ）。上位 seed_poses モードを保持。
-    let seed_lig = LigandModel::new(&cluster.seed.molecule);
+    let mut seed_lig = LigandModel::new(&cluster.seed.molecule);
+    seed_lig.set_intra_14_scale(sp.intra_14_scale);
+    seed_lig.set_intra_15_scale(sp.intra_15_scale);
+    seed_lig.set_torsion_scale(sp.torsion_scale);
+    seed_lig.set_intra_14_repulsion_scale(sp.intra_14_repulsion_scale);
+    seed_lig.set_torsion_sp2_sp3(sp.torsion_sp2_sp3);
+    seed_lig.set_torsion_polish_only(sp.torsion_polish_only);
+    seed_lig.set_rank_by_objective(sp.rank_by_objective);
+    let seed_core: std::collections::HashSet<usize> =
+        cluster.seed.core_atoms.iter().copied().collect();
     // n_steps=0（未指定）は seed のサイズ・torsion 数からモード別に自動決定する（dock CLI と同様）。
     // これを怠ると steps=0 で seed が探索されず、ポーズ品質が著しく劣化する。
+    // **本数は Phase 1 が実際に探索する torsion の数**（コアを動かすものと、A-4 で外した
+    // 空の自由度を除いたもの）を使う。dock 経路と規則を揃えるため。
     if sp.n_steps == 0 {
         sp.n_steps = crate::search::auto_n_steps_for(
             sp.kind,
             seed_lig.n_scored(),
-            seed_lig.n_torsions(),
+            seed_lig.rgroup_torsions(&seed_core).len(),
             sp.tpe.step_ratio,
         );
     }
-    let seed_core: std::collections::HashSet<usize> =
-        cluster.seed.core_atoms.iter().copied().collect();
     let seed_res =
         phase1::dock_seed(&seed_lig, scorer, &sp, &seed_core, params.prune_threshold, params.seed_poses);
     let best = seed_res.best();
@@ -305,7 +314,14 @@ fn score_child(
     seed_cores: &[Vec<Vec3>],
     params: &ScreenParams,
 ) -> ScoredEntry {
-    let child_lig = LigandModel::new(&child.molecule);
+    let mut child_lig = LigandModel::new(&child.molecule);
+    child_lig.set_intra_14_scale(params.search.intra_14_scale);
+    child_lig.set_intra_15_scale(params.search.intra_15_scale);
+    child_lig.set_torsion_scale(params.search.torsion_scale);
+    child_lig.set_intra_14_repulsion_scale(params.search.intra_14_repulsion_scale);
+    child_lig.set_torsion_sp2_sp3(params.search.torsion_sp2_sp3);
+    child_lig.set_torsion_polish_only(params.search.torsion_polish_only);
+    child_lig.set_rank_by_objective(params.search.rank_by_objective);
 
     // 子の MCS コア参照 world 座標（seed.core_atoms と同順対応）。
     let child_core_ref: Vec<Vec3> =

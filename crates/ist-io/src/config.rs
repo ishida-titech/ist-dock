@@ -145,6 +145,52 @@ pub struct RunOpts {
     /// 探索中の正エネルギー上限（Vina hunt_cap, 既定 10.0）。激突の暴走を抑える。大きい値（例 1e9）で無効化。
     #[serde(default = "default_hunt_cap")]
     pub hunt_cap: f64,
+    /// 分子内エネルギーで 1-4 ペア（結合グラフ距離 3）に掛ける係数。**既定 0.0 ＝ AutoDock Vina 互換**
+    /// （Vina は 1-4 を数えない）。1.0 で分子間と同じ重みで数える。
+    ///
+    /// 1-4 距離は結合長・結合角とねじれ角でほぼ決まるので、**1-4 の立体反発は実質的に粗いねじれ
+    /// ポテンシャルとして働く。** Vina にはねじれポテンシャルが無いため、ここで補えるようにしてある。
+    /// **値は未検証である**（段 89 時点。既定 0.0 以外で測った結果はまだ無い）。
+    #[serde(default)]
+    pub intra_14_scale: f64,
+    /// 1-5 ペアに掛ける係数。**既定 1.0 ＝ AutoDock Vina と同じ。**
+    ///
+    /// **段 105**: 1-5 距離は結合長・結合角とねじれ角 1〜2 本でほぼ決まるのに、Vina の表面距離
+    /// は炭素・窒素の半径を 1.8〜1.9 Å と置くので半径の和が 3.4〜3.8 Å になる。1-5 ペアが
+    /// syn 寄りに来ると r が 2.2〜3.2 Å まで下がって反発が立ち、**結晶リガンドそのものが
+    /// 最大 +2.08 kcal/mol の反発を受ける**（その中央 88% が 1-5 由来）。
+    /// 立体衝突ではなく結合でつながった原子の必然的な近さなので、0.0 で外せるようにした。
+    /// **ただし 1-5 の反発は粗いねじれポテンシャルとしても働いている可能性がある。**
+    #[serde(default = "default_one")]
+    pub intra_15_scale: f64,
+    /// ねじれポテンシャル（A-2）全体に掛ける係数。**既定 0.0 ＝ 無効（AutoDock Vina と同じ）。**
+    ///
+    /// UFF（Rappé ら 1992）の一般ねじれ則のうち、**Astex 85 標的の結晶リガンドで検証を通った
+    /// 2 種だけ**（sp3–sp3 と sp2–sp3）を評価する。詳細と検証の数字は
+    /// `ist_dock::torsion::TorsionKind::is_crystal_validated`。
+    /// 必要な情報は元素と混成だけなので PDBQT から自己完結に決まり、リガンドごとの前処理費用は 0。
+    #[serde(default)]
+    pub torsion_scale: f64,
+    /// 1-4 ペアに**反発項だけ**を入れる係数（B-1）。**既定 0.0 ＝ 無効（AutoDock Vina と同じ）。**
+    ///
+    /// `intra_14_scale` とは独立。1-4 に Vina の分子内項をそのまま入れると引力も一緒に入って
+    /// 折りたたみを促すが（段 90・92.1）、反発だけなら立体障害だけを表現できる。
+    /// ビアリールのねじれはオルト位の立体反発で決まり、オルトの重原子どうしは 1-4 なので、
+    /// 既定の Vina ではその反発が存在しない（段 95.2）。**追加パラメータは無い。**
+    #[serde(default)]
+    pub intra_14_repulsion_scale: f64,
+    /// sp2–sp3（6 回対称）のねじれ規則を使うか。**既定 true。** 段 98.8 の案 (a) の検証用。
+    #[serde(default = "default_true")]
+    pub torsion_sp2_sp3: bool,
+    /// ねじれ項を最終の polish（代表ポーズの精密化と順位付け）だけで使うか。**既定 false。**
+    /// 大域探索中はねじれ項なしで動く。段 98.8 の案 (c)。
+    #[serde(default)]
+    pub torsion_polish_only: bool,
+    /// 候補の保持と最終の順位を**全目的関数**（分子間＋箱の罰則＋水＋分子内＋ねじれ）で付けるか。
+    /// **既定 false**: 従来どおり候補保持は分子間＋箱の罰則＋水、最終順位は Vina の分子間だけ。
+    /// 段 101 で既存出力の並べ替えにより +15 / +9 の兆候が出たので、エンジンで確かめるための設定。
+    #[serde(default)]
+    pub rank_by_objective: bool,
     /// 焼きなまし温度の初期値（高温で誤基脱出）。
     #[serde(default = "default_temp_init")]
     pub temp_init: f64,
@@ -263,6 +309,13 @@ impl Default for RunOpts {
             search: SearchMode::default(),
             qvina_cos: default_qvina_cos(),
             hunt_cap: default_hunt_cap(),
+            intra_14_scale: 0.0,
+            intra_15_scale: 1.0,
+            torsion_scale: 0.0,
+            intra_14_repulsion_scale: 0.0,
+            torsion_sp2_sp3: true,
+            torsion_polish_only: false,
+            rank_by_objective: false,
             temp_init: default_temp_init(),
             temp_final: default_temp_final(),
             chain_iters: default_chain_iters(),
@@ -430,4 +483,14 @@ mod tests {
         assert_eq!(cfg.run.resolve_n_runs(SearchMode::Tpe), 1);
         assert_eq!(SearchMode::default(), SearchMode::Tpe); // 既定モードは tpe
     }
+}
+
+/// serde の既定値 `1.0`（`#[serde(default = "default_one")]` 用）。
+fn default_one() -> f64 {
+    1.0
+}
+
+/// serde の既定値 `true`（`#[serde(default = "default_true")]` 用）。
+fn default_true() -> bool {
+    true
 }

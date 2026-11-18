@@ -87,6 +87,17 @@ fn eval_value_grad(
         lig.intramolecular_fast_value_grad(&s.atoms, &mut s.force, intra_cap)
     };
     lig.dof_gradient_into(c, &s.pos, &s.world_axis, &s.world_pivot, &s.force, out);
+    // ねじれポテンシャル（A-2）。原子座標を経由しないので、**DOF 勾配が出来た後**に
+    // torsion 成分（`out[6 + k]`）へ直接足す。係数 0（既定）なら何もしない。
+    // `torsion_polish_only` のときは大域探索（`!exact`）では足さず、polish（`exact`）だけで足す。
+    if exact || !lig.torsion_polish_only() {
+        e += lig.torsional_value_grad(c, out);
+    }
+    // 順位キーを全目的関数にする設定（段 101）。各 run の候補保持（`cluster_insert`）は
+    // `s.inter` を読むので、ここで全目的関数に置き換える。既定では分子間（＋箱の罰則＋水）のまま。
+    if lig.rank_by_objective() {
+        s.inter = e;
+    }
     e
 }
 
@@ -127,6 +138,21 @@ pub struct SearchParams {
     /// 探索中の正エネルギー上限（Vina hunt_cap, 既定 10.0）。激突の暴走を抑え深い極小へ抜けやすくする。
     /// polish は常に cap 無し（authentic）。`f64::INFINITY` で無効化。
     pub hunt_cap: f64,
+    /// 分子内エネルギーで 1-4 ペア（結合グラフ距離 3）に掛ける係数。**既定 0.0 ＝ AutoDock Vina 互換。**
+    /// `LigandModel::set_intra_14_scale` に渡すための運搬用（screen 経路で子リガンドに伝える）。
+    pub intra_14_scale: f64,
+    /// `LigandModel::set_intra_15_scale` に渡すための運搬用。**既定 1.0 ＝ Vina と同じ。**
+    pub intra_15_scale: f64,
+    /// ねじれポテンシャル（A-2）の係数。`LigandModel::set_torsion_scale` への運搬用。**既定 0.0 ＝ 無効。**
+    pub torsion_scale: f64,
+    /// 1-4 の反発だけの項（B-1）の係数。`LigandModel::set_intra_14_repulsion_scale` への運搬用。
+    pub intra_14_repulsion_scale: f64,
+    /// sp2–sp3 のねじれ規則を使うか（運搬用、既定 true）。
+    pub torsion_sp2_sp3: bool,
+    /// ねじれ項を最終の polish だけで使うか（運搬用、既定 false）。
+    pub torsion_polish_only: bool,
+    /// 順位キーを全目的関数にするか（運搬用、既定 false）。
+    pub rank_by_objective: bool,
     /// TPE モード（`kind == Tpe`）のハイパーパラメータ。他モードでは未使用。
     pub tpe: TpeParams,
     /// 診断用: 設定すると TPE 共有モード探索の**全ステップのトレース**を TSV でこのパスへ書き出す
@@ -165,6 +191,13 @@ impl Default for SearchParams {
             kind: SearchKind::Drift,
             qvina_cos: 0.90,
             hunt_cap: 10.0,
+            intra_14_scale: 0.0,
+            intra_15_scale: 1.0,
+            torsion_scale: 0.0,
+            intra_14_repulsion_scale: 0.0,
+            torsion_sp2_sp3: true,
+            torsion_polish_only: false,
+            rank_by_objective: false,
             tpe: TpeParams::default(),
             trace_path: None,
         }
@@ -305,7 +338,9 @@ pub enum SearchKind {
 /// リガンドを受容体ボックスへドッキングし、**RMSD クラスタリングした上位モード**を
 /// エネルギー昇順で返す（[0]=最良。全 torsion 自由）。返り値は `(モード, 総エネルギー評価回数)`。
 pub fn dock(lig: &LigandModel, scorer: &Scorer, params: &SearchParams) -> (Vec<DockResult>, u64) {
-    let free: Vec<usize> = (0..lig.n_torsions()).collect();
+    // A-4: 採点対象の重原子を動かさない torsion（末端の -OH・-NH2 など）は探索空間から外す。
+    // 水素は全項から除外されているので、その自由度を回しても目的関数は一切変わらない。
+    let free: Vec<usize> = lig.active_torsions();
     dock_constrained(lig, scorer, params, &free)
 }
 
@@ -393,8 +428,13 @@ pub fn dock_constrained(
         .map(|(conf, _)| {
             let r = minimize_free(conf, &exact_value_grad, params.polish_iters, &free_dofs);
             // 順位キー = 精密化後ポーズの exact intermolecular（cmd_dock 報告 affinity と同一定義, 少数で安価）。
-            let inter = scorer.intermolecular(&lig.scored_atoms(&r.conf));
-            (r.conf, inter)
+            // `rank_by_objective` のときは精密化の目的関数値（分子間＋箱の罰則＋水＋分子内＋ねじれ）。
+            let key = if lig.rank_by_objective() {
+                r.energy
+            } else {
+                scorer.intermolecular(&lig.scored_atoms(&r.conf))
+            };
+            (r.conf, key)
         })
         .collect();
     total_evals += polish_scratch.borrow().evals;

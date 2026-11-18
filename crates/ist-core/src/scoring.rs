@@ -129,6 +129,26 @@ pub fn eval_pair(a: XsType, b: XsType, r: f64) -> Terms {
     t
 }
 
+/// **反発項だけ**の重み付き値（B-1 用）。`r` は原子間距離。
+///
+/// 1-4 ペアに「立体反発だけ」を入れるための関数。Vina の分子内項をそのまま 1-4 に
+/// 入れると引力（ガウス 2 項・疎水・水素結合）も一緒に入り、**折りたたみを促す**
+/// （段 90・92.1）。反発だけなら折りたたみ圧力を増やさずに立体障害を表現できる。
+/// 追加パラメータは無い（Vina の重み `W_REPULSION` と XS 半径をそのまま使う）。
+#[inline]
+pub fn pair_repulsion(a: XsType, b: XsType, r: f64) -> f64 {
+    let d = r - (a.radius() + b.radius());
+    W_REPULSION * repulsion(d)
+}
+
+/// `pair_repulsion` の値と `d/dr`。
+#[inline]
+pub fn pair_repulsion_grad(a: XsType, b: XsType, r: f64) -> (f64, f64) {
+    let d = r - (a.radius() + b.radius());
+    let (v, dv) = repulsion_value_grad(d); // dd/dr = 1
+    (W_REPULSION * v, W_REPULSION * dv)
+}
+
 /// 分子間（受容体–リガンド）の素値合計。`r < CUTOFF` のペアのみ。
 pub fn intermolecular_terms(ligand: &[ScoredAtom], receptor: &[ScoredAtom]) -> Terms {
     let mut total = Terms::default();

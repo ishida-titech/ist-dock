@@ -36,6 +36,18 @@ enum Command {
         /// Ligand pose to score, PDBQT format (coordinates are used as-is).
         #[arg(value_name = "LIGAND.pdbqt")]
         ligand: PathBuf,
+        /// Scale for 1-4 intramolecular pairs (0 = AutoDock Vina rule, the default; 1 = same weight as 1-5+).
+        #[arg(long, default_value_t = 0.0)]
+        intra_14_scale: f64,
+        /// Scale for 1-5 intramolecular pairs (1 = AutoDock Vina, the default).
+        #[arg(long, default_value_t = 1.0)]
+        intra_15_scale: f64,
+        /// Scale for the explicit torsion potential (0 = off, the default).
+        #[arg(long, default_value_t = 0.0)]
+        torsion_scale: f64,
+        /// Scale for repulsion-only 1-4 intramolecular pairs (0 = off, the default).
+        #[arg(long, default_value_t = 0.0)]
+        intra_14_repulsion_scale: f64,
     },
     /// Search for the best binding pose of a single ligand and write it out.
     #[command(about = "Dock one ligand and write the best pose  [args: <CONFIG.toml> <RECEPTOR.pdbqt> <LIGAND.pdbqt>]")]
@@ -119,7 +131,21 @@ fn main() -> Result<()> {
     env_logger::init();
     let cli = Cli::parse();
     match cli.command {
-        Command::Score { receptor, ligand } => cmd_score(&receptor, &ligand),
+        Command::Score {
+            receptor,
+            ligand,
+            intra_14_scale,
+            intra_15_scale,
+            torsion_scale,
+            intra_14_repulsion_scale,
+        } => cmd_score(
+            &receptor,
+            &ligand,
+            intra_14_scale,
+            intra_15_scale,
+            torsion_scale,
+            intra_14_repulsion_scale,
+        ),
         Command::Dock {
             receptor,
             ligand,
@@ -259,6 +285,13 @@ fn build_search_params(
         polish_modes: run.polish_modes,
         early_stop_patience: run.early_stop_patience,
         uniform_start,
+        intra_14_scale: run.intra_14_scale,
+        intra_15_scale: run.intra_15_scale,
+        torsion_scale: run.torsion_scale,
+        intra_14_repulsion_scale: run.intra_14_repulsion_scale,
+        torsion_sp2_sp3: run.torsion_sp2_sp3,
+        torsion_polish_only: run.torsion_polish_only,
+        rank_by_objective: run.rank_by_objective,
         kind: search_kind(mode),
         qvina_cos: qvina_cos_override.unwrap_or(run.qvina_cos),
         hunt_cap: run.hunt_cap,
@@ -552,7 +585,18 @@ fn cmd_dock(
     let size = Vec3::new(cfg.r#box.size[0], cfg.r#box.size[1], cfg.r#box.size[2]);
 
     let rec_scored = rec.scored_atoms();
-    let lig = LigandModel::new(&lig_mol);
+    let mut lig = LigandModel::new(&lig_mol);
+    // 分子内の 1-4 ペアの係数（config `[run] intra_14_scale`、既定 0.0 ＝ AutoDock Vina 互換）。
+    lig.set_intra_14_scale(cfg.run.intra_14_scale);
+    // 1-5 以降のペアの係数（config `[run] intra_15_scale`、既定 1.0 ＝ Vina と同じ）。
+    lig.set_intra_15_scale(cfg.run.intra_15_scale);
+    // ねじれポテンシャルの係数（config `[run] torsion_scale`、既定 0.0 ＝ 無効）。
+    lig.set_torsion_scale(cfg.run.torsion_scale);
+    // 1-4 の反発だけの項（config `[run] intra_14_repulsion_scale`、既定 0.0 ＝ 無効）。
+    lig.set_intra_14_repulsion_scale(cfg.run.intra_14_repulsion_scale);
+    lig.set_torsion_sp2_sp3(cfg.run.torsion_sp2_sp3);
+    lig.set_torsion_polish_only(cfg.run.torsion_polish_only);
+    lig.set_rank_by_objective(cfg.run.rank_by_objective);
 
     // --native 指定時のみ: 同一リガンドの参照（native/crystal）ポーズの重原子座標を RMSD 基準に使う。
     // 入力 ligand は開始構造にすぎず、native 前提は置かない。
@@ -593,11 +637,14 @@ fn cmd_dock(
         }
     }
 
+    // 探索するのは採点対象の重原子を動かす torsion だけなので、ステップ数の自動決定も
+    // その本数で行う（`search::dock` に渡す本数と一致させる）。
+    let n_tors_searched = lig.active_torsions().len();
     let eff_steps = if params.n_steps == 0 {
         auto_n_steps_for(
             params.kind,
             lig.n_scored(),
-            lig.n_torsions(),
+            n_tors_searched,
             params.tpe.step_ratio,
         )
     } else {
@@ -616,6 +663,14 @@ fn cmd_dock(
     println!("{:<30} : {}", "Receptor atoms in box", scorer.receptor_atoms());
     // 探索木の回転結合数（n_torsions＝BRANCH 数）で統一表示。ラベルは TORSDOF のまま（score と共通）。
     println!("{:<30} : {}", "Ligand torsional DOF (TORSDOF)", lig.n_torsions());
+    // 探索する torsion と、採点対象の重原子を動かさないため外した torsion の本数。
+    // **既定でも必ず出す。** 報告する親和性の除数（Vina の num_tors）は変えていない。
+    println!(
+        "{:<30} : {} searched, {} skipped (move no scored atom)",
+        "Torsions in search space",
+        n_tors_searched,
+        lig.n_null_torsions()
+    );
     println!("{:<30} : {}", "Runs", params.n_runs);
     println!(
         "{:<30} : {} ({})",
@@ -711,7 +766,14 @@ fn cmd_dock(
 }
 
 /// 固定ポーズの Vina 互換スコアを評価して出力する。
-fn cmd_score(receptor: &PathBuf, ligand: &PathBuf) -> Result<()> {
+fn cmd_score(
+    receptor: &PathBuf,
+    ligand: &PathBuf,
+    intra_14_scale: f64,
+    intra_15_scale: f64,
+    torsion_scale: f64,
+    intra_14_repulsion_scale: f64,
+) -> Result<()> {
     let rec = pdbqt::parse_file(receptor)
         .with_context(|| format!("failed to parse receptor: {}", receptor.display()))?;
     let lig = pdbqt::parse_file(ligand)
@@ -722,9 +784,22 @@ fn cmd_score(receptor: &PathBuf, ligand: &PathBuf) -> Result<()> {
 
     let terms = intermolecular_terms(&lig_atoms, &rec_atoms);
     let e_inter = terms.weighted_sum();
-    // 表示は探索木の回転結合数（n_torsions＝BRANCH 数）で統一（dock と共通）。ラベルは TORSDOF のまま。
-    let n_rot = LigandModel::new(&lig).n_torsions();
-    let affinity = scoring::apply_torsion_correction(e_inter, lig.num_tors_vina());
+    // 回転結合数は 3 つの別物があるので**全部を別の名前で出す**。
+    //   n_torsions  … 探索木の BRANCH 数（探索の自由度。dock と共通の表示）
+    //   TORSDOF     … PDBQT の TORSDOF 行の名目値
+    //   num_tors    … Vina 1.2 の実効回転結合数（**affinity の除数に使うのはこれ**）
+    let mut model = LigandModel::new(&lig);
+    model.set_intra_14_scale(intra_14_scale);
+    model.set_intra_15_scale(intra_15_scale);
+    model.set_torsion_scale(torsion_scale);
+    model.set_intra_14_repulsion_scale(intra_14_repulsion_scale);
+    let n_rot = model.n_torsions();
+    let num_tors = lig.num_tors_vina();
+    // 分子内エネルギー（上限なし＝厳密）。AutoDock Vina の `--score_only` の
+    // "(2) Final Total Internal Energy" と**定義が一致しているかを外から確かめるため**に出す。
+    // 採点そのものには影響しない。
+    let e_intra = model.intramolecular(&lig_atoms, f64::INFINITY);
+    let affinity = scoring::apply_torsion_correction(e_inter, num_tors);
 
     print_header("score: Vina-compatible scoring of a fixed pose (no search)");
     print_molecules(receptor, rec_atoms.len(), ligand, lig_atoms.len());
@@ -741,7 +816,13 @@ fn cmd_score(receptor: &PathBuf, ligand: &PathBuf) -> Result<()> {
     row("HBond", terms.hbond, scoring::W_HBOND);
     println!();
     println!("Intermolecular energy (ligand-receptor) : {e_inter:.5} kcal/mol");
-    println!("Ligand torsional DOF (TORSDOF)          : {n_rot}");
+    println!("Intramolecular energy (ligand internal) : {e_intra:.5} kcal/mol");
+    println!("Intra pairs (>=1-5 / 1-4)               : {} / {}",
+             model.n_intra_pairs(), model.n_intra_pairs_14());
+    println!("Intra 1-4 scale                         : {:.3}", model.intra_14_scale());
+    println!("Ligand rotatable bonds (n_torsions)     : {n_rot}");
+    println!("Ligand TORSDOF record                   : {}", lig.torsdof);
+    println!("Vina effective num_tors (affinity divisor): {num_tors}");
     println!("Estimated Free Energy of Binding        : {affinity:.5} kcal/mol");
     Ok(())
 }
